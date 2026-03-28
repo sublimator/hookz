@@ -96,13 +96,29 @@ def float_sto(rt: HookRuntime, write_ptr: int, write_len: int,
     if has_iou and currency == b"\x00" * 20 and issuer == b"\x00" * 20:
         has_iou = False
 
-    f = _xfl_to_float(xfl)
-    neg = f < 0
-    f = abs(f)
+    # Pad 3-char currency codes to 20 bytes (matches xahaud behavior)
+    if currency is not None and len(currency) < 20:
+        padded = bytearray(20)
+        padded[12:12 + len(currency)] = currency
+        currency = bytes(padded)
+
+    neg = ((xfl >> 62) & 1) == 0 if xfl != 0 else False
+    mantissa = _xfl_mantissa(xfl) if xfl != 0 else 0
+    exponent = _xfl_exponent(xfl) if xfl != 0 else 0
 
     amt_bytes = bytearray(8)
     if is_xrp or (not has_iou and not is_short):
-        drops = int(f * 1e6) if f > 0 else 0
+        # XRP encoding: shift mantissa by exponent to get drops
+        if mantissa == 0:
+            drops = 0
+        else:
+            shift = -exponent
+            if shift > 0:
+                drops = mantissa // (10 ** shift)
+            elif shift < 0:
+                drops = mantissa * (10 ** (-shift))
+            else:
+                drops = mantissa
         amt_bytes[0] = (0b01000000 if not neg else 0b00000000) + ((drops >> 56) & 0b00111111)
         amt_bytes[1] = (drops >> 48) & 0xFF
         amt_bytes[2] = (drops >> 40) & 0xFF
