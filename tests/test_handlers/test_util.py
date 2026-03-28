@@ -54,13 +54,10 @@ class TestUtilSha512h:
         assert result == 32
         assert rt._read_memory(0, 32) == expected
 
-    def test_truncates_to_write_len(self, rt):
-        import hashlib
-        data = b"test"
-        expected = hashlib.sha512(data).digest()[:16]
-        rt._write_memory(100, data)
-        util_sha512h(rt, 0, 16, 100, 4)
-        assert rt._read_memory(0, 16) == expected
+    def test_too_small_write_len(self, rt):
+        """write_len < 32 should return TOO_SMALL."""
+        rt._write_memory(100, b"test")
+        assert util_sha512h(rt, 0, 16, 100, 4) == hookapi.TOO_SMALL
 
     def test_different_inputs_different_hashes(self, rt):
         rt._write_memory(100, b"aaa")
@@ -102,10 +99,8 @@ class TestHookAccount:
         hook_account(rt, 0, 20)
         assert rt._read_memory(0, 20) == b"\xAB" * 20
 
-    def test_truncates_to_write_len(self, rt):
-        rt.hook_account = b"\xCD" * 20
-        hook_account(rt, 0, 10)
-        assert rt._read_memory(0, 10) == b"\xCD" * 10
+    def test_too_small(self, rt):
+        assert hook_account(rt, 0, 19) == hookapi.TOO_SMALL
 
     def test_at_ptr_zero(self, rt):
         rt.hook_account = b"\x01" * 20
@@ -148,9 +143,8 @@ class TestLedgerNonce:
         assert len(data) == 32
         assert data == b"\xCD" * 32
 
-    def test_truncates_to_write_len(self, rt):
-        ledger_nonce(rt, 0, 8)
-        assert rt._read_memory(0, 8) == b"\xCD" * 8
+    def test_too_small(self, rt):
+        assert ledger_nonce(rt, 0, 31) == hookapi.TOO_SMALL
 
 
 class TestUtilAccid:

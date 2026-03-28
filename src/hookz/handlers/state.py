@@ -10,6 +10,10 @@ from hookz import hookapi
 
 
 def state(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread_len: int) -> int:
+    if kread_len < 1:
+        return hookapi.TOO_SMALL
+    if kread_len > 32:
+        return hookapi.TOO_BIG
     key = rt._read_memory(kread_ptr, kread_len)
     val = rt.state_db.get(key)
     if val is None:
@@ -20,6 +24,10 @@ def state(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread
 
 
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
+    if kread_len < 1:
+        return hookapi.TOO_SMALL
+    if kread_len > 32:
+        return hookapi.TOO_BIG
     key = rt._read_memory(kread_ptr, kread_len)
     if read_ptr == 0 and read_len == 0:
         rt.state_db.pop(key, None)

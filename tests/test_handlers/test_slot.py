@@ -291,6 +291,7 @@ class TestSlotCount:
     """slot_count: return count override or 0."""
 
     def test_default_zero(self, rt):
+        """Unknown slot returns 0 (not DOESNT_EXIST — slot system is implicit)."""
         assert slot_count(rt, 1) == 0
 
     def test_with_override(self, rt):

@@ -38,7 +38,13 @@ def float_negate(rt: HookRuntime, a: int) -> int:
 
 
 def float_int(rt: HookRuntime, xfl: int, decimal: int, absolute: int) -> int:
-    f = abs(_xfl_to_float(xfl)) if absolute else _xfl_to_float(xfl)
+    if decimal > 15:
+        return hookapi.INVALID_ARGUMENT
+    f = _xfl_to_float(xfl)
+    if not absolute and f < 0:
+        return hookapi.CANT_RETURN_NEGATIVE
+    if absolute:
+        f = abs(f)
     return int(f * (10 ** decimal))
 
 
@@ -58,7 +64,7 @@ def float_multiply(rt: HookRuntime, a: int, b: int) -> int:
 def float_divide(rt: HookRuntime, a: int, b: int) -> int:
     fb = _xfl_to_float(b)
     if fb == 0:
-        return -1
+        return hookapi.DIVISION_BY_ZERO
     return _float_to_xfl(_xfl_to_float(a) / fb)
 
 
@@ -179,14 +185,16 @@ def float_log(rt: HookRuntime, a: int) -> int:
     return _float_to_xfl(result)
 
 
-def float_root(rt: HookRuntime, a: int) -> int:
-    """Square root of XFL, returned as XFL."""
+def float_root(rt: HookRuntime, a: int, n: int) -> int:
+    """Nth root of XFL, returned as XFL."""
+    if n < 2:
+        return hookapi.INVALID_ARGUMENT
     if a == 0:
         return 0
     if ((a >> 62) & 1) == 0:
         return hookapi.COMPLEX_NOT_SUPPORTED
     f = _xfl_to_float(a)
-    return _float_to_xfl(math.sqrt(f))
+    return _float_to_xfl(f ** (1.0 / n))
 
 
 def float_mulratio(rt: HookRuntime, a: int, round_up: int, numer: int, denom: int) -> int:
@@ -224,7 +232,7 @@ def float_sto_set(rt: HookRuntime, read_ptr: int, read_len: int) -> int:
             upto += 1; length -= 1
 
     if length < 8:
-        return hookapi.INVALID_ARGUMENT
+        return hookapi.NOT_AN_OBJECT
 
     is_xrp = (data[upto] & 0x80) == 0
     is_negative = (data[upto] & 0x40) == 0

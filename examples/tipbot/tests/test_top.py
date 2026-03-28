@@ -395,10 +395,10 @@ class TestGovernanceEmit:
         # Governance entry should be cleaned up
         assert h_key not in rt.state_db
 
-        # Verify both emit_result traces show success (0)
+        # Verify both emit_result traces show success (32 = bytes written)
         emit_traces = [t for t in rt.traces if t.tag == "emit_result"]
         assert len(emit_traces) == 2
-        assert all(t.value == 0 for t in emit_traces)
+        assert all(t.value == 32 for t in emit_traces)
 
     def test_withdrawal_without_governance_no_sethook(self, hook, rt):
         """No H entries → only remit emitted, no sethook."""
@@ -414,7 +414,7 @@ class TestGovernanceEmit:
         # Only one emit_result trace (for the remit)
         emit_traces = [t for t in rt.traces if t.tag == "emit_result"]
         assert len(emit_traces) == 1
-        assert emit_traces[0].value == 0
+        assert emit_traces[0].value == 32
 
         # Verify drops trace
         drops_traces = [t for t in rt.traces if t.tag == "drops"]
@@ -706,8 +706,8 @@ class TestWithdrawalSanityChecks:
         result = rt.run(hook)
         assert result.rejected
         assert b"Emit sethook failed" in result.return_msg
-        # Two emit_result traces: first success (0), second failure (-1)
+        # Two emit_result traces: first success (32 bytes), second failure
         emit_traces = [t for t in rt.traces if t.tag == "emit_result"]
         assert len(emit_traces) == 2
-        assert emit_traces[0].value == 0, "First emit (remit) should succeed"
-        assert emit_traces[1].value == -1, "Second emit (sethook) should fail"
+        assert emit_traces[0].value == 32, "First emit (remit) should succeed"
+        assert emit_traces[1].value < 0, "Second emit (sethook) should fail"

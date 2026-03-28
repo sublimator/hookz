@@ -13,11 +13,23 @@ if TYPE_CHECKING:
 
 
 def etxn_reserve(rt: HookRuntime, count: int) -> int:
+    if count < 1:
+        return hookapi.TOO_SMALL
+    if count > 255:
+        return hookapi.TOO_BIG
+    if getattr(rt, '_etxn_reserved', False):
+        return hookapi.ALREADY_SET
+    rt._etxn_reserved = True
+    rt._etxn_count = count
     return count
 
 
 def etxn_details(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     """Build EmitDetails exactly as xahaud does — raw serialized bytes (116 bytes)."""
+    if not getattr(rt, '_etxn_reserved', False):
+        return hookapi.PREREQUISITE_NOT_MET
+    if write_len < 116:
+        return hookapi.TOO_SMALL
     buf = bytearray()
     buf.append(0xED)  # sfEmitDetails object start
 
@@ -97,8 +109,10 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
 
 
 def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
+    if hash_len < 32:
+        return hookapi.TOO_SMALL
     txn_bytes = rt._read_memory(txn_ptr, txn_len)
     rt.emitted_txns.append(txn_bytes)
-    h = hashlib.sha256(txn_bytes).digest()
+    h = hashlib.sha512(txn_bytes).digest()[:32]
     rt._write_memory(hash_ptr, h[:hash_len])
-    return 0
+    return 32

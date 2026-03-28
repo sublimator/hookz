@@ -25,6 +25,10 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
 
 def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread_len: int) -> int:
     key = rt._read_memory(kread_ptr, kread_len)
+    if kread_len < 1:
+        return hookapi.TOO_SMALL
+    if kread_len > 32:
+        return hookapi.TOO_BIG
     val = rt.params.get(key)
     if val is None:
         return hookapi.DOESNT_EXIST
@@ -40,11 +44,11 @@ def hook_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
     in the chain), then falls back to rt.params (the hook's own parameters).
     """
     key = rt._read_memory(kread_ptr, kread_len)
-    if key_len := len(key):
-        if key_len < 1:
-            return hookapi.TOO_SMALL
-        if key_len > 32:
-            return hookapi.TOO_BIG
+    key_len = len(key)
+    if key_len < 1:
+        return hookapi.TOO_SMALL
+    if key_len > 32:
+        return hookapi.TOO_BIG
 
     # Check overrides first (set by hook_param_set)
     overrides = getattr(rt, "_param_overrides", {})

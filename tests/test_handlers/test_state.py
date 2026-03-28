@@ -70,6 +70,12 @@ class TestState:
         result = state(rt, 0, 128, 100, 1)
         assert result == 0
 
+    def test_kread_len_too_small(self, rt):
+        assert state(rt, 0, 128, 100, 0) == hookapi.TOO_SMALL
+
+    def test_kread_len_too_big(self, rt):
+        assert state(rt, 0, 128, 100, 33) == hookapi.TOO_BIG
+
 
 class TestStateSet:
     """state_set: write to local state_db."""
@@ -124,6 +130,12 @@ class TestStateSet:
         rt._write_memory(200, key)
         state_set(rt, 0, len(val), 200, 32)
         assert rt.state_db[key] == val
+
+    def test_kread_len_too_small(self, rt):
+        assert state_set(rt, 0, 5, 100, 0) == hookapi.TOO_SMALL
+
+    def test_kread_len_too_big(self, rt):
+        assert state_set(rt, 0, 5, 100, 33) == hookapi.TOO_BIG
 
 
 ACCOUNT_A = b"\x01" * 20

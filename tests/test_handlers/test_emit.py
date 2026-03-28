@@ -115,13 +115,23 @@ class TestPrepare:
 # ---------------------------------------------------------------------------
 
 class TestEtxnReserve:
-    """etxn_reserve: returns the count passed in."""
+    """etxn_reserve: validates count and tracks reservation."""
 
     def test_returns_count(self, rt):
         assert etxn_reserve(rt, 1) == 1
-        assert etxn_reserve(rt, 5) == 5
-        assert etxn_reserve(rt, 0) == 0
+
+    def test_valid_counts(self, rt):
         assert etxn_reserve(rt, 255) == 255
+
+    def test_zero_returns_too_small(self, rt):
+        assert etxn_reserve(rt, 0) == hookapi.TOO_SMALL
+
+    def test_256_returns_too_big(self, rt):
+        assert etxn_reserve(rt, 256) == hookapi.TOO_BIG
+
+    def test_double_call_returns_already_set(self, rt):
+        assert etxn_reserve(rt, 1) == 1
+        assert etxn_reserve(rt, 2) == hookapi.ALREADY_SET
 
 
 # ---------------------------------------------------------------------------
@@ -131,26 +141,40 @@ class TestEtxnReserve:
 class TestEtxnDetails:
     """etxn_details: builds a 116-byte EmitDetails serialized object."""
 
+    def test_prerequisite_not_met(self, rt):
+        """Must call etxn_reserve first."""
+        assert etxn_details(rt, 0, 256) == hookapi.PREREQUISITE_NOT_MET
+
+    def test_too_small(self, rt):
+        """write_len < 116 -> TOO_SMALL."""
+        rt._etxn_reserved = True
+        assert etxn_details(rt, 0, 115) == hookapi.TOO_SMALL
+
     def test_returns_116(self, rt):
+        rt._etxn_reserved = True
         assert etxn_details(rt, 0, 256) == 116
 
     def test_writes_116_bytes(self, rt):
+        rt._etxn_reserved = True
         etxn_details(rt, 0, 256)
         data = rt._read_memory(0, 116)
         assert len(data) == 116
 
     def test_starts_with_emit_details_marker(self, rt):
+        rt._etxn_reserved = True
         etxn_details(rt, 0, 256)
         data = rt._read_memory(0, 1)
         assert data[0] == 0xED  # sfEmitDetails
 
     def test_ends_with_object_end_marker(self, rt):
+        rt._etxn_reserved = True
         etxn_details(rt, 0, 256)
         data = rt._read_memory(0, 116)
         assert data[-1] == 0xE1  # object end marker
 
     def test_contains_emit_generation(self, rt):
         """sfEmitGeneration (0x202E) with value 1."""
+        rt._etxn_reserved = True
         etxn_details(rt, 0, 256)
         data = rt._read_memory(0, 116)
         # Header bytes for sfEmitGeneration
@@ -160,21 +184,15 @@ class TestEtxnDetails:
 
     def test_contains_emit_burden(self, rt):
         """sfEmitBurden (0x3D) with value 1."""
+        rt._etxn_reserved = True
         etxn_details(rt, 0, 256)
         data = rt._read_memory(0, 116)
         assert data[7] == 0x3D
         assert data[8:16] == b"\x00\x00\x00\x00\x00\x00\x00\x01"
 
-    def test_truncates_to_write_len(self, rt):
-        """Output truncated if write_len < 116."""
-        etxn_details(rt, 0, 10)
-        # Should still return 116 (the full length) even if truncated
-        # Let's verify it doesn't crash
-        data = rt._read_memory(0, 10)
-        assert len(data) == 10
-
     def test_offset_write(self, rt):
         """Write at non-zero offset."""
+        rt._etxn_reserved = True
         rt._write_memory(0, b"\xFF" * 200)
         etxn_details(rt, 50, 116)
         assert rt._read_memory(0, 50) == b"\xFF" * 50
@@ -203,18 +221,24 @@ class TestEtxnFeeBase:
 class TestEmit:
     """emit: record an emitted transaction and write its hash."""
 
-    def test_returns_zero(self, rt):
+    def test_returns_32(self, rt):
         blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
         rt._write_memory(100, blob)
         result = emit(rt, 0, 32, 100, len(blob))
-        assert result == 0
+        assert result == 32
 
-    def test_writes_sha256_hash(self, rt):
+    def test_writes_sha512h_hash(self, rt):
         blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
         rt._write_memory(100, blob)
         emit(rt, 0, 32, 100, len(blob))
-        expected = hashlib.sha256(blob).digest()
+        expected = hashlib.sha512(blob).digest()[:32]
         assert rt._read_memory(0, 32) == expected
+
+    def test_too_small(self, rt):
+        """hash_len < 32 -> TOO_SMALL."""
+        blob = b"\x00" * 10
+        rt._write_memory(100, blob)
+        assert emit(rt, 0, 31, 100, len(blob)) == hookapi.TOO_SMALL
 
     def test_records_emitted_txn(self, rt):
         blob = b"\xAB\xCD\xEF"
@@ -231,15 +255,6 @@ class TestEmit:
             emit(rt, 0, 32, 100, len(blob))
         assert len(rt.emitted_txns) == 5
         assert rt.emitted_txns[2] == bytes([2]) * 10
-
-    def test_hash_truncated_to_write_len(self, rt):
-        """If hash_len < 32, only that many bytes written."""
-        blob = b"\x00" * 10
-        rt._write_memory(100, blob)
-        rt._write_memory(0, b"\xFF" * 32)
-        emit(rt, 0, 16, 100, len(blob))
-        expected_full = hashlib.sha256(blob).digest()
-        assert rt._read_memory(0, 16) == expected_full[:16]
 
     def test_different_blobs_different_hashes(self, rt):
         blob1 = b"\x01" * 10

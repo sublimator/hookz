@@ -147,7 +147,10 @@ class TestFloatInt:
         assert float_int(rt, float_to_xfl(-42.0), 0, 1) == 42
 
     def test_negative_without_absolute(self, rt):
-        assert float_int(rt, float_to_xfl(-42.0), 0, 0) == -42
+        assert float_int(rt, float_to_xfl(-42.0), 0, 0) == hookapi.CANT_RETURN_NEGATIVE
+
+    def test_decimal_too_large(self, rt):
+        assert float_int(rt, float_to_xfl(1.0), 16, 0) == hookapi.INVALID_ARGUMENT
 
     def test_large_decimal(self, rt):
         assert float_int(rt, float_to_xfl(1.0), 6, 0) == 1_000_000
@@ -184,7 +187,7 @@ class TestFloatDivide:
         assert xfl_to_float(result) == pytest.approx(3.0)
 
     def test_division_by_zero(self, rt):
-        assert float_divide(rt, float_to_xfl(1.0), 0) == -1
+        assert float_divide(rt, float_to_xfl(1.0), 0) == hookapi.DIVISION_BY_ZERO
 
     def test_zero_numerator(self, rt):
         result = float_divide(rt, 0, float_to_xfl(5.0))
@@ -259,9 +262,9 @@ class TestFloatStoSet:
         assert xah == pytest.approx(50.0, rel=1e-10)
 
     def test_too_short_returns_error(self, rt):
-        """Buffer shorter than 8 bytes → error."""
+        """Buffer shorter than 8 bytes → NOT_AN_OBJECT."""
         xfl = self._call(rt, b"\x00" * 5)
-        assert xfl < 0  # error code
+        assert xfl == hookapi.NOT_AN_OBJECT
 
 
 class TestFloatMultiply:
@@ -398,27 +401,35 @@ class TestFloatRoot:
     """float_root: square root as XFL."""
 
     def test_four(self, rt):
-        result = float_root(rt, float_to_xfl(4.0))
+        result = float_root(rt, float_to_xfl(4.0), 2)
         assert xfl_to_float(result) == pytest.approx(2.0)
 
     def test_one(self, rt):
-        result = float_root(rt, float_to_xfl(1.0))
+        result = float_root(rt, float_to_xfl(1.0), 2)
         assert xfl_to_float(result) == pytest.approx(1.0)
 
     def test_zero(self, rt):
-        assert float_root(rt, 0) == 0
+        assert float_root(rt, 0, 2) == 0
 
     def test_large(self, rt):
-        result = float_root(rt, float_to_xfl(1_000_000.0))
+        result = float_root(rt, float_to_xfl(1_000_000.0), 2)
         assert xfl_to_float(result) == pytest.approx(1000.0)
 
     def test_negative_returns_error(self, rt):
         from hookz import hookapi
-        assert float_root(rt, float_to_xfl(-4.0)) == hookapi.COMPLEX_NOT_SUPPORTED
+        assert float_root(rt, float_to_xfl(-4.0), 2) == hookapi.COMPLEX_NOT_SUPPORTED
 
     def test_fractional(self, rt):
-        result = float_root(rt, float_to_xfl(0.25))
+        result = float_root(rt, float_to_xfl(0.25), 2)
         assert xfl_to_float(result) == pytest.approx(0.5)
+
+    def test_cube_root(self, rt):
+        result = float_root(rt, float_to_xfl(27.0), 3)
+        assert xfl_to_float(result) == pytest.approx(3.0)
+
+    def test_n_less_than_2_returns_error(self, rt):
+        xfl = float_to_xfl(4.0)
+        assert float_root(rt, xfl, 1) == hookapi.INVALID_ARGUMENT
 
 
 class TestFloatMulratio:
@@ -668,9 +679,9 @@ class TestFloatStoSetEdgeCases:
         assert xfl_to_float(recovered) == pytest.approx(42.0, rel=1e-10)
 
     def test_too_short(self, rt):
-        """Less than 8 bytes → INVALID_ARGUMENT."""
+        """Less than 8 bytes → NOT_AN_OBJECT."""
         rt._write_memory(0, b"\x00" * 5)
-        assert float_sto_set(rt, 0, 5) == hookapi.INVALID_ARGUMENT
+        assert float_sto_set(rt, 0, 5) == hookapi.NOT_AN_OBJECT
 
     def test_iou_zero_mantissa(self, rt):
         """IOU with zero mantissa → 0."""

@@ -13,6 +13,8 @@ if TYPE_CHECKING:
 
 
 def util_sha512h(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read_len: int) -> int:
+    if write_len < 32:
+        return hookapi.TOO_SMALL
     data = rt._read_memory(read_ptr, read_len)
     h = hashlib.sha512(data).digest()[:32]
     rt._write_memory(write_ptr, h[:write_len])
@@ -26,6 +28,8 @@ def util_keylet(rt: HookRuntime, *args) -> int:
 
 
 def hook_account(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
+    if write_len < 20:
+        return hookapi.TOO_SMALL
     rt._write_memory(write_ptr, rt.hook_account[:write_len])
     return 20
 
@@ -35,6 +39,8 @@ def ledger_seq(rt: HookRuntime) -> int:
 
 
 def ledger_nonce(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
+    if write_len < 32:
+        return hookapi.TOO_SMALL
     rt._write_memory(write_ptr, b"\xCD" * min(write_len, 32))
     return 32
 

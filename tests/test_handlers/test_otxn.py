@@ -118,6 +118,15 @@ class TestOtxnParam:
         assert otxn_param(rt, 0, 128, 200, 1) == 5
         assert rt._read_memory(0, 5) == b"val_b"
 
+    def test_kread_len_zero_returns_too_small(self, rt):
+        """kread_len=0 -> TOO_SMALL."""
+        assert otxn_param(rt, 0, 128, 200, 0) == hookapi.TOO_SMALL
+
+    def test_kread_len_33_returns_too_big(self, rt):
+        """kread_len=33 -> TOO_BIG."""
+        rt._write_memory(200, b"A" * 33)
+        assert otxn_param(rt, 0, 128, 200, 33) == hookapi.TOO_BIG
+
 
 # ---------------------------------------------------------------------------
 # otxn_id
@@ -164,6 +173,11 @@ class TestOtxnSlot:
 
 class TestHookParam:
     """hook_param: read a hook parameter by key."""
+
+    def test_empty_key_returns_too_small(self, rt):
+        """kread_len=0 -> TOO_SMALL."""
+        result = hook_param(rt, 0, 128, 200, 0)
+        assert result == hookapi.TOO_SMALL
 
     def test_basic_from_params(self, rt):
         """Reads from rt.params when no overrides exist."""
