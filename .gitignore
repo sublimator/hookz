@@ -10,3 +10,4 @@ build/
 .ai-docs
 .claude/settings.local.json
 .coverage
+*.wasm

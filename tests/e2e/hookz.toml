@@ -3,17 +3,20 @@ xahaud = "../../../xahaud-worktrees/xahaud-wasm-coverage"
 wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
 
 [compile]
-extra_cflags = ["-Ihooks"]
+extra_cflags = ["-Ihooks/misc"]
 
 [hooks]
-balance_gate = "hooks/balance_gate.c"
-govern = "hooks/govern.c"
-mint = "hooks/mint.c"
-nftoken = "hooks/nftoken.c"
-reward = "hooks/reward.c"
-treasury = "hooks/treasury.c"
+# Genesis hooks (from Xahau/xahaud)
+govern = "hooks/genesis/govern.c"
+mint = "hooks/genesis/mint.c"
+nftoken = "hooks/genesis/nftoken.c"
+reward = "hooks/genesis/reward.c"
 
-# XahauHooks101 examples
+# Misc hooks
+balance_gate = "hooks/misc/balance_gate.c"
+treasury = "hooks/misc/treasury.c"
+
+# XahauHooks101 examples (github.com/Handy4ndy/XahauHooks101)
 accept_incoming_xah = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_xah.c"
 reject_incoming_xah = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_xah.c"
 accept_incoming_min = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_min.c"
