@@ -1,0 +1,3 @@
+[submodule "tests/e2e/hooks/XahauHooks101"]
+	path = tests/e2e/hooks/XahauHooks101
+	url = https://github.com/Handy4ndy/XahauHooks101

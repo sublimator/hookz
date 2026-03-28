@@ -12,3 +12,13 @@ mint = "hooks/mint.c"
 nftoken = "hooks/nftoken.c"
 reward = "hooks/reward.c"
 treasury = "hooks/treasury.c"
+
+# XahauHooks101 examples
+accept_incoming_xah = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_xah.c"
+reject_incoming_xah = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_xah.c"
+accept_incoming_min = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_min.c"
+reject_incoming_max = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_max.c"
+state_counter = "hooks/XahauHooks101/Basic_State/basic_state_counter.c"
+state_toggle = "hooks/XahauHooks101/Basic_State/basic_state_toggle.c"
+install_param = "hooks/XahauHooks101/Basic_Install_Parameters/install_parameter_exact.c"
+invoke_param = "hooks/XahauHooks101/Basic_Invoke_Parameters/invoke_parameter_exact.c"
