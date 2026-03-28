@@ -220,9 +220,10 @@ class TestSlot:
         assert result == 8
         assert rt._read_memory(0, 8) == data[:8]
 
-    def test_empty_slot_returns_doesnt_exist(self, rt):
+    def test_empty_slot_returns_zero(self, rt):
+        """Explicitly empty slot returns 0 bytes written (not DOESNT_EXIST)."""
         rt._slot_overrides["slot_data:2"] = b""
-        assert slot(rt, 0, 32, 2) == hookapi.DOESNT_EXIST
+        assert slot(rt, 0, 32, 2) == 0
 
     def test_write_at_offset(self, rt):
         data = b"\x01\x02\x03\x04"
@@ -290,9 +291,9 @@ class TestSlotSubfield:
 class TestSlotCount:
     """slot_count: return count override or 0."""
 
-    def test_default_zero(self, rt):
-        """Unknown slot returns 0 (not DOESNT_EXIST — slot system is implicit)."""
-        assert slot_count(rt, 1) == 0
+    def test_missing_slot_returns_doesnt_exist(self, rt):
+        """No data in slot → DOESNT_EXIST."""
+        assert slot_count(rt, 1) == hookapi.DOESNT_EXIST
 
     def test_with_override(self, rt):
         rt._slot_overrides["slot_count:5"] = 3
@@ -304,8 +305,198 @@ class TestSlotCount:
 # ---------------------------------------------------------------------------
 
 class TestSlotSubarray:
-    """slot_subarray: returns new_slot (stub)."""
+    """slot_subarray: extract array element into new slot."""
 
-    def test_returns_new_slot(self, rt):
-        assert slot_subarray(rt, 1, 0, 5) == 5
-        assert slot_subarray(rt, 1, 3, 99) == 99
+    def test_missing_parent_returns_doesnt_exist(self, rt):
+        assert slot_subarray(rt, 1, 0, 5) == hookapi.DOESNT_EXIST
+
+    def test_override_still_works(self, rt):
+        rt._slot_overrides["slot_subarray:2:0"] = 3
+        assert slot_subarray(rt, 2, 0, 3) == 3
+
+
+# ---------------------------------------------------------------------------
+# Real parsing tests — slot_subfield + slot_count + slot_subarray on actual data
+# ---------------------------------------------------------------------------
+
+from hookz.xrpl.xrpl_patch import patch_xahau_definitions
+patch_xahau_definitions()
+from xrpl.core.binarycodec import encode
+
+
+class TestSlotRealParsing:
+    """Test the slot system with actual serialized XRPL data — no overrides."""
+
+    PAYMENT = {
+        "TransactionType": "Payment",
+        "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+        "Destination": "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe",
+        "Amount": "1000000",
+        "Fee": "12",
+        "Sequence": 1,
+        "Flags": 0,
+    }
+
+    PAYMENT_WITH_MEMOS = {
+        **PAYMENT,
+        "Memos": [
+            {"Memo": {"MemoData": "AABB", "MemoType": "746578742F706C61696E"}},
+            {"Memo": {"MemoData": "CCDD", "MemoType": "746578742F706C61696E"}},
+        ],
+    }
+
+    def test_subfield_finds_account(self, rt):
+        """Load a payment into slot 1, extract sfAccount into slot 2."""
+        data = bytes.fromhex(encode(self.PAYMENT))
+        rt._slot_overrides["slot_data:1"] = data
+
+        result = slot_subfield(rt, 1, hookapi.sfAccount, 2)
+        assert result == 2
+
+        # Slot 2 should now have 20 bytes (the account ID)
+        assert slot_size(rt, 2) == 20
+
+    def test_subfield_finds_amount(self, rt):
+        """Extract sfAmount — 8 bytes for native XAH."""
+        data = bytes.fromhex(encode(self.PAYMENT))
+        rt._slot_overrides["slot_data:1"] = data
+
+        result = slot_subfield(rt, 1, hookapi.sfAmount, 2)
+        assert result == 2
+        assert slot_size(rt, 2) == 8
+
+    def test_subfield_missing_field(self, rt):
+        """sfOfferSequence not in payment → DOESNT_EXIST."""
+        data = bytes.fromhex(encode(self.PAYMENT))
+        rt._slot_overrides["slot_data:1"] = data
+
+        result = slot_subfield(rt, 1, hookapi.sfOfferSequence, 2)
+        assert result == hookapi.DOESNT_EXIST
+
+    def test_subfield_no_parent(self, rt):
+        """Slot 1 not populated → DOESNT_EXIST."""
+        assert slot_subfield(rt, 1, hookapi.sfAccount, 2) == hookapi.DOESNT_EXIST
+
+    def test_subfield_array_returns_full_field(self, rt):
+        """sfMemos is an array — subfield returns the whole array including header."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+
+        result = slot_subfield(rt, 1, hookapi.sfMemos, 2)
+        assert result == 2
+
+        # Array data should be in slot 2
+        arr_data = rt._slot_overrides["slot_data:2"]
+        assert len(arr_data) > 0
+
+    def test_count_on_array(self, rt):
+        """slot_count on a Memos array with 2 elements → 2."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+
+        # Get the Memos array into slot 2
+        slot_subfield(rt, 1, hookapi.sfMemos, 2)
+
+        # Count should be 2
+        assert slot_count(rt, 2) == 2
+
+    def test_count_on_non_array(self, rt):
+        """slot_count on an sfAccount (not an array) → NOT_AN_ARRAY or 0."""
+        data = bytes.fromhex(encode(self.PAYMENT))
+        rt._slot_overrides["slot_data:1"] = data
+
+        # Extract Account into slot 2
+        slot_subfield(rt, 1, hookapi.sfAccount, 2)
+
+        # Account is 20 raw bytes, not a parseable array
+        result = slot_count(rt, 2)
+        # The parser will either fail or count 0 elements
+        assert result <= 0
+
+    def test_subarray_extracts_element(self, rt):
+        """Extract first memo from Memos array."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+
+        slot_subfield(rt, 1, hookapi.sfMemos, 2)
+        result = slot_subarray(rt, 2, 0, 3)
+        assert result == 3
+
+        # Slot 3 should have some bytes (the first Memo object)
+        assert slot_size(rt, 3) > 0
+
+    def test_subarray_second_element(self, rt):
+        """Extract second memo."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+
+        slot_subfield(rt, 1, hookapi.sfMemos, 2)
+        result = slot_subarray(rt, 2, 1, 4)
+        assert result == 4
+        assert slot_size(rt, 4) > 0
+
+    def test_subarray_out_of_range(self, rt):
+        """Index 5 in a 2-element array → DOESNT_EXIST."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+
+        slot_subfield(rt, 1, hookapi.sfMemos, 2)
+        assert slot_subarray(rt, 2, 5, 3) == hookapi.DOESNT_EXIST
+
+    def test_full_navigation_chain(self, rt):
+        """otxn_slot(1) → slot_subfield → slot_count → slot_subarray → slot() read.
+
+        This mimics the top.c flow:
+            otxn_slot(1)
+            slot_subfield(1, sfAmounts, 2)
+            slot_count(2) == 1
+            slot_subarray(2, 0, 3)
+            slot(buf, size, 3)
+        """
+        # Build a minimal transaction with a single-element Amounts-like array
+        # Use Memos since Amounts isn't in standard xrpl-py
+        txn = {
+            "TransactionType": "Payment",
+            "Account": "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh",
+            "Destination": "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe",
+            "Amount": "1000000",
+            "Fee": "12",
+            "Sequence": 1,
+            "Memos": [
+                {"Memo": {"MemoData": "DEADBEEF", "MemoType": "746578742F706C61696E"}},
+            ],
+        }
+        data = bytes.fromhex(encode(txn))
+        rt._slot_overrides["slot_data:1"] = data
+
+        # Navigate: subfield → count → subarray → read
+        assert slot_subfield(rt, 1, hookapi.sfMemos, 2) == 2
+        assert slot_count(rt, 2) == 1
+        assert slot_subarray(rt, 2, 0, 3) == 3
+
+        # Read the element bytes
+        size = slot_size(rt, 3)
+        assert size > 0
+        result = slot(rt, 0, 256, 3)
+        assert result == size
+        element_data = rt._read_memory(0, result)
+        assert len(element_data) == size
+
+    def test_override_beats_real_data(self, rt):
+        """Override takes priority even when real data exists."""
+        data = bytes.fromhex(encode(self.PAYMENT))
+        rt._slot_overrides["slot_data:1"] = data
+
+        # Override says sfAccount doesn't exist (even though it does)
+        rt._slot_overrides[f"slot_subfield:1:{hookapi.sfAccount}"] = hookapi.DOESNT_EXIST
+        assert slot_subfield(rt, 1, hookapi.sfAccount, 2) == hookapi.DOESNT_EXIST
+
+    def test_override_count_beats_real_data(self, rt):
+        """slot_count override takes priority."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+        slot_subfield(rt, 1, hookapi.sfMemos, 2)
+
+        # Real count is 2, override says 99
+        rt._slot_overrides["slot_count:2"] = 99
+        assert slot_count(rt, 2) == 99
