@@ -76,11 +76,10 @@ class TestUtilSha512h:
 class TestUtilKeylet:
     """util_keylet: compute real keylets."""
 
-    def test_unknown_type_returns_34_zeros(self, rt):
-        """Unknown keylet type falls back to stub (34 zero bytes)."""
+    def test_unknown_type_returns_invalid_argument(self, rt):
+        """Unknown keylet type → INVALID_ARGUMENT."""
         result = util_keylet(rt, 0, 34, 999, 0, 0, 0, 0, 0, 0)
-        assert result == 34
-        assert rt._read_memory(0, 34) == b"\x00" * 34
+        assert result == hookapi.INVALID_ARGUMENT
 
     def test_too_small(self, rt):
         assert util_keylet(rt, 0, 33, 999, 0, 0, 0, 0, 0, 0) == hookapi.TOO_SMALL

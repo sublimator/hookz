@@ -70,6 +70,18 @@ class HookResult:
     error: Exception | None = None
 
 
+# Amendments enabled by default — all current Xahau amendments.
+# Tests can rt.amendments.add/discard to toggle specific ones.
+_DEFAULT_AMENDMENTS: set[str] = {
+    "fixHookAPI20251128",
+    "featureHookAPISerializedType240",
+    "featureHooksUpdate1",
+    "featureDID",
+    "featurePriceOracle",
+    "featureCron",
+}
+
+
 class HookRuntime:
     """Execute WASM hooks with mocked hook API.
 
@@ -80,6 +92,12 @@ class HookRuntime:
         result = rt.run(wasm_bytes)
         assert result.accepted
         assert rt.state_db[key] == expected
+
+    Amendments:
+        rt.amendments is a set[str]. All current Xahau amendments are
+        enabled by default. Toggle with:
+            rt.amendments.discard("fixHookAPI20251128")
+            rt.amendments.add("someNewFeature")
     """
 
     def __init__(self) -> None:
@@ -97,6 +115,7 @@ class HookRuntime:
         self.handlers: dict[str, Callable] = {}
         self._slot_overrides: dict[str, Any] = {}
         self.ledger: dict[bytes, bytes] = {}  # keylet → serialized STObject
+        self.amendments: set[str] = _DEFAULT_AMENDMENTS.copy()
         self._memory: wasmtime.Memory | None = None
         self._store: wasmtime.Store | None = None
 
