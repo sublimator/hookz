@@ -1,0 +1,19 @@
+# hookz — hook testing framework config
+# Env vars override: HOOKZ_XAHAUD_ROOT, HOOKZ_WASI_SDK, HOOKZ_HOOK_HEADERS
+
+[paths]
+xahaud = "../xahaud-worktrees/xahaud-wasm-coverage"
+wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
+hook_headers = "${xahaud}/hook"
+
+[compile]
+target = "wasm32-wasip1"
+extra_cflags = [
+    "-Wno-incompatible-pointer-types",
+    "-Wno-int-conversion",
+    "-Wno-macro-redefined",
+]
+exports = ["hook", "cbak"]
+
+[coverage]
+threshold = 90

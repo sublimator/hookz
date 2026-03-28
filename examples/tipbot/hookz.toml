@@ -1,0 +1,13 @@
+# Tipbot hook tests — hookz config
+# Paths relative to this file
+
+[paths]
+xahaud = "../../../xahaud-worktrees/xahaud-wasm-coverage"
+wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
+
+[hooks]
+tip = "hooks/tip.c"
+top = "hooks/top.c"
+
+[coverage]
+threshold = 95
