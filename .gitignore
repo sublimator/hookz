@@ -9,3 +9,4 @@ build/
 .hookz.local.toml
 .ai-docs/
 .claude/settings.local.json
+.coverage
