@@ -28,7 +28,7 @@ def slot_subarray(rt: HookRuntime, parent: int, idx: int, new_slot: int) -> int:
 def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
     data = rt._slot_overrides.get(f"slot_data:{slot_no}", b"")
     if not data:
-        return -5
+        return hookapi.DOESNT_EXIST
     to_write = data[:write_len]
     rt._write_memory(write_ptr, to_write)
     return len(to_write)
@@ -111,7 +111,7 @@ def xpop_slot(rt: HookRuntime, slot_no_ptr: int, slot_no_len: int) -> int:
 
 
 def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int:
-    if read_ptr and read_len:
+    if read_len > 0:
         data = rt._read_memory(read_ptr, read_len)
         rt._slot_overrides[f"slot_data:{slot_no}"] = data
     return slot_no

@@ -6,7 +6,10 @@ import pytest
 
 from hookz.runtime import HookRuntime
 from hookz.xfl import float_to_xfl, xfl_to_float
-from hookz.handlers.slot import slot_float, slot_size, slot_clear, slot_type, xpop_slot, meta_slot
+from hookz.handlers.slot import (
+    slot, slot_set, slot_float, slot_size, slot_clear, slot_type,
+    slot_subfield, slot_count, slot_subarray, xpop_slot, meta_slot,
+)
 from hookz import hookapi
 
 
@@ -191,3 +194,117 @@ class TestMetaSlot:
         """Each slot number is returned as-is."""
         for i in range(10):
             assert meta_slot(rt, i) == i
+
+
+# ---------------------------------------------------------------------------
+# slot (read from slot)
+# ---------------------------------------------------------------------------
+
+class TestSlot:
+    """slot: read data from a slot into WASM memory."""
+
+    def test_missing_slot(self, rt):
+        assert slot(rt, 0, 32, 99) == hookapi.DOESNT_EXIST
+
+    def test_basic_read(self, rt):
+        data = b"\xDE\xAD\xBE\xEF" * 4
+        rt._slot_overrides["slot_data:1"] = data
+        result = slot(rt, 0, 32, 1)
+        assert result == len(data)
+        assert rt._read_memory(0, len(data)) == data
+
+    def test_truncates_to_write_len(self, rt):
+        data = b"\xAB" * 32
+        rt._slot_overrides["slot_data:1"] = data
+        result = slot(rt, 0, 8, 1)
+        assert result == 8
+        assert rt._read_memory(0, 8) == data[:8]
+
+    def test_empty_slot_returns_doesnt_exist(self, rt):
+        rt._slot_overrides["slot_data:2"] = b""
+        assert slot(rt, 0, 32, 2) == hookapi.DOESNT_EXIST
+
+    def test_write_at_offset(self, rt):
+        data = b"\x01\x02\x03\x04"
+        rt._slot_overrides["slot_data:0"] = data
+        rt._write_memory(0, b"\xFF" * 100)
+        slot(rt, 50, 4, 0)
+        assert rt._read_memory(0, 50) == b"\xFF" * 50
+        assert rt._read_memory(50, 4) == data
+
+
+# ---------------------------------------------------------------------------
+# slot_set (write to slot)
+# ---------------------------------------------------------------------------
+
+class TestSlotSet:
+    """slot_set: write data from WASM memory into a slot."""
+
+    def test_basic_set(self, rt):
+        data = b"\x01\x02\x03\x04\x05\x06\x07\x08"
+        rt._write_memory(0, data)
+        result = slot_set(rt, 0, len(data), 5)
+        assert result == 5
+        assert rt._slot_overrides["slot_data:5"] == data
+
+    def test_returns_slot_no(self, rt):
+        rt._write_memory(0, b"\x00" * 8)
+        assert slot_set(rt, 0, 8, 3) == 3
+        assert slot_set(rt, 0, 8, 99) == 99
+
+    def test_overwrite_existing(self, rt):
+        rt._slot_overrides["slot_data:1"] = b"\xAA" * 8
+        rt._write_memory(0, b"\xBB" * 8)
+        slot_set(rt, 0, 8, 1)
+        assert rt._slot_overrides["slot_data:1"] == b"\xBB" * 8
+
+    def test_roundtrip_slot_set_then_slot(self, rt):
+        """Write via slot_set, read back via slot."""
+        data = b"\xDE\xAD\xBE\xEF"
+        rt._write_memory(0, data)
+        slot_set(rt, 0, len(data), 7)
+        result = slot(rt, 100, 32, 7)
+        assert result == len(data)
+        assert rt._read_memory(100, len(data)) == data
+
+
+# ---------------------------------------------------------------------------
+# slot_subfield
+# ---------------------------------------------------------------------------
+
+class TestSlotSubfield:
+    """slot_subfield: look up a subfield override."""
+
+    def test_missing_returns_doesnt_exist(self, rt):
+        assert slot_subfield(rt, 1, 0x60001, 2) == hookapi.DOESNT_EXIST
+
+    def test_with_override(self, rt):
+        rt._slot_overrides["slot_subfield:1:393217"] = 42  # 0x60001 = 393217
+        assert slot_subfield(rt, 1, 393217, 2) == 42
+
+
+# ---------------------------------------------------------------------------
+# slot_count
+# ---------------------------------------------------------------------------
+
+class TestSlotCount:
+    """slot_count: return count override or 0."""
+
+    def test_default_zero(self, rt):
+        assert slot_count(rt, 1) == 0
+
+    def test_with_override(self, rt):
+        rt._slot_overrides["slot_count:5"] = 3
+        assert slot_count(rt, 5) == 3
+
+
+# ---------------------------------------------------------------------------
+# slot_subarray
+# ---------------------------------------------------------------------------
+
+class TestSlotSubarray:
+    """slot_subarray: returns new_slot (stub)."""
+
+    def test_returns_new_slot(self, rt):
+        assert slot_subarray(rt, 1, 0, 5) == 5
+        assert slot_subarray(rt, 1, 3, 99) == 99
