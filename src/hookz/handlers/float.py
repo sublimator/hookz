@@ -90,8 +90,8 @@ def float_sto(rt: HookRuntime, write_ptr: int, write_len: int,
         else:
             header = bytes([0, typ, field])
 
-    currency = rt._read_memory(cur_ptr, cur_len) if cur_ptr and cur_len else None
-    issuer = rt._read_memory(iss_ptr, iss_len) if iss_ptr and iss_len else None
+    currency = rt._read_memory(cur_ptr, cur_len) if cur_len > 0 else None
+    issuer = rt._read_memory(iss_ptr, iss_len) if iss_len > 0 else None
     has_iou = currency is not None and issuer is not None
     if has_iou and currency == b"\x00" * 20 and issuer == b"\x00" * 20:
         has_iou = False

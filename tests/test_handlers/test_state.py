@@ -1,11 +1,11 @@
-"""Tests for state_foreign and state_foreign_set handlers."""
+"""Tests for state and state_foreign handlers."""
 
 import pytest
 import wasmtime
 
 from hookz.runtime import HookRuntime
 from hookz import hookapi
-from hookz.handlers.state import state_foreign, state_foreign_set
+from hookz.handlers.state import state, state_set, state_foreign, state_foreign_set
 
 
 @pytest.fixture
@@ -17,6 +17,113 @@ def rt() -> HookRuntime:
     r._store = store
     r._memory = memory
     return r
+
+
+# ---------------------------------------------------------------------------
+# state / state_set (local state)
+# ---------------------------------------------------------------------------
+
+class TestState:
+    """state: read from local state_db."""
+
+    def test_basic_read(self, rt):
+        key = b"balance"
+        val = b"\x00\x00\x00\x64"
+        rt.state_db[key] = val
+        rt._write_memory(100, key)
+        result = state(rt, 0, 128, 100, len(key))
+        assert result == len(val)
+        assert rt._read_memory(0, len(val)) == val
+
+    def test_missing_key(self, rt):
+        rt._write_memory(100, b"nokey")
+        assert state(rt, 0, 128, 100, 5) == hookapi.DOESNT_EXIST
+
+    def test_truncates_to_write_len(self, rt):
+        rt.state_db[b"k"] = b"longvalue"
+        rt._write_memory(100, b"k")
+        result = state(rt, 0, 4, 100, 1)
+        assert result == 4
+        assert rt._read_memory(0, 4) == b"long"
+
+    def test_binary_key_and_value(self, rt):
+        key = b"\x00\x01\x02\x03"
+        val = b"\xFF\xFE\xFD"
+        rt.state_db[key] = val
+        rt._write_memory(100, key)
+        result = state(rt, 0, 128, 100, len(key))
+        assert result == len(val)
+        assert rt._read_memory(0, len(val)) == val
+
+    def test_key_at_ptr_zero(self, rt):
+        """Key stored at memory address 0 should work."""
+        key = b"k"
+        rt.state_db[key] = b"v"
+        rt._write_memory(0, key)
+        result = state(rt, 100, 128, 0, 1)
+        assert result == 1
+        assert rt._read_memory(100, 1) == b"v"
+
+    def test_empty_value(self, rt):
+        rt.state_db[b"k"] = b""
+        rt._write_memory(100, b"k")
+        result = state(rt, 0, 128, 100, 1)
+        assert result == 0
+
+
+class TestStateSet:
+    """state_set: write to local state_db."""
+
+    def test_basic_set(self, rt):
+        rt._write_memory(0, b"myval")
+        rt._write_memory(100, b"mykey")
+        result = state_set(rt, 0, 5, 100, 5)
+        assert result == 5
+        assert rt.state_db[b"mykey"] == b"myval"
+
+    def test_overwrite(self, rt):
+        rt.state_db[b"k"] = b"old"
+        rt._write_memory(0, b"new")
+        rt._write_memory(100, b"k")
+        state_set(rt, 0, 3, 100, 1)
+        assert rt.state_db[b"k"] == b"new"
+
+    def test_delete_with_zero_ptr_and_len(self, rt):
+        rt.state_db[b"k"] = b"val"
+        rt._write_memory(100, b"k")
+        result = state_set(rt, 0, 0, 100, 1)
+        assert result == 0
+        assert b"k" not in rt.state_db
+
+    def test_delete_nonexistent_key(self, rt):
+        rt._write_memory(100, b"nokey")
+        result = state_set(rt, 0, 0, 100, 5)
+        assert result == 0  # No error, just no-op
+
+    def test_set_at_ptr_zero(self, rt):
+        """Value at memory address 0 should work."""
+        rt._write_memory(0, b"val")
+        rt._write_memory(100, b"k")
+        state_set(rt, 0, 3, 100, 1)
+        assert rt.state_db[b"k"] == b"val"
+
+    def test_roundtrip(self, rt):
+        """Set then read."""
+        rt._write_memory(0, b"\xDE\xAD")
+        rt._write_memory(100, b"key")
+        state_set(rt, 0, 2, 100, 3)
+        result = state(rt, 200, 128, 100, 3)
+        assert result == 2
+        assert rt._read_memory(200, 2) == b"\xDE\xAD"
+
+    def test_32_byte_key(self, rt):
+        """Max key length (32 bytes) should work."""
+        key = b"A" * 32
+        val = b"V" * 128
+        rt._write_memory(0, val)
+        rt._write_memory(200, key)
+        state_set(rt, 0, len(val), 200, 32)
+        assert rt.state_db[key] == val
 
 
 ACCOUNT_A = b"\x01" * 20

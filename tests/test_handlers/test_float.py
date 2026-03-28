@@ -31,6 +31,174 @@ def rt() -> HookRuntime:
     return r
 
 
+# ---------------------------------------------------------------------------
+# float_compare, float_sum, float_negate, float_int, float_set, float_divide
+# ---------------------------------------------------------------------------
+from hookz.handlers.float import (
+    float_compare, float_sum, float_negate, float_int, float_set, float_divide,
+)
+
+
+class TestFloatCompare:
+    """float_compare: compare two XFL values."""
+
+    def test_equal(self, rt):
+        a = float_to_xfl(42.0)
+        assert float_compare(rt, a, a, hookapi.COMPARE_EQUAL) == 1
+
+    def test_not_equal(self, rt):
+        a = float_to_xfl(42.0)
+        b = float_to_xfl(43.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_EQUAL) == 0
+
+    def test_less(self, rt):
+        a = float_to_xfl(1.0)
+        b = float_to_xfl(2.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_LESS) == 1
+
+    def test_not_less(self, rt):
+        a = float_to_xfl(2.0)
+        b = float_to_xfl(1.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_LESS) == 0
+
+    def test_greater(self, rt):
+        a = float_to_xfl(5.0)
+        b = float_to_xfl(3.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_GREATER) == 1
+
+    def test_not_greater(self, rt):
+        a = float_to_xfl(3.0)
+        b = float_to_xfl(5.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_GREATER) == 0
+
+    def test_combined_less_equal(self, rt):
+        a = float_to_xfl(3.0)
+        b = float_to_xfl(3.0)
+        mode = hookapi.COMPARE_LESS | hookapi.COMPARE_EQUAL
+        assert float_compare(rt, a, b, mode) == 1
+
+    def test_negative_values(self, rt):
+        a = float_to_xfl(-5.0)
+        b = float_to_xfl(-3.0)
+        assert float_compare(rt, a, b, hookapi.COMPARE_LESS) == 1
+
+    def test_zero_vs_positive(self, rt):
+        assert float_compare(rt, 0, float_to_xfl(1.0), hookapi.COMPARE_LESS) == 1
+
+
+class TestFloatSum:
+    """float_sum: add two XFL values."""
+
+    def test_basic(self, rt):
+        result = float_sum(rt, float_to_xfl(3.0), float_to_xfl(4.0))
+        assert xfl_to_float(result) == pytest.approx(7.0)
+
+    def test_negative(self, rt):
+        result = float_sum(rt, float_to_xfl(10.0), float_to_xfl(-3.0))
+        assert xfl_to_float(result) == pytest.approx(7.0)
+
+    def test_both_negative(self, rt):
+        result = float_sum(rt, float_to_xfl(-3.0), float_to_xfl(-4.0))
+        assert xfl_to_float(result) == pytest.approx(-7.0)
+
+    def test_zero_identity(self, rt):
+        a = float_to_xfl(42.0)
+        result = float_sum(rt, a, 0)
+        assert xfl_to_float(result) == pytest.approx(42.0)
+
+    def test_cancel_out(self, rt):
+        a = float_to_xfl(5.0)
+        b = float_to_xfl(-5.0)
+        result = float_sum(rt, a, b)
+        assert xfl_to_float(result) == pytest.approx(0.0, abs=1e-15)
+
+
+class TestFloatNegate:
+    """float_negate: flip the sign bit."""
+
+    def test_positive_to_negative(self, rt):
+        a = float_to_xfl(42.0)
+        result = float_negate(rt, a)
+        assert xfl_to_float(result) == pytest.approx(-42.0)
+
+    def test_negative_to_positive(self, rt):
+        a = float_to_xfl(-42.0)
+        result = float_negate(rt, a)
+        assert xfl_to_float(result) == pytest.approx(42.0)
+
+    def test_zero(self, rt):
+        assert float_negate(rt, 0) == 0
+
+    def test_double_negate(self, rt):
+        a = float_to_xfl(123.456)
+        assert float_negate(rt, float_negate(rt, a)) == a
+
+
+class TestFloatInt:
+    """float_int: convert XFL to integer with decimal shift."""
+
+    def test_basic(self, rt):
+        assert float_int(rt, float_to_xfl(42.0), 0, 0) == 42
+
+    def test_with_decimals(self, rt):
+        assert float_int(rt, float_to_xfl(1.5), 1, 0) == 15
+
+    def test_absolute(self, rt):
+        assert float_int(rt, float_to_xfl(-42.0), 0, 1) == 42
+
+    def test_negative_without_absolute(self, rt):
+        assert float_int(rt, float_to_xfl(-42.0), 0, 0) == -42
+
+    def test_large_decimal(self, rt):
+        assert float_int(rt, float_to_xfl(1.0), 6, 0) == 1_000_000
+
+
+class TestFloatSet:
+    """float_set: create XFL from exponent and mantissa."""
+
+    def test_basic(self, rt):
+        result = float_set(rt, 0, 100)
+        assert xfl_to_float(result) == pytest.approx(100.0)
+
+    def test_with_exponent(self, rt):
+        result = float_set(rt, 3, 5)
+        assert xfl_to_float(result) == pytest.approx(5000.0)
+
+    def test_negative_exponent(self, rt):
+        result = float_set(rt, -2, 5)
+        assert xfl_to_float(result) == pytest.approx(0.05)
+
+    def test_zero_mantissa(self, rt):
+        assert float_set(rt, 5, 0) == 0
+
+    def test_large_mantissa(self, rt):
+        result = float_set(rt, 0, 1_000_000_000_000_000)
+        assert xfl_to_float(result) == pytest.approx(1e15)
+
+
+class TestFloatDivide:
+    """float_divide: XFL / XFL."""
+
+    def test_basic(self, rt):
+        result = float_divide(rt, float_to_xfl(12.0), float_to_xfl(4.0))
+        assert xfl_to_float(result) == pytest.approx(3.0)
+
+    def test_division_by_zero(self, rt):
+        assert float_divide(rt, float_to_xfl(1.0), 0) == -1
+
+    def test_zero_numerator(self, rt):
+        result = float_divide(rt, 0, float_to_xfl(5.0))
+        assert xfl_to_float(result) == pytest.approx(0.0, abs=1e-15)
+
+    def test_negative(self, rt):
+        result = float_divide(rt, float_to_xfl(-12.0), float_to_xfl(4.0))
+        assert xfl_to_float(result) == pytest.approx(-3.0)
+
+    def test_fractional_result(self, rt):
+        result = float_divide(rt, float_to_xfl(1.0), float_to_xfl(3.0))
+        assert xfl_to_float(result) == pytest.approx(1 / 3, rel=1e-10)
+
+
 class TestFloatStoSet:
     """float_sto_set: deserialize XRPL amount bytes → XFL."""
 

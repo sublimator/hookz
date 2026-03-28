@@ -6,7 +6,11 @@ import wasmtime
 from hookz.account import to_accid, to_raddr
 from hookz.runtime import HookRuntime
 from hookz import hookapi
-from hookz.handlers.util import util_accid, util_raddr, hook_hash, ledger_last_hash, util_verify, hook_skip, ledger_keylet
+from hookz.handlers.util import (
+    util_sha512h, util_keylet, hook_account, ledger_seq, ledger_nonce,
+    util_accid, util_raddr, hook_hash, ledger_last_hash, util_verify,
+    hook_skip, ledger_keylet,
+)
 
 
 @pytest.fixture
@@ -22,6 +26,131 @@ def rt() -> HookRuntime:
 
 RADDR = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
 ACCID = to_accid(RADDR)  # 20 bytes
+
+
+# ---------------------------------------------------------------------------
+# util_sha512h
+# ---------------------------------------------------------------------------
+
+class TestUtilSha512h:
+    """util_sha512h: SHA-512 half (first 32 bytes)."""
+
+    def test_returns_32(self, rt):
+        rt._write_memory(100, b"hello")
+        assert util_sha512h(rt, 0, 32, 100, 5) == 32
+
+    def test_correct_hash(self, rt):
+        import hashlib
+        data = b"hello"
+        expected = hashlib.sha512(data).digest()[:32]
+        rt._write_memory(100, data)
+        util_sha512h(rt, 0, 32, 100, len(data))
+        assert rt._read_memory(0, 32) == expected
+
+    def test_empty_input(self, rt):
+        import hashlib
+        expected = hashlib.sha512(b"").digest()[:32]
+        result = util_sha512h(rt, 0, 32, 100, 0)
+        assert result == 32
+        assert rt._read_memory(0, 32) == expected
+
+    def test_truncates_to_write_len(self, rt):
+        import hashlib
+        data = b"test"
+        expected = hashlib.sha512(data).digest()[:16]
+        rt._write_memory(100, data)
+        util_sha512h(rt, 0, 16, 100, 4)
+        assert rt._read_memory(0, 16) == expected
+
+    def test_different_inputs_different_hashes(self, rt):
+        rt._write_memory(100, b"aaa")
+        util_sha512h(rt, 0, 32, 100, 3)
+        h1 = rt._read_memory(0, 32)
+        rt._write_memory(100, b"bbb")
+        util_sha512h(rt, 0, 32, 100, 3)
+        h2 = rt._read_memory(0, 32)
+        assert h1 != h2
+
+
+# ---------------------------------------------------------------------------
+# util_keylet
+# ---------------------------------------------------------------------------
+
+class TestUtilKeylet:
+    """util_keylet: construct a keylet (stub)."""
+
+    def test_returns_34(self, rt):
+        assert util_keylet(rt, 0, 34) == 34
+
+    def test_writes_34_zero_bytes(self, rt):
+        util_keylet(rt, 0, 34)
+        assert rt._read_memory(0, 34) == b"\x00" * 34
+
+
+# ---------------------------------------------------------------------------
+# hook_account
+# ---------------------------------------------------------------------------
+
+class TestHookAccount:
+    """hook_account: write the 20-byte hook account."""
+
+    def test_returns_20(self, rt):
+        assert hook_account(rt, 0, 20) == 20
+
+    def test_writes_hook_account(self, rt):
+        rt.hook_account = b"\xAB" * 20
+        hook_account(rt, 0, 20)
+        assert rt._read_memory(0, 20) == b"\xAB" * 20
+
+    def test_truncates_to_write_len(self, rt):
+        rt.hook_account = b"\xCD" * 20
+        hook_account(rt, 0, 10)
+        assert rt._read_memory(0, 10) == b"\xCD" * 10
+
+    def test_at_ptr_zero(self, rt):
+        rt.hook_account = b"\x01" * 20
+        hook_account(rt, 0, 20)
+        assert rt._read_memory(0, 20) == b"\x01" * 20
+
+
+# ---------------------------------------------------------------------------
+# ledger_seq
+# ---------------------------------------------------------------------------
+
+class TestLedgerSeq:
+    """ledger_seq: return current ledger sequence."""
+
+    def test_default(self, rt):
+        assert ledger_seq(rt) == rt.ledger_seq_val
+
+    def test_custom_value(self, rt):
+        rt.ledger_seq_val = 42
+        assert ledger_seq(rt) == 42
+
+    def test_large_value(self, rt):
+        rt.ledger_seq_val = 99_999_999
+        assert ledger_seq(rt) == 99_999_999
+
+
+# ---------------------------------------------------------------------------
+# ledger_nonce
+# ---------------------------------------------------------------------------
+
+class TestLedgerNonce:
+    """ledger_nonce: write 32-byte nonce."""
+
+    def test_returns_32(self, rt):
+        assert ledger_nonce(rt, 0, 32) == 32
+
+    def test_writes_32_bytes(self, rt):
+        ledger_nonce(rt, 0, 32)
+        data = rt._read_memory(0, 32)
+        assert len(data) == 32
+        assert data == b"\xCD" * 32
+
+    def test_truncates_to_write_len(self, rt):
+        ledger_nonce(rt, 0, 8)
+        assert rt._read_memory(0, 8) == b"\xCD" * 8
 
 
 class TestUtilAccid:

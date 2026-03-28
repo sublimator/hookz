@@ -28,7 +28,7 @@ class Trace:
 
 
 def _read_tag(rt: HookRuntime, tag_ptr: int, tag_len: int) -> str:
-    raw = rt._read_memory(tag_ptr, tag_len).rstrip(b"\x00") if tag_ptr and tag_len else b""
+    raw = rt._read_memory(tag_ptr, tag_len).rstrip(b"\x00") if tag_len > 0 else b""
     return raw.decode(errors="replace")
 
 
@@ -38,13 +38,13 @@ def _g(rt: HookRuntime, id: int, maxiter: int) -> int:
 
 def accept(rt: HookRuntime, msg_ptr: int, msg_len: int, code: int) -> int:
     from hookz.runtime import HookAccepted
-    msg = rt._read_memory(msg_ptr, msg_len) if msg_ptr and msg_len else b""
+    msg = rt._read_memory(msg_ptr, msg_len) if msg_len > 0 else b""
     raise HookAccepted(msg, code)
 
 
 def rollback(rt: HookRuntime, msg_ptr: int, msg_len: int, code: int) -> int:
     from hookz.runtime import HookRejected
-    msg = rt._read_memory(msg_ptr, msg_len) if msg_ptr and msg_len else b""
+    msg = rt._read_memory(msg_ptr, msg_len) if msg_len > 0 else b""
     raise HookRejected(msg, code)
 
 
@@ -71,7 +71,7 @@ def _loc(rt: HookRuntime) -> str:
 
 def trace(rt: HookRuntime, tag_ptr: int, tag_len: int, data_ptr: int, data_len: int, as_hex: int) -> int:
     tag = _read_tag(rt, tag_ptr, tag_len)
-    data = rt._read_memory(data_ptr, data_len) if data_ptr and data_len else b""
+    data = rt._read_memory(data_ptr, data_len) if data_len > 0 else b""
     display = data.hex() if as_hex else repr(data)
     ln = _line(rt)
     rt.traces.append(Trace(tag=tag, value=display, raw=data, line=ln))
