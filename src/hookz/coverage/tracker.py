@@ -361,9 +361,11 @@ class CoverageTracker:
         return "\n".join(out)
 
     def summary(self, total_lines: int | None = None) -> str:
-        hit = len(self.lines_hit)
         if total_lines:
+            hit = len(self.lines_hit)
             return f"{hit}/{total_lines} lines covered ({100 * hit / total_lines:.0f}%)"
         if self._executable_lines:
-            return f"{hit}/{len(self._executable_lines)} executable lines covered ({self.coverage_pct():.0f}%)"
-        return f"{hit} lines covered"
+            hit = len(self.lines_hit & self._executable_lines)
+            total = len(self._executable_lines)
+            return f"{hit}/{total} executable lines covered ({self.coverage_pct():.0f}%)"
+        return f"{len(self.lines_hit)} lines covered"
