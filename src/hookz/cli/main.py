@@ -153,7 +153,12 @@ def _show_function(console, config, name: str) -> int:
         if impl:
             console.print(Panel(impl, title=f"Implementation ({impl_path})", border_style="blue"))
 
-        if not wrapper and not impl:
+        test_path = "$XAHAUD/src/test/app/SetHook_test.cpp"
+        test_code = repo.find_test_function(name)
+        if test_code:
+            console.print(Panel(test_code, title=f"Test ({test_path})", border_style="green"))
+
+        if not wrapper and not impl and not test_code:
             console.print(f"[dim]No xahaud source found for '{name}'[/dim]")
 
     except Exception as e:

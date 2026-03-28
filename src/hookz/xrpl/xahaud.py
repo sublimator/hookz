@@ -277,6 +277,41 @@ class XahaudRepo:
 
         return None
 
+    # ---- Find test functions in SetHook_test.cpp ----
+
+    _TEST_FILE = "src/test/app/SetHook_test.cpp"
+
+    def find_test_function(self, name: str) -> str | None:
+        """Find test_{name} method in SetHook_test.cpp using tree-sitter."""
+        try:
+            source = self._read(self._TEST_FILE)
+        except FileNotFoundError:
+            return None
+
+        target = f"test_{name}"
+        tree = self._parser.parse(source)
+
+        def _find_method(node) -> bytes | None:
+            # Look for function_definition nodes whose declarator name matches
+            if node.type == "function_definition":
+                declarator = node.child_by_field_name("declarator")
+                if declarator and declarator.type == "function_declarator":
+                    name_node = declarator.child_by_field_name("declarator")
+                    if name_node:
+                        fn_name = _node_text(name_node, source)
+                        # Could be bare "test_X" or qualified "SetHook0_test::test_X"
+                        if fn_name == target or fn_name.endswith("::" + target):
+                            return source[node.start_byte:node.end_byte]
+
+            for child in node.children:
+                result = _find_method(child)
+                if result:
+                    return result
+            return None
+
+        found = _find_method(tree.root_node)
+        return found.decode(errors="replace") if found else None
+
     def find_hook_function_full(self, name: str) -> dict[str, str | None]:
         """Find the WASM wrapper, API implementation, and relevant macros.
 
