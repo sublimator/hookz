@@ -2,5 +2,9 @@
 xahaud = "../../../xahaud-worktrees/xahaud-wasm-coverage"
 wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
 
+[compile]
+extra_cflags = ["-Ihooks"]
+
 [hooks]
 balance_gate = "hooks/balance_gate.c"
+govern = "hooks/govern.c"

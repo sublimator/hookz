@@ -108,6 +108,11 @@ def hook_param_set(
     return len(value)
 
 
+def otxn_type(rt: HookRuntime) -> int:
+    """Return the originating transaction type."""
+    return rt.otxn_type
+
+
 def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
     rt._write_memory(write_ptr, b"\xAB" * min(write_len, 32))
     return 32
