@@ -112,10 +112,12 @@ class TestStateCounter:
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account  # owner
         rt.params[b"CNT"] = struct.pack(">Q", 42)
+        # Pre-seed counter at 5 — should be overwritten, not incremented
+        rt.state_db[b"CNT"] = struct.pack(">Q", 5)
         result = rt.run(state_counter_hook)
         assert result.accepted
         assert b"manually updated" in result.return_msg
-        assert struct.unpack(">Q", rt.state_db[b"CNT"])[0] == 42
+        assert struct.unpack(">Q", rt.state_db[b"CNT"])[0] == 42  # 42, not 6
 
     def test_invoke_by_non_owner_rejected(self, state_counter_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
@@ -195,3 +197,143 @@ def _write_iou_to_memory(rt, write_ptr):
     buf = b"\xD5\x03\x8D\x7E\xA4\xC6\x80\x00" + b"\x00" * 20 + b"\x01" * 20
     rt._write_memory(write_ptr, buf)
     return 48
+
+
+# ---------------------------------------------------------------------------
+# Remit IOU — Multi-recipient IOU remit via invoke state
+# ---------------------------------------------------------------------------
+
+ACC1 = b"\x11" * 20
+ACC2 = b"\x22" * 20
+USD_CURRENCY = b"\x00" * 12 + b"USD" + b"\x00" * 5
+ISSUER = b"\x33" * 20
+
+
+def _setup_remit_state(rt, amt_in=10, amt_out=100):
+    """Pre-seed all state keys for the multi IOU remit hook."""
+    rt.state_db[b"AMT_IN"] = struct.pack(">Q", amt_in)
+    rt.state_db[b"AMT_OUT"] = struct.pack(">Q", amt_out)
+    rt.state_db[b"F_ACC1"] = ACC1
+    rt.state_db[b"F_ACC2"] = ACC2
+    rt.state_db[b"CURRENCY"] = USD_CURRENCY
+    rt.state_db[b"ISSUER"] = ISSUER
+
+
+class TestMultiIouRemitInvoke:
+    """invoke_multi_iou_remit.c — setting parameters via Invoke."""
+
+    def test_set_amt_in(self, multi_iou_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"AMT_IN"] = struct.pack(">Q", 50)
+        result = rt.run(multi_iou_remit_hook)
+        assert result.accepted
+        assert b"AMT_IN set" in result.return_msg
+        assert rt.state_db[b"AMT_IN"] == struct.pack(">Q", 50)
+
+    def test_set_acc1(self, multi_iou_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"F_ACC1"] = ACC1
+        result = rt.run(multi_iou_remit_hook)
+        assert result.accepted
+        assert b"F_ACC1 set" in result.return_msg
+
+    def test_acc1_cannot_be_hook(self, multi_iou_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"F_ACC1"] = rt.hook_account  # same as hook → rejected
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"cannot match" in result.return_msg
+
+    def test_non_owner_rejected(self, multi_iou_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.params[b"AMT_IN"] = struct.pack(">Q", 50)
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"Only hook owner" in result.return_msg
+
+    def test_no_params_rejected(self, multi_iou_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"No valid parameters" in result.return_msg
+
+
+class TestMultiIouRemitPayment:
+    """invoke_multi_iou_remit.c — payment triggers dual IOU remit."""
+
+    def test_outgoing_passes(self, multi_iou_remit_hook, rt):
+        rt.otxn_account = rt.hook_account
+        result = rt.run(multi_iou_remit_hook)
+        assert result.accepted
+        assert b"Outgoing" in result.return_msg
+
+    def test_missing_state_rejected(self, multi_iou_remit_hook, rt):
+        """No state configured → rejected."""
+        rt.handlers["otxn_field"] = lambda w, wl, fid: (
+            _write_xah_to_memory(rt, w, 10_000_000) if fid == hookapi.sfAmount
+            else _default_otxn_field(rt, w, wl, fid)
+        )
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"not set" in result.return_msg
+
+    def test_wrong_amount_rejected(self, multi_iou_remit_hook, rt):
+        """Payment doesn't match AMT_IN → rejected."""
+        _setup_remit_state(rt, amt_in=10)
+        rt.handlers["otxn_field"] = lambda w, wl, fid: (
+            _write_xah_to_memory(rt, w, 5_000_000) if fid == hookapi.sfAmount  # 5 XAH, need 10
+            else _default_otxn_field(rt, w, wl, fid)
+        )
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"doesn't match" in result.return_msg
+
+    def test_matching_amount_emits_two_remits(self, multi_iou_remit_hook, rt):
+        """Exact XAH payment → emits 2 IOU Remits to different accounts."""
+        _setup_remit_state(rt, amt_in=10, amt_out=100)
+        rt.handlers["otxn_field"] = lambda w, wl, fid: (
+            _write_xah_to_memory(rt, w, 10_000_000) if fid == hookapi.sfAmount  # 10 XAH
+            else _default_otxn_field(rt, w, wl, fid)
+        )
+        result = rt.run(multi_iou_remit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 2
+
+        # Both should be ttREMIT (0x005F)
+        for txn in rt.emitted_txns:
+            assert txn[0:3] == b"\x12\x00\x5F", f"Expected ttREMIT, got {txn[0:3].hex()}"
+
+        # Source account (offset 71, 20 bytes) should be hook account
+        assert rt.emitted_txns[0][71:91] == rt.hook_account
+        assert rt.emitted_txns[1][71:91] == rt.hook_account
+
+        # Destinations (offset 93, 20 bytes) should be ACC1 and ACC2
+        assert rt.emitted_txns[0][93:113] == ACC1
+        assert rt.emitted_txns[1][93:113] == ACC2
+
+    def test_same_acc1_acc2_rejected(self, multi_iou_remit_hook, rt):
+        """F_ACC1 == F_ACC2 → rejected."""
+        _setup_remit_state(rt)
+        rt.state_db[b"F_ACC2"] = ACC1  # same as ACC1
+        rt.handlers["otxn_field"] = lambda w, wl, fid: (
+            _write_xah_to_memory(rt, w, 10_000_000) if fid == hookapi.sfAmount
+            else _default_otxn_field(rt, w, wl, fid)
+        )
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"cannot match" in result.return_msg
+
+    def test_iou_payment_rejected(self, multi_iou_remit_hook, rt):
+        """IOU payment → rejected (only XAH accepted)."""
+        _setup_remit_state(rt)
+        rt.handlers["otxn_field"] = lambda w, wl, fid: (
+            _write_iou_to_memory(rt, w) if fid == hookapi.sfAmount
+            else _default_otxn_field(rt, w, wl, fid)
+        )
+        result = rt.run(multi_iou_remit_hook)
+        assert result.rejected
+        assert b"Non-XAH" in result.return_msg
