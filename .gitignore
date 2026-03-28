@@ -7,6 +7,6 @@ build/
 .pytest_cache/
 .idea/
 .hookz.local.toml
-.ai-docs/
+.ai-docs
 .claude/settings.local.json
 .coverage
