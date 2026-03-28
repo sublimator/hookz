@@ -168,6 +168,11 @@ def ledger_seq(rt: HookRuntime) -> int:
     return rt.ledger_seq_val
 
 
+def ledger_last_time(rt: HookRuntime) -> int:
+    """Return the close time of the last closed ledger (seconds since Ripple epoch)."""
+    return rt.ledger_last_time_val
+
+
 def ledger_nonce(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     if write_len < 32:
         return hookapi.TOO_SMALL

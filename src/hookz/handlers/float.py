@@ -15,6 +15,11 @@ from hookz.xfl import xfl_mantissa as _xfl_mantissa
 from hookz.xfl import xfl_exponent as _xfl_exponent
 
 
+def float_one(rt: HookRuntime) -> int:
+    """Return XFL representation of 1.0."""
+    return _float_to_xfl(1.0)
+
+
 def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
     if mode == 0:
         return hookapi.INVALID_ARGUMENT

@@ -107,6 +107,7 @@ class HookRuntime:
         self.otxn_account: bytes = b"\x00" * 20
         self.otxn_type: int = 0
         self.ledger_seq_val: int = 100
+        self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
         self.emitted_txns: list[bytes] = []
         self.traces: list = []  # list[Trace] from handlers.core

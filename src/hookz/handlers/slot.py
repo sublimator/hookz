@@ -175,10 +175,19 @@ def slot_subarray(rt: HookRuntime, parent: int, idx: int, new_slot: int) -> int:
 # ---------------------------------------------------------------------------
 
 def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
-    """Read raw bytes from a slot into WASM memory."""
+    """Read raw bytes from a slot into WASM memory.
+
+    Special mode: when write_ptr=0 and write_len=0, returns the slot data
+    interpreted as a big-endian int64 (used by hooks to read small values
+    without allocating a buffer).
+    """
     data = _get_slot_data(rt, slot_no)
     if data is None:
         return hookapi.DOESNT_EXIST
+    # Return-as-int64 mode
+    if write_ptr == 0 and write_len == 0:
+        padded = data[:8].rjust(8, b"\x00")
+        return int.from_bytes(padded, "big", signed=True)
     to_write = data[:write_len]
     rt._write_memory(write_ptr, to_write)
     return len(to_write)

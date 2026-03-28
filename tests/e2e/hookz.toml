@@ -8,3 +8,6 @@ extra_cflags = ["-Ihooks"]
 [hooks]
 balance_gate = "hooks/balance_gate.c"
 govern = "hooks/govern.c"
+mint = "hooks/mint.c"
+nftoken = "hooks/nftoken.c"
+reward = "hooks/reward.c"
