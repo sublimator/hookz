@@ -260,15 +260,19 @@ def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int
     the slot is populated with the ledger object. Otherwise the raw bytes
     are stored directly.
     """
-    if read_len > 0:
-        data = rt._read_memory(read_ptr, read_len)
-        # Check if this is a keylet lookup
-        ledger = getattr(rt, "ledger", None)
-        if ledger and read_len == 34 and data in ledger:
-            _set_slot_data(rt, slot_no, ledger[data])
-        else:
-            _set_slot_data(rt, slot_no, data)
-    return slot_no
+    if read_len not in (32, 34):
+        return hookapi.INVALID_ARGUMENT
+    if slot_no > 255:
+        return hookapi.INVALID_ARGUMENT
+
+    data = rt._read_memory(read_ptr, read_len)
+    ledger = getattr(rt, "ledger", {})
+
+    if data in ledger:
+        _set_slot_data(rt, slot_no, ledger[data])
+        return slot_no
+
+    return hookapi.DOESNT_EXIST
 
 
 # ---------------------------------------------------------------------------

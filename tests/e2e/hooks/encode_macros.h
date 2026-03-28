@@ -80,3 +80,7 @@
     sizeout = buf_out - (buf_out_master); \
 }
 #define _06_01_ENCODE_DROPS_AMOUNT(buf_out, drops) ENCODE_DROPS(buf_out, drops, amAMOUNT);
+
+#ifndef FLIP_ENDIAN
+#define FLIP_ENDIAN(n) ((uint32_t)(((n & 0xFFU) << 24U) | ((n & 0xFF00U) << 8U) | ((n & 0xFF0000U) >> 8U) | ((n & 0xFF000000U) >> 24U)))
+#endif

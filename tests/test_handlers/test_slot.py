@@ -259,34 +259,58 @@ class TestSlot:
 # ---------------------------------------------------------------------------
 
 class TestSlotSet:
-    """slot_set: write data from WASM memory into a slot."""
+    """slot_set: keylet lookup into slot (matches xahaud — only 32/34 byte inputs)."""
 
-    def test_basic_set(self, rt):
-        data = b"\x01\x02\x03\x04\x05\x06\x07\x08"
-        rt._write_memory(0, data)
-        result = slot_set(rt, 0, len(data), 5)
+    def test_keylet_lookup(self, rt):
+        """34-byte keylet found in ledger → populates slot."""
+        from hookz.ledger import account_root_keylet
+        kl = account_root_keylet(b"\x01" * 20)
+        obj_data = b"\xAB" * 50
+        rt.ledger[kl] = obj_data
+        rt._write_memory(100, kl)
+        result = slot_set(rt, 100, 34, 5)
         assert result == 5
-        assert rt._slot_overrides["slot_data:5"] == data
+        assert rt._slot_overrides["slot_data:5"] == obj_data
 
-    def test_returns_slot_no(self, rt):
-        rt._write_memory(0, b"\x00" * 8)
-        assert slot_set(rt, 0, 8, 3) == 3
-        assert slot_set(rt, 0, 8, 99) == 99
+    def test_keylet_not_found(self, rt):
+        """34-byte keylet not in ledger → DOESNT_EXIST."""
+        kl = b"\x00\x61" + b"\xFF" * 32  # fake keylet
+        rt._write_memory(100, kl)
+        assert slot_set(rt, 100, 34, 1) == hookapi.DOESNT_EXIST
 
-    def test_overwrite_existing(self, rt):
-        rt._slot_overrides["slot_data:1"] = b"\xAA" * 8
-        rt._write_memory(0, b"\xBB" * 8)
-        slot_set(rt, 0, 8, 1)
-        assert rt._slot_overrides["slot_data:1"] == b"\xBB" * 8
+    def test_invalid_len(self, rt):
+        """Only 32 and 34 byte inputs accepted."""
+        rt._write_memory(100, b"\x00" * 8)
+        assert slot_set(rt, 100, 8, 1) == hookapi.INVALID_ARGUMENT
+        rt._write_memory(100, b"\x00" * 20)
+        assert slot_set(rt, 100, 20, 1) == hookapi.INVALID_ARGUMENT
 
-    def test_roundtrip_slot_set_then_slot(self, rt):
-        """Write via slot_set, read back via slot."""
-        data = b"\xDE\xAD\xBE\xEF"
-        rt._write_memory(0, data)
-        slot_set(rt, 0, len(data), 7)
-        result = slot(rt, 100, 32, 7)
-        assert result == len(data)
-        assert rt._read_memory(100, len(data)) == data
+    def test_slot_no_too_large(self, rt):
+        """slot_no > 255 → INVALID_ARGUMENT."""
+        rt._write_memory(100, b"\x00" * 34)
+        assert slot_set(rt, 100, 34, 256) == hookapi.INVALID_ARGUMENT
+
+    def test_32_byte_hash_lookup(self, rt):
+        """32-byte txn hash lookup."""
+        txn_hash = b"\xCC" * 32
+        obj_data = b"\xDD" * 100
+        rt.ledger[txn_hash] = obj_data
+        rt._write_memory(100, txn_hash)
+        result = slot_set(rt, 100, 32, 3)
+        assert result == 3
+        assert rt._slot_overrides["slot_data:3"] == obj_data
+
+    def test_roundtrip_keylet_to_slot_read(self, rt):
+        """slot_set with keylet, then slot() reads the data back."""
+        from hookz.ledger import account_root_keylet
+        kl = account_root_keylet(b"\x02" * 20)
+        obj_data = b"\x01\x02\x03\x04"
+        rt.ledger[kl] = obj_data
+        rt._write_memory(100, kl)
+        slot_set(rt, 100, 34, 7)
+        result = slot(rt, 200, 32, 7)
+        assert result == len(obj_data)
+        assert rt._read_memory(200, len(obj_data)) == obj_data
 
 
 # ---------------------------------------------------------------------------

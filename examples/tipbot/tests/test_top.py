@@ -12,6 +12,7 @@ from helpers import seed_xah_balance, balance_key_account, make_xah_amount
 from hookz import hookapi
 from hookz.xrpl.txn_parser import parse_object
 from hookz.account import to_raddr
+from hookz.ledger import trust_line_keylet, ripple_state
 
 
 @pytest.fixture
@@ -520,8 +521,9 @@ class TestIouWithdrawal:
         self._seed_iou_balance(rt, currency, issuer, float_to_xfl(100.0))
         self._make_iou_withdraw(rt, currency, issuer, float_to_xfl(50.0))
 
-        # slot_set returns 3 → trustline exists
-        rt._slot_overrides["slot_data:3"] = b"\x00" * 34
+        # Trustline must exist in ledger for slot_set keylet lookup
+        kl = trust_line_keylet(rt.otxn_account, issuer, currency)
+        rt.ledger[kl] = b"\x00" * 20  # minimal placeholder object
 
         result = rt.run(hook)
         assert result.accepted
