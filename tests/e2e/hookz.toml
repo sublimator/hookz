@@ -24,3 +24,4 @@ install_param = "hooks/XahauHooks101/Basic_Install_Parameters/install_parameter_
 invoke_param = "hooks/XahauHooks101/Basic_Invoke_Parameters/invoke_parameter_exact.c"
 multi_iou_remit = "hooks/XahauHooks101/Remit_IOU/invoke_multi_iou_remit.c"
 multi_uri_remit = "hooks/XahauHooks101/Remit_URI/invoke_multi_uri_remit.c"
+multi_invoke_emit = "hooks/XahauHooks101/Emit_Invoke/invoke_multi_invoke_emit.c"

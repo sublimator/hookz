@@ -464,3 +464,115 @@ class TestMultiUriRemitPayment:
         rt.otxn_type = 20  # random type
         result = rt.run(multi_uri_remit_hook)
         assert result.accepted
+
+
+# ---------------------------------------------------------------------------
+# Emit Invoke — Multi-destination invoke emitter
+# ---------------------------------------------------------------------------
+
+DST1 = b"\xD1" * 20
+DST2 = b"\xD2" * 20
+DST3 = b"\xD3" * 20
+
+
+class TestMultiInvokeEmitConfig:
+    """invoke_multi_invoke_emit.c — owner sets DST1/2/3 via Invoke."""
+
+    def test_set_dst1(self, multi_invoke_emit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"DST1"] = DST1
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert rt.state_db[b"DST1"] == DST1
+
+    def test_set_all_three(self, multi_invoke_emit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"DST1"] = DST1
+        rt.params[b"DST2"] = DST2
+        rt.params[b"DST3"] = DST3
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert rt.state_db[b"DST1"] == DST1
+        assert rt.state_db[b"DST2"] == DST2
+        assert rt.state_db[b"DST3"] == DST3
+
+    def test_reset_clears_all(self, multi_invoke_emit_hook, rt):
+        rt.state_db[b"DST1"] = DST1
+        rt.state_db[b"DST2"] = DST2
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"RSET"] = b"\x01"
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert b"reset" in result.return_msg
+        assert rt.state_db[b"DST1"] == b"\x00" * 20
+        assert rt.state_db[b"DST2"] == b"\x00" * 20
+        assert rt.state_db[b"DST3"] == b"\x00" * 20
+
+    def test_non_owner_rejected(self, multi_invoke_emit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.params[b"DST1"] = DST1
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.rejected
+        assert b"Only hook owner" in result.return_msg
+
+    def test_no_params_rejected(self, multi_invoke_emit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.rejected
+        assert b"No DST set" in result.return_msg
+
+
+class TestMultiInvokeEmitPayment:
+    """invoke_multi_invoke_emit.c — payment emits invokes to DST1/2/3."""
+
+    def test_no_destinations_set(self, multi_invoke_emit_hook, rt):
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.rejected
+        assert b"No destinations" in result.return_msg
+
+    def test_emit_to_one_destination(self, multi_invoke_emit_hook, rt):
+        rt.state_db[b"DST1"] = DST1
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 1
+        # ttINVOKE = 0x0063
+        assert rt.emitted_txns[0][0:3] == b"\x12\x00\x63"
+        # Source = hook account (offset 76)
+        assert rt.emitted_txns[0][76:96] == rt.hook_account
+        # Destination = DST1 (offset 98)
+        assert rt.emitted_txns[0][98:118] == DST1
+
+    def test_emit_to_three_destinations(self, multi_invoke_emit_hook, rt):
+        rt.state_db[b"DST1"] = DST1
+        rt.state_db[b"DST2"] = DST2
+        rt.state_db[b"DST3"] = DST3
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 3
+        # Each emitted to the correct destination
+        assert rt.emitted_txns[0][98:118] == DST1
+        assert rt.emitted_txns[1][98:118] == DST2
+        assert rt.emitted_txns[2][98:118] == DST3
+        # All ttINVOKE
+        for txn in rt.emitted_txns:
+            assert txn[0:3] == b"\x12\x00\x63"
+
+    def test_zero_dst_skipped(self, multi_invoke_emit_hook, rt):
+        """DST1 set, DST2 all zeros → only 1 emit."""
+        rt.state_db[b"DST1"] = DST1
+        rt.state_db[b"DST2"] = b"\x00" * 20
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 1
+        assert rt.emitted_txns[0][98:118] == DST1
+
+    def test_non_payment_skipped(self, multi_invoke_emit_hook, rt):
+        rt.otxn_type = 20  # not payment, not invoke
+        result = rt.run(multi_invoke_emit_hook)
+        assert result.accepted
+        assert b"Not a payment" in result.return_msg
+        assert len(rt.emitted_txns) == 0
