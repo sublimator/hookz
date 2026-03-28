@@ -51,9 +51,11 @@ def hook_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
         return hookapi.TOO_BIG
 
     # Check overrides first (set by hook_param_set)
+    # Note: C++ only checks overrides keyed by the current hook's hash.
+    # We search all hashes for convenience — tests don't need to know
+    # the exact hook hash. This is an intentional divergence.
     overrides = getattr(rt, "_param_overrides", {})
     if overrides:
-        # Search all hook hashes for this key
         for _hash, params in overrides.items():
             if key in params:
                 val = params[key]

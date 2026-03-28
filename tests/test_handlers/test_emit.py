@@ -55,6 +55,12 @@ class TestEtxnNonce:
         etxn_nonce(rt, 0, 32)
         assert rt._emit_nonce_counter == 2
 
+    def test_too_many_nonces(self, rt):
+        """After 256 nonces, should return TOO_MANY_NONCES."""
+        for _ in range(256):
+            assert etxn_nonce(rt, 0, 32) == 32
+        assert etxn_nonce(rt, 0, 32) == hookapi.TOO_MANY_NONCES
+
     def test_nonce_is_deterministic(self, rt):
         """Same counter value should produce same nonce across runs."""
         etxn_nonce(rt, 0, 32)

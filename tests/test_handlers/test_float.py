@@ -85,6 +85,21 @@ class TestFloatCompare:
     def test_zero_vs_positive(self, rt):
         assert float_compare(rt, 0, float_to_xfl(1.0), hookapi.COMPARE_LESS) == 1
 
+    def test_mode_zero_invalid(self, rt):
+        a = float_to_xfl(1.0)
+        assert float_compare(rt, a, a, 0) == hookapi.INVALID_ARGUMENT
+
+    def test_mode_all_flags_invalid(self, rt):
+        """mode=0b111 (all three flags) is contradictory → INVALID_ARGUMENT."""
+        a = float_to_xfl(1.0)
+        assert float_compare(rt, a, a, 0b111) == hookapi.INVALID_ARGUMENT
+
+    def test_mode_bits_beyond_range_invalid(self, rt):
+        """Bits beyond the valid 3-bit range → INVALID_ARGUMENT."""
+        a = float_to_xfl(1.0)
+        assert float_compare(rt, a, a, 0b1000) == hookapi.INVALID_ARGUMENT
+        assert float_compare(rt, a, a, 0xFF) == hookapi.INVALID_ARGUMENT
+
 
 class TestFloatSum:
     """float_sum: add two XFL values."""
@@ -618,24 +633,22 @@ class TestFloatStoComposed:
         recovered = float_sto_set(rt, 0, 49)
         assert xfl_to_float(recovered) == pytest.approx(9.999999e14, rel=1e-6)
 
-    def test_zero_currency_and_issuer_means_xrp(self, rt):
-        """Null currency+issuer with non-zero field code → XRP mode."""
+    def test_no_currency_no_issuer_with_field_code_is_invalid(self, rt):
+        """No currency/issuer with non-zero/non-short field_code → INVALID_ARGUMENT.
+
+        xahaud requires has_iou when field_code is neither 0 (XRP) nor 0xFFFFFFFF (short).
+        """
         xfl = float_to_xfl(1000.0)
         result = float_sto(rt, 0, 50, 0, 0, 0, 0, xfl, hookapi.sfAmount)
-        # sfAmount header (1 byte) + 8 amount bytes = 9, but with no currency/issuer
-        # Actually with field_code != 0 and no currency/issuer → it's "not has_iou"
-        # but is_xrp = (field_code == 0), so is_xrp is false here
-        # The code path: not is_xrp and not is_short and not has_iou → XRP-style encoding
-        assert result == 9  # 1-byte header + 8 amount bytes
+        assert result == hookapi.INVALID_ARGUMENT
 
-    def test_all_zero_currency_issuer_means_xrp(self, rt):
-        """Currency=0x00*20 and issuer=0x00*20 → treated as XRP."""
+    def test_all_zero_currency_issuer_with_field_code_is_invalid(self, rt):
+        """Currency=0x00*20 and issuer=0x00*20 → has_iou=False → INVALID_ARGUMENT with sfAmount."""
         xfl = float_to_xfl(1000.0)
         rt._write_memory(100, b"\x00" * 20)
         rt._write_memory(200, b"\x00" * 20)
         result = float_sto(rt, 0, 50, 100, 20, 200, 20, xfl, hookapi.sfAmount)
-        # All-zero currency+issuer → has_iou=False → XRP encoding → 9 bytes
-        assert result == 9
+        assert result == hookapi.INVALID_ARGUMENT
 
 
 class TestFloatStoSetEdgeCases:

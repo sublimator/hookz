@@ -16,6 +16,12 @@ from hookz.xfl import xfl_exponent as _xfl_exponent
 
 
 def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
+    if mode == 0:
+        return hookapi.INVALID_ARGUMENT
+    if mode == 0b111:
+        return hookapi.INVALID_ARGUMENT
+    if mode & ~0b111:
+        return hookapi.INVALID_ARGUMENT
     fa = _xfl_to_float(a)
     fb = _xfl_to_float(b)
     if (mode & hookapi.COMPARE_EQUAL) and fa == fb:
@@ -98,9 +104,29 @@ def float_sto(rt: HookRuntime, write_ptr: int, write_len: int,
 
     currency = rt._read_memory(cur_ptr, cur_len) if cur_len > 0 else None
     issuer = rt._read_memory(iss_ptr, iss_len) if iss_len > 0 else None
+
+    # Validation: currency and issuer must both be set or both be unset
+    if currency is not None and issuer is None:
+        return hookapi.INVALID_ARGUMENT
+    if issuer is not None and currency is None:
+        return hookapi.INVALID_ARGUMENT
+
     has_iou = currency is not None and issuer is not None
     if has_iou and currency == b"\x00" * 20 and issuer == b"\x00" * 20:
         has_iou = False
+
+    # Validate field_code vs has_iou
+    if has_iou and is_xrp:
+        return hookapi.INVALID_ARGUMENT
+    if has_iou and is_short:
+        return hookapi.INVALID_ARGUMENT
+    if not has_iou and not is_xrp and not is_short:
+        return hookapi.INVALID_ARGUMENT
+
+    # Check output buffer is large enough
+    bytes_needed = 8 + len(header) + (40 if has_iou else 0)
+    if bytes_needed > write_len:
+        return hookapi.TOO_SMALL
 
     # Pad 3-char currency codes to 20 bytes (matches xahaud behavior)
     if currency is not None and len(currency) < 20:

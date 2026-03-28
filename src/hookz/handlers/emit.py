@@ -75,6 +75,9 @@ def etxn_nonce(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
         return hookapi.TOO_SMALL
 
     counter = getattr(rt, "_emit_nonce_counter", 0)
+    if counter >= 256:
+        return hookapi.TOO_MANY_NONCES
+
     nonce = hashlib.sha512(
         b"etxn_nonce" + counter.to_bytes(8, "big")
     ).digest()[:32]

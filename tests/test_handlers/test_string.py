@@ -149,58 +149,108 @@ class TestStrFind:
 # ---------------------------------------------------------------------------
 
 class TestStrConcat:
-    """str_concat: concatenate two null-terminated strings."""
+    """str_concat: concatenate/copy strings based on operand_type."""
+
+    @staticmethod
+    def _pack_operand(ptr: int, length: int) -> int:
+        """Encode (ptr, len) into a single uint64 operand for operand_type=6."""
+        return (ptr << 32) | length
+
+    # -- operand_type 6: string concat --
 
     def test_basic(self, rt):
         rt._write_memory(0, b"\x00" * 20)
         rt._write_memory(100, b"hello\x00")
         rt._write_memory(200, b"world\x00")
-        result = str_concat(rt, 0, 20, 100, 6, 200, 6)
+        operand = self._pack_operand(200, 6)
+        result = str_concat(rt, 0, 20, 100, 6, operand, 6)
         assert result == 11  # 5 + 5 + 1 (null)
         assert rt._read_memory(0, 11) == b"helloworld\x00"
 
     def test_empty_strings(self, rt):
         rt._write_memory(100, b"\x00")
         rt._write_memory(200, b"\x00")
-        result = str_concat(rt, 0, 10, 100, 1, 200, 1)
+        operand = self._pack_operand(200, 1)
+        result = str_concat(rt, 0, 10, 100, 1, operand, 6)
         assert result == 1  # just the null terminator
         assert rt._read_memory(0, 1) == b"\x00"
 
     def test_first_empty(self, rt):
         rt._write_memory(100, b"\x00")
         rt._write_memory(200, b"abc\x00")
-        result = str_concat(rt, 0, 10, 100, 1, 200, 4)
+        operand = self._pack_operand(200, 4)
+        result = str_concat(rt, 0, 10, 100, 1, operand, 6)
         assert result == 4  # 0 + 3 + 1
         assert rt._read_memory(0, 4) == b"abc\x00"
 
     def test_write_too_small(self, rt):
         rt._write_memory(100, b"hello\x00")
         rt._write_memory(200, b"world\x00")
-        result = str_concat(rt, 0, 10, 100, 6, 200, 6)
+        operand = self._pack_operand(200, 6)
+        result = str_concat(rt, 0, 10, 100, 6, operand, 6)
         assert result == hookapi.TOO_SMALL
 
     def test_no_null_in_first(self, rt):
         rt._write_memory(100, b"hello")  # no null
         rt._write_memory(200, b"world\x00")
-        result = str_concat(rt, 0, 20, 100, 5, 200, 6)
+        operand = self._pack_operand(200, 6)
+        result = str_concat(rt, 0, 20, 100, 5, operand, 6)
         assert result == hookapi.NOT_A_STRING
 
     def test_no_null_in_second(self, rt):
         rt._write_memory(100, b"hello\x00")
         rt._write_memory(200, b"world")  # no null
-        result = str_concat(rt, 0, 20, 100, 6, 200, 5)
+        operand = self._pack_operand(200, 5)
+        result = str_concat(rt, 0, 20, 100, 6, operand, 6)
         assert result == hookapi.NOT_A_STRING
 
     def test_too_big(self, rt):
-        assert str_concat(rt, 0, 1025, 100, 1, 200, 1) == hookapi.TOO_BIG
-        assert str_concat(rt, 0, 10, 100, 1025, 200, 1) == hookapi.TOO_BIG
+        operand = self._pack_operand(200, 1)
+        assert str_concat(rt, 0, 1025, 100, 1, operand, 6) == hookapi.TOO_BIG
+        assert str_concat(rt, 0, 10, 100, 1025, operand, 6) == hookapi.TOO_BIG
 
     def test_zero_len(self, rt):
-        assert str_concat(rt, 0, 0, 100, 1, 200, 1) == hookapi.TOO_SMALL
-        assert str_concat(rt, 0, 10, 100, 0, 200, 1) == hookapi.TOO_SMALL
+        operand = self._pack_operand(200, 1)
+        assert str_concat(rt, 0, 0, 100, 1, operand, 6) == hookapi.TOO_SMALL
+        assert str_concat(rt, 0, 10, 100, 0, operand, 6) == hookapi.TOO_SMALL
 
     def test_write_smaller_than_read(self, rt):
-        assert str_concat(rt, 0, 3, 100, 5, 200, 1) == hookapi.TOO_SMALL
+        operand = self._pack_operand(200, 1)
+        assert str_concat(rt, 0, 3, 100, 5, operand, 6) == hookapi.TOO_SMALL
+
+    # -- operand_type 0: memcpy --
+
+    def test_copy_basic(self, rt):
+        rt._write_memory(100, b"hello")
+        result = str_concat(rt, 0, 10, 100, 5, 0, 0)
+        assert result == 5
+        assert rt._read_memory(0, 5) == b"hello"
+
+    def test_copy_truncates_to_write_len(self, rt):
+        rt._write_memory(100, b"hello world")
+        result = str_concat(rt, 0, 5, 100, 5, 0, 0)
+        assert result == 5
+        assert rt._read_memory(0, 5) == b"hello"
+
+    # -- operand_type > 6: INVALID_ARGUMENT --
+
+    def test_operand_type_7_invalid(self, rt):
+        assert str_concat(rt, 0, 10, 100, 5, 0, 7) == hookapi.INVALID_ARGUMENT
+
+    def test_operand_type_255_invalid(self, rt):
+        assert str_concat(rt, 0, 10, 100, 5, 0, 255) == hookapi.INVALID_ARGUMENT
+
+    # -- operand_type 1-5: NOT_IMPLEMENTED --
+
+    def test_operand_type_1_not_implemented(self, rt):
+        rt._write_memory(100, b"hello\x00")
+        result = str_concat(rt, 0, 10, 100, 6, 42, 1)
+        assert result == hookapi.NOT_IMPLEMENTED
+
+    def test_operand_type_5_not_implemented(self, rt):
+        rt._write_memory(100, b"hello\x00")
+        result = str_concat(rt, 0, 10, 100, 6, 42, 5)
+        assert result == hookapi.NOT_IMPLEMENTED
 
 
 # ---------------------------------------------------------------------------
@@ -208,52 +258,15 @@ class TestStrConcat:
 # ---------------------------------------------------------------------------
 
 class TestStrReplace:
-    """str_replace: replace first occurrence of needle in haystack."""
+    """str_replace: validates inputs then returns NOT_IMPLEMENTED (matches xahaud)."""
 
-    def test_basic(self, rt):
+    def test_valid_inputs_returns_not_implemented(self, rt):
+        """After passing validation, str_replace returns NOT_IMPLEMENTED."""
         rt._write_memory(100, b"hello world")
         rt._write_memory(200, b"world")
         rt._write_memory(300, b"there")
         result = str_replace(rt, 0, 50, 100, 11, 200, 5, 300, 5)
-        assert result == 11
-        assert rt._read_memory(0, 11) == b"hello there"
-
-    def test_shorter_replacement(self, rt):
-        rt._write_memory(100, b"hello world")
-        rt._write_memory(200, b"world")
-        rt._write_memory(300, b"x")
-        result = str_replace(rt, 0, 50, 100, 11, 200, 5, 300, 1)
-        assert result == 7
-        assert rt._read_memory(0, 7) == b"hello x"
-
-    def test_longer_replacement(self, rt):
-        rt._write_memory(100, b"hi")
-        rt._write_memory(200, b"hi")
-        rt._write_memory(300, b"hello")
-        result = str_replace(rt, 0, 50, 100, 2, 200, 2, 300, 5)
-        assert result == 5
-        assert rt._read_memory(0, 5) == b"hello"
-
-    def test_not_found(self, rt):
-        rt._write_memory(100, b"hello")
-        rt._write_memory(200, b"xyz")
-        rt._write_memory(300, b"a")
-        assert str_replace(rt, 0, 50, 100, 5, 200, 3, 300, 1) == hookapi.DOESNT_EXIST
-
-    def test_write_buffer_too_small(self, rt):
-        rt._write_memory(100, b"hello world")
-        rt._write_memory(200, b"world")
-        rt._write_memory(300, b"universe!!!")
-        result = str_replace(rt, 0, 11, 100, 11, 200, 5, 300, 11)
-        assert result == hookapi.TOO_SMALL
-
-    def test_only_first_occurrence(self, rt):
-        rt._write_memory(100, b"abcabc")
-        rt._write_memory(200, b"abc")
-        rt._write_memory(300, b"XYZ")
-        result = str_replace(rt, 0, 50, 100, 6, 200, 3, 300, 3)
-        assert result == 6
-        assert rt._read_memory(0, 6) == b"XYZabc"
+        assert result == hookapi.NOT_IMPLEMENTED
 
     def test_empty_haystack(self, rt):
         assert str_replace(rt, 0, 50, 100, 0, 200, 1, 300, 1) == hookapi.TOO_SMALL
@@ -268,11 +281,3 @@ class TestStrReplace:
     def test_needle_too_big(self, rt):
         rt._write_memory(100, b"x")
         assert str_replace(rt, 0, 50, 100, 1, 200, 257, 300, 1) == hookapi.TOO_BIG
-
-    def test_empty_replacement(self, rt):
-        """Replacing with empty effectively deletes the needle."""
-        rt._write_memory(100, b"hello world")
-        rt._write_memory(200, b" world")
-        result = str_replace(rt, 0, 50, 100, 11, 200, 6, 300, 0)
-        assert result == 5
-        assert rt._read_memory(0, 5) == b"hello"
