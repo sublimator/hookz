@@ -12,14 +12,36 @@ if TYPE_CHECKING:
 from hookz import hookapi
 
 
+def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
+                           data: bytes, is_account: bool = False) -> int:
+    """WRITE_WASM_MEMORY_OR_RETURN_AS_INT64 pattern from applyHook.cpp.
+
+    When write_ptr=0: returns data_as_int64 (big-endian bytes → int64).
+    Otherwise: writes to WASM memory, returns byte count.
+    is_account: if True, strips the leading VL length byte.
+    """
+    if is_account and len(data) > 0:
+        data = data[1:]
+    if len(data) == 0:
+        return 0
+    if write_ptr == 0:
+        if write_len != 0:
+            return hookapi.INVALID_ARGUMENT
+        from hookz.handlers.slot import _data_as_int64
+        return _data_as_int64(data)
+    if len(data) > write_len:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, data)
+    return len(data)
+
+
 def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -> int:
     if field_id == hookapi.sfAccount:
-        rt._write_memory(write_ptr, rt.otxn_account[:write_len])
-        return 20
+        data = rt.otxn_account
+        return _write_or_return_int64(rt, write_ptr, write_len, data)
     if field_id == hookapi.sfTransactionType:
-        tt = rt.otxn_type.to_bytes(2, "big")
-        rt._write_memory(write_ptr, tt[:write_len])
-        return 2
+        data = rt.otxn_type.to_bytes(2, "big")
+        return _write_or_return_int64(rt, write_ptr, write_len, data)
     return hookapi.DOESNT_EXIST
 
 

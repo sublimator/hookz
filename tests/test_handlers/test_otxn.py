@@ -30,31 +30,36 @@ class TestOtxnField:
 
     def test_sfaccount_returns_20(self, rt):
         rt.otxn_account = b"\x01" * 20
-        result = otxn_field(rt, 0, 32, hookapi.sfAccount)
+        result = otxn_field(rt, 100, 32, hookapi.sfAccount)
         assert result == 20
-        assert rt._read_memory(0, 20) == b"\x01" * 20
+        assert rt._read_memory(100, 20) == b"\x01" * 20
 
-    def test_sfaccount_truncates_to_write_len(self, rt):
+    def test_sfaccount_too_small(self, rt):
         rt.otxn_account = b"\x01" * 20
-        result = otxn_field(rt, 0, 10, hookapi.sfAccount)
-        assert result == 20  # Still returns 20 (full size)
-        assert rt._read_memory(0, 10) == b"\x01" * 10
+        result = otxn_field(rt, 100, 10, hookapi.sfAccount)
+        assert result == hookapi.TOO_SMALL
 
     def test_sftransactiontype_returns_2(self, rt):
         rt.otxn_type = 0  # ttPAYMENT
-        result = otxn_field(rt, 0, 32, hookapi.sfTransactionType)
+        result = otxn_field(rt, 100, 32, hookapi.sfTransactionType)
         assert result == 2
-        assert rt._read_memory(0, 2) == b"\x00\x00"
+        assert rt._read_memory(100, 2) == b"\x00\x00"
 
     def test_sftransactiontype_invoke(self, rt):
         rt.otxn_type = hookapi.ttINVOKE
-        result = otxn_field(rt, 0, 32, hookapi.sfTransactionType)
+        result = otxn_field(rt, 100, 32, hookapi.sfTransactionType)
         assert result == 2
-        val = int.from_bytes(rt._read_memory(0, 2), "big")
+        val = int.from_bytes(rt._read_memory(100, 2), "big")
         assert val == hookapi.ttINVOKE
 
+    def test_return_as_int64(self, rt):
+        """write_ptr=0, write_len=0 → returns value as int64."""
+        rt.otxn_type = hookapi.ttINVOKE
+        result = otxn_field(rt, 0, 0, hookapi.sfTransactionType)
+        assert result == hookapi.ttINVOKE
+
     def test_unknown_field_returns_doesnt_exist(self, rt):
-        result = otxn_field(rt, 0, 32, hookapi.sfFee)
+        result = otxn_field(rt, 100, 32, hookapi.sfFee)
         assert result == hookapi.DOESNT_EXIST
 
     def test_write_at_offset(self, rt):

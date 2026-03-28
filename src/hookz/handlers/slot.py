@@ -174,20 +174,40 @@ def slot_subarray(rt: HookRuntime, parent: int, idx: int, new_slot: int) -> int:
 # slot (read raw bytes)
 # ---------------------------------------------------------------------------
 
+def _data_as_int64(data: bytes) -> int:
+    """Convert up to 8 bytes of big-endian data to int64.
+
+    Matches xahaud data_as_int64() from applyHook.cpp:
+    - len > 8 → TOO_BIG
+    - Reads as big-endian unsigned
+    - If bit 63 is set → TOO_BIG (doesn't fit in signed int64)
+    - Returns as int64
+    """
+    if len(data) > 8:
+        return hookapi.TOO_BIG
+    if len(data) == 0:
+        return 0
+    output = 0
+    for i, b in enumerate(data):
+        output += b << ((len(data) - 1 - i) * 8)
+    if output & (1 << 63):
+        return hookapi.TOO_BIG
+    return output
+
+
 def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
     """Read raw bytes from a slot into WASM memory.
 
-    Special mode: when write_ptr=0 and write_len=0, returns the slot data
-    interpreted as a big-endian int64 (used by hooks to read small values
-    without allocating a buffer).
+    When write_ptr=0, returns data_as_int64 (the WRITE_WASM_MEMORY_OR_RETURN_AS_INT64
+    pattern from applyHook.cpp). write_len must also be 0 in this mode.
     """
     data = _get_slot_data(rt, slot_no)
     if data is None:
         return hookapi.DOESNT_EXIST
-    # Return-as-int64 mode
-    if write_ptr == 0 and write_len == 0:
-        padded = data[:8].rjust(8, b"\x00")
-        return int.from_bytes(padded, "big", signed=True)
+    if write_ptr == 0:
+        if write_len != 0:
+            return hookapi.INVALID_ARGUMENT
+        return _data_as_int64(data)
     to_write = data[:write_len]
     rt._write_memory(write_ptr, to_write)
     return len(to_write)

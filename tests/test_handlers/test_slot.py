@@ -209,21 +209,41 @@ class TestSlot:
     def test_basic_read(self, rt):
         data = b"\xDE\xAD\xBE\xEF" * 4
         rt._slot_overrides["slot_data:1"] = data
-        result = slot(rt, 0, 32, 1)
+        result = slot(rt, 100, 32, 1)
         assert result == len(data)
-        assert rt._read_memory(0, len(data)) == data
+        assert rt._read_memory(100, len(data)) == data
 
     def test_truncates_to_write_len(self, rt):
         data = b"\xAB" * 32
         rt._slot_overrides["slot_data:1"] = data
-        result = slot(rt, 0, 8, 1)
+        result = slot(rt, 100, 8, 1)
         assert result == 8
-        assert rt._read_memory(0, 8) == data[:8]
+        assert rt._read_memory(100, 8) == data[:8]
 
     def test_empty_slot_returns_zero(self, rt):
-        """Explicitly empty slot returns 0 bytes written (not DOESNT_EXIST)."""
+        """Explicitly empty slot returns 0 via data_as_int64."""
         rt._slot_overrides["slot_data:2"] = b""
-        assert slot(rt, 0, 32, 2) == 0
+        assert slot(rt, 0, 0, 2) == 0
+
+    def test_return_as_int64(self, rt):
+        """write_ptr=0, write_len=0 → returns data as big-endian int64."""
+        rt._slot_overrides["slot_data:1"] = b"\x00\x00\x00\x00\x00\x00\x00\x64"  # 100
+        assert slot(rt, 0, 0, 1) == 100
+
+    def test_return_as_int64_short_data(self, rt):
+        """Less than 8 bytes still works."""
+        rt._slot_overrides["slot_data:1"] = b"\x01"  # 1
+        assert slot(rt, 0, 0, 1) == 1
+
+    def test_return_as_int64_nonzero_write_len_is_error(self, rt):
+        """write_ptr=0 but write_len!=0 → INVALID_ARGUMENT."""
+        rt._slot_overrides["slot_data:1"] = b"\x00" * 8
+        assert slot(rt, 0, 32, 1) == hookapi.INVALID_ARGUMENT
+
+    def test_return_as_int64_too_big(self, rt):
+        """Bit 63 set → TOO_BIG."""
+        rt._slot_overrides["slot_data:1"] = b"\x80" + b"\x00" * 7  # bit 63 set
+        assert slot(rt, 0, 0, 1) == hookapi.TOO_BIG
 
     def test_write_at_offset(self, rt):
         data = b"\x01\x02\x03\x04"
@@ -477,9 +497,9 @@ class TestSlotRealParsing:
         # Read the element bytes
         size = slot_size(rt, 3)
         assert size > 0
-        result = slot(rt, 0, 256, 3)
+        result = slot(rt, 100, 256, 3)
         assert result == size
-        element_data = rt._read_memory(0, result)
+        element_data = rt._read_memory(100, result)
         assert len(element_data) == size
 
     def test_override_beats_real_data(self, rt):
