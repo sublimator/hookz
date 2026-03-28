@@ -192,6 +192,17 @@ def _write_xah_to_memory(rt, write_ptr, drops):
     return 8
 
 
+def _extract_uri(txn_bytes: bytes) -> bytes:
+    """Extract the URI from an emitted Remit transaction.
+
+    The txn template has: offset 234: E0 5C 75 <len> <uri_data> E1
+    So the URI starts at offset 237: first byte is VL length, then data.
+    """
+    uri_offset = 237
+    uri_len = txn_bytes[uri_offset]
+    return txn_bytes[uri_offset + 1 : uri_offset + 1 + uri_len]
+
+
 def _write_iou_to_memory(rt, write_ptr):
     """Write 48-byte IOU amount and return 48."""
     buf = b"\xD5\x03\x8D\x7E\xA4\xC6\x80\x00" + b"\x00" * 20 + b"\x01" * 20
@@ -337,3 +348,119 @@ class TestMultiIouRemitPayment:
         result = rt.run(multi_iou_remit_hook)
         assert result.rejected
         assert b"Non-XAH" in result.return_msg
+
+
+# ---------------------------------------------------------------------------
+# Remit URI — Sequential URI token minting
+# ---------------------------------------------------------------------------
+
+def _setup_uri_state(rt, prefix=b"ipfs://Qm123/", count=10, mint=2):
+    """Pre-seed state for the URI mint hook."""
+    rt.state_db[b"PREFIX"] = prefix
+    rt.state_db[b"COUNT"] = struct.pack(">Q", count)
+    rt.state_db[b"TOTAL"] = struct.pack(">Q", count)
+    rt.state_db[b"MINT"] = struct.pack(">Q", mint)
+
+
+class TestMultiUriRemitInvoke:
+    """invoke_multi_uri_remit.c — owner configures via Invoke."""
+
+    def test_set_prefix(self, multi_uri_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"PREFIX"] = b"ipfs://QmHash/"
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert rt.state_db[b"PREFIX"] == b"ipfs://QmHash/"
+
+    def test_set_count(self, multi_uri_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"COUNT"] = struct.pack(">Q", 100)
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert struct.unpack(">Q", rt.state_db[b"COUNT"])[0] == 100
+        # TOTAL should also be set
+        assert struct.unpack(">Q", rt.state_db[b"TOTAL"])[0] == 100
+
+    def test_set_mint_capped_at_5(self, multi_uri_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.otxn_account = rt.hook_account
+        rt.params[b"MINT"] = struct.pack(">Q", 10)  # over 5
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert struct.unpack(">Q", rt.state_db[b"MINT"])[0] == 5
+
+    def test_non_owner_rejected(self, multi_uri_remit_hook, rt):
+        rt.otxn_type = hookapi.ttINVOKE
+        rt.params[b"PREFIX"] = b"ipfs://test/"
+        result = rt.run(multi_uri_remit_hook)
+        assert result.rejected
+        assert b"Only hook owner" in result.return_msg
+
+
+class TestMultiUriRemitPayment:
+    """invoke_multi_uri_remit.c — payments mint sequential URITokens."""
+
+    def test_missing_prefix_rejected(self, multi_uri_remit_hook, rt):
+        result = rt.run(multi_uri_remit_hook)
+        assert result.rejected
+        assert b"No URI prefix" in result.return_msg
+
+    def test_no_remaining_rejected(self, multi_uri_remit_hook, rt):
+        _setup_uri_state(rt, count=0)
+        result = rt.run(multi_uri_remit_hook)
+        assert result.rejected
+        assert b"No NFTs remaining" in result.return_msg
+
+    def test_mints_sequential_tokens(self, multi_uri_remit_hook, rt):
+        """Mint 2 tokens with prefix 'ipfs://Qm/' → emits 2 Remits with sequential URIs."""
+        _setup_uri_state(rt, prefix=b"ipfs://Qm/", count=10, mint=2)
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 2
+
+        for txn in rt.emitted_txns:
+            # ttREMIT
+            assert txn[0:3] == b"\x12\x00\x5F"
+            # Source = hook account (offset 76)
+            assert txn[76:96] == rt.hook_account
+            # Destination = sender (offset 98)
+            assert txn[98:118] == SENDER_ACCID
+
+        # URIs should contain sequential numbers — find them in the emitted bytes
+        # The URI is after offset 237 in the txn template, format: len + data + 0xE1
+        uri1 = _extract_uri(rt.emitted_txns[0])
+        uri2 = _extract_uri(rt.emitted_txns[1])
+        assert uri1.endswith(b"000001.json")
+        assert uri2.endswith(b"000002.json")
+        assert uri1.startswith(b"ipfs://Qm/")
+        assert uri2.startswith(b"ipfs://Qm/")
+
+        # Count decremented by 2
+        assert struct.unpack(">Q", rt.state_db[b"COUNT"])[0] == 8
+
+    def test_mint_1_token(self, multi_uri_remit_hook, rt):
+        _setup_uri_state(rt, prefix=b"test/", count=5, mint=1)
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 1
+        uri = _extract_uri(rt.emitted_txns[0])
+        assert uri == b"test/000001.json"
+        assert struct.unpack(">Q", rt.state_db[b"COUNT"])[0] == 4
+
+    def test_mint_limited_by_remaining(self, multi_uri_remit_hook, rt):
+        """Mint=3 but only 1 remaining → only 1 emitted."""
+        _setup_uri_state(rt, prefix=b"x/", count=1, mint=3)
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
+        assert len(rt.emitted_txns) == 1
+        uri = _extract_uri(rt.emitted_txns[0])
+        assert uri == b"x/000001.json"
+        assert struct.unpack(">Q", rt.state_db[b"COUNT"])[0] == 0
+
+    def test_other_tt_accepted(self, multi_uri_remit_hook, rt):
+        """Non-payment, non-invoke → accepted."""
+        rt.otxn_type = 20  # random type
+        result = rt.run(multi_uri_remit_hook)
+        assert result.accepted
