@@ -225,10 +225,20 @@ def slot_size(rt: HookRuntime, slot_no: int) -> int:
 # ---------------------------------------------------------------------------
 
 def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int:
-    """Write data from WASM memory into a slot."""
+    """Write data from WASM memory into a slot.
+
+    If the data is a 34-byte keylet and rt.ledger contains that keylet,
+    the slot is populated with the ledger object. Otherwise the raw bytes
+    are stored directly.
+    """
     if read_len > 0:
         data = rt._read_memory(read_ptr, read_len)
-        _set_slot_data(rt, slot_no, data)
+        # Check if this is a keylet lookup
+        ledger = getattr(rt, "ledger", None)
+        if ledger and read_len == 34 and data in ledger:
+            _set_slot_data(rt, slot_no, ledger[data])
+        else:
+            _set_slot_data(rt, slot_no, data)
     return slot_no
 
 

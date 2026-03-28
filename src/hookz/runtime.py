@@ -96,6 +96,7 @@ class HookRuntime:
         self._shared_coverage: CoverageTracker | None = None
         self.handlers: dict[str, Callable] = {}
         self._slot_overrides: dict[str, Any] = {}
+        self.ledger: dict[bytes, bytes] = {}  # keylet → serialized STObject
         self._memory: wasmtime.Memory | None = None
         self._store: wasmtime.Store | None = None
 

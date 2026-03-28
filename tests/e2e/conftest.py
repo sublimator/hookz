@@ -1,0 +1,2 @@
+from hookz.testing import register_hooks_from_config
+register_hooks_from_config()

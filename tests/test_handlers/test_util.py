@@ -74,14 +74,47 @@ class TestUtilSha512h:
 # ---------------------------------------------------------------------------
 
 class TestUtilKeylet:
-    """util_keylet: construct a keylet (stub)."""
+    """util_keylet: compute real keylets."""
 
-    def test_returns_34(self, rt):
-        assert util_keylet(rt, 0, 34) == 34
-
-    def test_writes_34_zero_bytes(self, rt):
-        util_keylet(rt, 0, 34)
+    def test_unknown_type_returns_34_zeros(self, rt):
+        """Unknown keylet type falls back to stub (34 zero bytes)."""
+        result = util_keylet(rt, 0, 34, 999, 0, 0, 0, 0, 0, 0)
+        assert result == 34
         assert rt._read_memory(0, 34) == b"\x00" * 34
+
+    def test_too_small(self, rt):
+        assert util_keylet(rt, 0, 33, 999, 0, 0, 0, 0, 0, 0) == hookapi.TOO_SMALL
+
+    def test_account_keylet(self, rt):
+        """KEYLET_ACCOUNT computes a real 34-byte keylet."""
+        rt._write_memory(100, ACCID)
+        result = util_keylet(rt, 0, 34, hookapi.KEYLET_ACCOUNT, 100, 20, 0, 0, 0, 0)
+        assert result == 34
+        kl = rt._read_memory(0, 34)
+        assert len(kl) == 34
+        assert kl[:2] == b"\x00\x61"  # ltACCOUNT_ROOT prefix
+
+        # Verify it matches our Python keylet function
+        from hookz.ledger import account_root_keylet
+        assert kl == account_root_keylet(ACCID)
+
+    def test_account_keylet_wrong_len(self, rt):
+        assert util_keylet(rt, 0, 34, hookapi.KEYLET_ACCOUNT, 100, 19, 0, 0, 0, 0) == hookapi.INVALID_ARGUMENT
+
+    def test_line_keylet(self, rt):
+        """KEYLET_LINE computes a real 34-byte trust line keylet."""
+        acc2 = to_accid("rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe")
+        cur = b"\x00" * 12 + b"USD" + b"\x00" * 5
+        rt._write_memory(100, ACCID)
+        rt._write_memory(200, acc2)
+        rt._write_memory(300, cur)
+        result = util_keylet(rt, 0, 34, hookapi.KEYLET_LINE, 100, 20, 200, 20, 300, 20)
+        assert result == 34
+        kl = rt._read_memory(0, 34)
+        assert kl[:2] == b"\x00\x72"  # ltRIPPLE_STATE prefix
+
+        from hookz.ledger import trust_line_keylet
+        assert kl == trust_line_keylet(ACCID, acc2, cur)
 
 
 # ---------------------------------------------------------------------------

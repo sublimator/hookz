@@ -21,10 +21,46 @@ def util_sha512h(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int,
     return 32
 
 
-def util_keylet(rt: HookRuntime, *args) -> int:
-    write_ptr, write_len = args[0], args[1]
-    rt._write_memory(write_ptr, b"\x00" * min(write_len, 34))
-    return 34
+def util_keylet(
+    rt: HookRuntime,
+    write_ptr: int, write_len: int,
+    keylet_type: int,
+    a: int, b: int, c: int, d: int, e: int, f: int,
+) -> int:
+    """Compute a keylet and write 34 bytes to WASM memory.
+
+    Supports KEYLET_ACCOUNT (type 3) and KEYLET_LINE (type 9).
+    Other types write 34 zero bytes (stub).
+    """
+    if write_len < 34:
+        return hookapi.TOO_SMALL
+
+    from hookz.ledger import account_root_keylet, trust_line_keylet
+
+    if keylet_type == hookapi.KEYLET_ACCOUNT:
+        # a=read_ptr, b=read_len (must be 20)
+        if b != 20:
+            return hookapi.INVALID_ARGUMENT
+        accid = rt._read_memory(a, 20)
+        kl = account_root_keylet(accid)
+        rt._write_memory(write_ptr, kl)
+        return 34
+
+    elif keylet_type == hookapi.KEYLET_LINE:
+        # a=acc1_ptr, b=acc1_len, c=acc2_ptr, d=acc2_len, e=cur_ptr, f=cur_len
+        if b != 20 or d != 20:
+            return hookapi.INVALID_ARGUMENT
+        acc1 = rt._read_memory(a, 20)
+        acc2 = rt._read_memory(c, 20)
+        cur = rt._read_memory(e, f)
+        kl = trust_line_keylet(acc1, acc2, cur)
+        rt._write_memory(write_ptr, kl)
+        return 34
+
+    else:
+        # Stub for other keylet types
+        rt._write_memory(write_ptr, b"\x00" * 34)
+        return 34
 
 
 def hook_account(rt: HookRuntime, write_ptr: int, write_len: int) -> int:

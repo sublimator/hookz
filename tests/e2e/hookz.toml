@@ -1,0 +1,6 @@
+[paths]
+xahaud = "../../../xahaud-worktrees/xahaud-wasm-coverage"
+wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
+
+[hooks]
+balance_gate = "hooks/balance_gate.c"
