@@ -22,7 +22,7 @@ Multi-ledger scenarios (governance votes, settlement, cleanup) compound those pe
 - `/impl-handler` skill teaches agents to port handlers and write tests
 - Designed for fast iteration — write a test, see coverage, fix the hook, repeat
 
-For integration testing against real xahaud, see [xahaud-scripts](https://github.com/sublimator/xahaud-scripts).
+For integration testing against real xahaud, see [Integration testing with xahaud](#integration-testing-with-xahaud) below.
 
 
 
