@@ -914,7 +914,9 @@ def wce(source, show_source):
 @click.option("--hook-coverage/--no-hook-coverage", default=False,
               help="Compile with coverage instrumentation.")
 @click.option("--no-cache", is_flag=True, help="Bypass compilation cache.")
-def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_raw, hook_coverage, no_cache):
+@click.option("--compiler", type=click.Choice(["hookz", "wasmcc"], case_sensitive=False),
+              default=None, help="Compiler backend (default: wasmcc for SetHook_test, hookz otherwise).")
+def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_raw, hook_coverage, no_cache, compiler):
     """Generate _hooks.h from a C++ test file containing WASM blocks.
 
     Extracts inline hooks (R"[test.hook](...)[test.hook]") and file
@@ -952,6 +954,14 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_
         hooks_c_dirs[domain] = resolved
 
     try:
+        # Default compiler: wasmcc for SetHook_test (exact compat), hookz otherwise
+        if compiler is None:
+            compiler = "wasmcc" if input_file.stem == "SetHook_test" else "hookz"
+
+        if compiler == "wasmcc" and hook_coverage:
+            # wasmcc doesn't support coverage — force hookz
+            compiler = "hookz"
+
         builder = TestHookBuilder(
             input_file=input_file,
             jobs=jobs,
@@ -961,6 +971,7 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_
             no_cache=no_cache,
             output_file=Path(output) if output else None,
             symbol_name=symbol,
+            compiler=compiler,
         )
         builder.build()
     except RuntimeError as e:

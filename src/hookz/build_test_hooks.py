@@ -164,24 +164,25 @@ class CompilationCache:
         except Exception:
             return "unknown"
 
-    def _cache_key(self, source: str, coverage: bool) -> str:
+    def _cache_key(self, source: str, coverage: bool, compiler: str = "hookz") -> str:
         hasher = hashlib.sha256()
         hasher.update(source.encode("utf-8"))
+        hasher.update(compiler.encode("utf-8"))
         hasher.update(self._version.encode("utf-8"))
         if coverage:
             hasher.update(b"coverage")
         return hasher.hexdigest()
 
-    def get(self, source: str, coverage: bool = False) -> bytes | None:
-        key = self._cache_key(source, coverage)
+    def get(self, source: str, coverage: bool = False, compiler: str = "hookz") -> bytes | None:
+        key = self._cache_key(source, coverage, compiler)
         path = self.cache_dir / f"{key}.wasm"
         if path.exists():
             logger.debug(f"Cache hit: {key[:16]}...")
             return path.read_bytes()
         return None
 
-    def put(self, source: str, bytecode: bytes, coverage: bool = False) -> None:
-        key = self._cache_key(source, coverage)
+    def put(self, source: str, bytecode: bytes, coverage: bool = False, compiler: str = "hookz") -> None:
+        key = self._cache_key(source, coverage, compiler)
         path = self.cache_dir / f"{key}.wasm"
         path.write_bytes(bytecode)
         logger.debug(f"Cached: {key[:16]}... ({len(bytecode)} bytes)")
@@ -191,19 +192,11 @@ class CompilationCache:
 # Compilation — uses hookz pipeline directly
 # ---------------------------------------------------------------------------
 
-def _compile_hook(source: str, label: str, coverage: bool = False,
-                  guard_check: bool = True) -> bytes:
-    """Compile a hook source string to WASM bytes using hookz internals.
-
-    guard_check=False skips guard validation — useful for test hooks that
-    are intentionally malformed (no _g, memory.copy tests, etc.). xahaud
-    does its own guard check at SetHook time anyway.
-    """
+def _compile_hook_hookz(source: str, label: str, coverage: bool = False) -> bytes:
+    """Compile via hookz pipeline (wasi-sdk + hookz cleaner). Used for coverage builds."""
     from hookz.compiler import compile_hook, compile_hook_two_stage, COVERAGE_OPT_LEVEL
     from hookz.config import load_config
     from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards
-    from hookz.wasm.whitelist import get_whitelist
 
     config = load_config()
 
@@ -214,17 +207,14 @@ def _compile_hook(source: str, label: str, coverage: bool = False,
     try:
         if coverage:
             from hookz.coverage.rewriter import instrument_wasm
+            from hookz.wasm.whitelist import get_whitelist
 
             wasm = compile_hook_two_stage(source_path, config, opt_level=COVERAGE_OPT_LEVEL)
             wasm, _locs = instrument_wasm(wasm)
             try:
                 cleaned = clean_hook(wasm, coverage_call_idx=0)
             except CleanError:
-                # Hook might not have _g (intentional test case)
                 cleaned = wasm
-            if guard_check:
-                coverage_whitelist = get_whitelist() | {"__on_source_line"}
-                validate_guards(cleaned, import_whitelist=coverage_whitelist)
             return cleaned
         else:
             wasm = compile_hook(source_path, config=config, debug=False, optimize=True)
@@ -232,11 +222,24 @@ def _compile_hook(source: str, label: str, coverage: bool = False,
                 cleaned = clean_hook(wasm)
             except CleanError:
                 cleaned = wasm
-            if guard_check:
-                validate_guards(cleaned)
             return cleaned
     finally:
         source_path.unlink(missing_ok=True)
+
+
+def _compile_hook_wasmcc(source: str, label: str) -> bytes:
+    """Compile via wasmcc + hook-cleaner (legacy compat, matches xahaud's build_test_hooks.sh)."""
+    wasmcc_result = subprocess.run(
+        ["wasmcc", "-x", "c", "/dev/stdin", "-o", "/dev/stdout", "-O2", "-Wl,--allow-undefined"],
+        input=source.encode("utf-8"),
+        capture_output=True, check=True,
+    )
+    cleaner_result = subprocess.run(
+        ["hook-cleaner", "-", "-"],
+        input=wasmcc_result.stdout,
+        capture_output=True, check=True,
+    )
+    return cleaner_result.stdout
 
 
 def _compile_wat(source: str) -> bytes:
@@ -262,13 +265,35 @@ class OutputWriter:
     """Write compiled blocks to C++ header and Python manifest."""
 
     def __init__(self, output_file: Path, symbol_name: str,
-                 cache_dir: Path | None = None) -> None:
+                 cache_dir: Path | None = None,
+                 compat: bool = False) -> None:
         self.output_file = output_file
         self.symbol_name = symbol_name
-        self.include_guard = f"{symbol_name.upper()}_INCLUDED"
+        self.compat = compat
         self._cache_dir = cache_dir or CompilationCache.DEFAULT_CACHE_DIR
 
+        if compat:
+            # Match build_test_hooks.sh: guard from output filename
+            stem = output_file.stem.upper()  # SETHOOK_WASM
+            self.include_guard = f"{stem}_INCLUDED"
+        else:
+            self.include_guard = f"{symbol_name.upper()}_INCLUDED"
+
     def _header(self) -> str:
+        if self.compat:
+            # Exact match for build_test_hooks.sh output
+            return f"""
+//This file is generated by build_test_hooks.h
+#ifndef {self.include_guard}
+#define {self.include_guard}
+#include <map>
+#include <stdint.h>
+#include <string>
+#include <vector>
+namespace ripple {{
+namespace test {{
+std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
+"""
         return f"""
 //This file is generated by hookz build-test-hooks
 #ifndef {self.include_guard}
@@ -381,10 +406,12 @@ class TestHookBuilder:
         no_cache: bool = False,
         output_file: Path | None = None,
         symbol_name: str | None = None,
+        compiler: str = "hookz",
     ) -> None:
         self.jobs = jobs or os.cpu_count() or 1
         self.force_write = force_write
         self.coverage = coverage
+        self.compiler = compiler
         self.input_file = input_file
 
         stem = input_file.stem
@@ -409,6 +436,7 @@ class TestHookBuilder:
         self.writer = OutputWriter(
             self.output_file, self.symbol_name,
             cache_dir=self.cache.cache_dir if self.cache else None,
+            compat=(compiler == "wasmcc"),
         )
 
     def _compile_block(self, counter: int, block: HookBlock) -> tuple[int, HookBlock, bytes]:
@@ -417,26 +445,28 @@ class TestHookBuilder:
 
         # Check cache
         if self.cache is not None:
-            cached = self.cache.get(block.source, coverage=self.coverage)
+            cached = self.cache.get(block.source, coverage=self.coverage, compiler=self.compiler)
             if cached is not None:
                 logger.info(f"{label}: cached")
                 return (counter, block, cached)
 
         # Compile
         cov_tag = " (coverage)" if self.coverage else ""
-        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}{cov_tag}")
+        compiler_tag = f" [{self.compiler}]" if self.compiler != "hookz" else ""
+        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}{compiler_tag}{cov_tag}")
 
         if is_wat:
             if self.coverage:
                 logger.warning(f"{label}: coverage not supported for WAT")
             bytecode = _compile_wat(block.source)
+        elif self.compiler == "wasmcc":
+            bytecode = _compile_hook_wasmcc(block.source, label)
         else:
-            bytecode = _compile_hook(block.source, label, coverage=self.coverage,
-                                     guard_check=False)
+            bytecode = _compile_hook_hookz(block.source, label, coverage=self.coverage)
 
         # Store in cache
         if self.cache is not None:
-            self.cache.put(block.source, bytecode, coverage=self.coverage)
+            self.cache.put(block.source, bytecode, coverage=self.coverage, compiler=self.compiler)
 
         return (counter, block, bytecode)
 
