@@ -182,18 +182,65 @@ guard_checker hook.wasm
 Our hookz equivalent:
 
 ```bash
-# 1. Compile (already exists)
-hookz debug-compile hook.c
-
-# 2+3. Clean + canonicalize (our Python cleaner)
-hookz clean hook.wasm
-
-# 4. Validate (our Python guard checker)
-hookz guard-check hook.wasm
-
-# Or all-in-one:
+# Production build (compile + optimize + clean + guard-check)
 hookz build hook.c
+
+# Individual steps
+hookz clean hook.wasm              # strip sections, rewrite guards
+hookz guard-check hook.wasm        # validate guards, show WCE
+
+# WCE budget analysis with source line mapping
+hookz wce hook.c                   # per-loop breakdown
+hookz wce --source hook.c          # annotated source with per-line cost
 ```
+
+### hookz build pipeline
+
+```
+source.c
+  → compile (wasi-sdk clang, -Oz)
+  → optimize (wasm-opt --flatten ... -Oz, if available)
+  → clean (strip sections, rewrite guards, rebuild exports)
+  → guard-check (validate patterns, compute WCE)
+  → output.wasm (production-ready)
+```
+
+### hookz wce pipeline
+
+```
+source.c
+  → compile (wasi-sdk clang, -g -O0, debug build with DWARF)
+  → clean with KeepDebugVisitor (rewrite guards, keep .debug_line)
+  → analyze_wce (best-effort, never fails)
+  → cross-reference guard_id → source line
+  → display per-loop WCE breakdown + optional annotated source
+```
+
+## Visitor pattern
+
+The cleaner uses a visitor pattern for pluggable control over what gets
+kept or stripped. Subclass `Visitor` to customize:
+
+```python
+from hookz.wasm.visitor import Visitor, Action
+
+class MyVisitor(Visitor):
+    def on_custom_section(self, name, size):
+        if name == ".debug_line":
+            return Action.KEEP
+        return Action.STRIP
+
+    def on_export(self, name, kind, index):
+        return Action.KEEP  # keep all exports
+
+cleaned = clean_hook(wasm, visitor=MyVisitor())
+```
+
+Built-in visitors:
+- `Visitor` — default hook cleaner (strip everything non-essential)
+- `KeepDebugVisitor` — preserves `.debug_line` for DWARF mapping
+- `KeepAllVisitor` — keeps everything (analysis only)
+- `WceVisitor` — collects loop/instruction data during walking
 
 ## Package structure
 
@@ -204,12 +251,19 @@ src/hookz/wasm/
     types.py          — Module, FuncType, Import, Export, CodeBody, etc.
     decode.py         — WASM binary → Module (wraps wasm-tob)
     encode.py         — Module → WASM binary (LEB128 writer)
-    guard.py          — guard checker (validate _g patterns, compute WCE)
+    guard.py          — guard checker + WCE analysis (three layers)
     clean.py          — cleaner (strip, rewrite guards, rebuild sections)
-    verify.py         — post-clean verification
+    optimize.py       — wasm-opt CLI wrapper (strip, optimize, DCE)
+    visitor.py        — visitor pattern for pluggable clean decisions
 ```
+
+### guard.py layers
+
+1. `_walk_code()` — builds BlockInfo tree from bytecode, best-effort, never raises
+2. `validate_guards()` — strict validation (canonical patterns, call restrictions)
+3. `analyze_wce()` — best-effort WCE analysis, works on dirty/debug builds
 
 ## Dependencies
 
 - **wasm-tob** — pure Python WASM decoder. Used in `decode.py` for section parsing and instruction decoding. We wrap its types in our own (`types.py`) so the rest of the package doesn't depend on it directly.
-- **wasm-opt** (optional) — binaryen CLI tool for additional size optimization. Installed via `brew install binaryen`. Not required for correctness, only for minimizing on-chain fees.
+- **wasm-opt** (optional) — binaryen CLI tool for size optimization. Installed via `brew install binaryen`. Used by `hookz build` if available; skipped with a warning if not. Not required for correctness.
