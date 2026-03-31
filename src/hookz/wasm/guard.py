@@ -485,7 +485,15 @@ def validate_guards(
     import_whitelist: set[str] | None = None,
     rules_version: int = 0,
 ) -> GuardResult:
-    """Strict guard validation. Raises GuardError on any violation."""
+    """Strict guard validation. Raises GuardError on any violation.
+
+    If import_whitelist is None, loads from hook_api.macro via hookz.toml.
+    Pass an explicit set to override (e.g. for coverage builds that need
+    __on_source_line in the whitelist).
+    """
+    if import_whitelist is None:
+        from .whitelist import get_whitelist
+        import_whitelist = get_whitelist()
     mod = decode_module(wasm)
     return validate_guards_module(mod, wasm, import_whitelist, rules_version)
 
