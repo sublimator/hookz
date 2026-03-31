@@ -1,0 +1,55 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: All tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+          fetch-depth: 1
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.14
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binaryen llvm
+
+      - name: Install wasi-sdk
+        run: |
+          curl -sL https://github.com/nicholasdudfield/wasi-sdk/releases/download/wasi-sdk-32/wasi-sdk-32.0-x86_64-linux.tar.gz \
+            | tar xz -C /opt
+          echo "HOOKZ_WASI_SDK=/opt/wasi-sdk-32.0-x86_64-linux" >> $GITHUB_ENV
+
+      - name: Clone xahaud hook headers (sparse)
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            https://github.com/Xahau/xahaud.git /tmp/xahaud
+          cd /tmp/xahaud && git sparse-checkout set hook/
+          echo "HOOKZ_XAHAUD=/tmp/xahaud" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Run framework tests
+        run: uv run pytest tests/ -v --tb=short
+
+      - name: Run e2e tests
+        working-directory: tests/e2e
+        run: uv run hookz test -v --tb=short
+
+      - name: Run tipbot tests
+        working-directory: examples/tipbot
+        run: uv run hookz test -v --tb=short
