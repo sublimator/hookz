@@ -88,6 +88,32 @@ class SourceLoc:
     col: int
 
 
+def _find_llvm_dwarfdump() -> list[str]:
+    """Find llvm-dwarfdump, trying platform-appropriate methods."""
+    import shutil
+    import platform
+
+    # Direct llvm-dwarfdump (Linux, or macOS with LLVM in PATH)
+    if shutil.which("llvm-dwarfdump"):
+        return ["llvm-dwarfdump"]
+
+    # macOS: use xcrun to find it
+    if platform.system() == "Darwin" and shutil.which("xcrun"):
+        return ["xcrun", "llvm-dwarfdump"]
+
+    # Try versioned names (common on Linux: llvm-dwarfdump-17, etc.)
+    for ver in range(20, 14, -1):
+        name = f"llvm-dwarfdump-{ver}"
+        if shutil.which(name):
+            return [name]
+
+    raise RuntimeError(
+        "llvm-dwarfdump not found. Install LLVM tools:\n"
+        "  macOS: xcode-select --install\n"
+        "  Linux: apt install llvm  (or llvm-17, etc.)"
+    )
+
+
 def parse_dwarf_locations(wasm_path_or_bytes: str | bytes) -> list[SourceLoc]:
     """Parse DWARF .debug_line via llvm-dwarfdump.
 
@@ -103,8 +129,9 @@ def parse_dwarf_locations(wasm_path_or_bytes: str | bytes) -> list[SourceLoc]:
             Path(tmp.name).unlink(missing_ok=True)
 
     wasm_path = wasm_path_or_bytes
+    cmd = _find_llvm_dwarfdump()
     r = subprocess.run(
-        ["xcrun", "llvm-dwarfdump", "--debug-line", wasm_path],
+        [*cmd, "--debug-line", wasm_path],
         capture_output=True, text=True,
     )
     if r.returncode != 0:
