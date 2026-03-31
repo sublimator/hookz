@@ -33,8 +33,8 @@ For integration testing against real xahaud, see [xahaud-scripts](https://github
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/)
-- [wasi-sdk](https://github.com/nicholasdudfield/xahaud-scripts) (C to WASM compiler — `mise install wasi-sdk`)
-- A checkout of [xahaud](https://github.com/nicholasdudfield/xahaud-scripts) (for hook headers)
+- [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) (C to WASM compiler — `mise install wasi-sdk`)
+- A checkout of [xahaud](https://github.com/Xahau/xahaud) (for hook headers)
 - A checkout of hookz
 
 ### Setup
