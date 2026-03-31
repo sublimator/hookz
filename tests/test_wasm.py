@@ -1,38 +1,42 @@
 """Tests for hookz.wasm — decode, encode, roundtrip."""
 
 import subprocess
+import tempfile
+from pathlib import Path
 
 import pytest
 
 from hookz.wasm.types import Module, FuncType, SectionId, ExportKind, ValType
 from hookz.wasm.decode import decode_module, decode_code_bodies_raw, DecodeError
 from hookz.wasm.encode import encode_module
+from hookz.wasm.guard import validate_guards, GuardError, GuardResult
+from hookz.wasm.optimize import strip_debug
+
+
+def _compile_hook(source: str) -> bytes:
+    """Compile a hook C file and return raw WASM bytes."""
+    subprocess.run(
+        ["uv", "run", "hookz", "debug-compile", source],
+        cwd="tests/e2e", capture_output=True, check=True,
+    )
+    wasm_path = Path("tests/e2e") / Path(source).with_suffix(".wasm")
+    return wasm_path.read_bytes()
+
+
+def _compile_and_strip(source: str) -> bytes:
+    """Compile a hook and strip debug/custom sections."""
+    raw = _compile_hook(source)
+    return strip_debug(raw)
 
 
 @pytest.fixture(scope="module")
 def clean_balance_gate_wasm() -> bytes:
-    """Compile and strip balance_gate.c → clean WASM bytes."""
-    subprocess.run(
-        ["uv", "run", "hookz", "debug-compile", "hooks/misc/balance_gate.c"],
-        cwd="tests/e2e", capture_output=True, check=True,
-    )
-    subprocess.run(
-        ["wasm-opt", "tests/e2e/hooks/misc/balance_gate.wasm",
-         "--strip-debug", "--strip-producers", "--strip-target-features",
-         "-o", "/tmp/test_clean_hook.wasm"],
-        capture_output=True, check=True,
-    )
-    return open("/tmp/test_clean_hook.wasm", "rb").read()
+    return _compile_and_strip("hooks/misc/balance_gate.c")
 
 
 @pytest.fixture(scope="module")
 def debug_balance_gate_wasm() -> bytes:
-    """Compile balance_gate.c with debug info (has custom sections)."""
-    subprocess.run(
-        ["uv", "run", "hookz", "debug-compile", "hooks/misc/balance_gate.c"],
-        cwd="tests/e2e", capture_output=True, check=True,
-    )
-    return open("tests/e2e/hooks/misc/balance_gate.wasm", "rb").read()
+    return _compile_hook("hooks/misc/balance_gate.c")
 
 
 # ---------------------------------------------------------------------------
@@ -163,3 +167,70 @@ class TestEncodeModule:
         mod = Module()
         out = encode_module(mod)
         assert out == b"\x00\x61\x73\x6D\x01\x00\x00\x00"
+
+
+# ---------------------------------------------------------------------------
+# Guard checker
+# ---------------------------------------------------------------------------
+
+class TestGuardChecker:
+    def test_passes_clean_hook(self, clean_balance_gate_wasm):
+        result = validate_guards(clean_balance_gate_wasm)
+        assert result.hook_wce > 0
+        assert result.hook_wce < 65535
+        assert result.guard_func_idx >= 0
+        assert result.hook_func_idx >= 0
+        assert result.import_count > 0
+
+    def test_returns_cbak_wce(self, clean_balance_gate_wasm):
+        result = validate_guards(clean_balance_gate_wasm)
+        # balance_gate has a cbak
+        assert result.cbak_func_idx is not None
+        assert result.cbak_wce >= 0
+
+    def test_rejects_debug_build_custom_sections(self, debug_balance_gate_wasm):
+        with pytest.raises(GuardError, match="custom section"):
+            validate_guards(debug_balance_gate_wasm)
+
+    def test_rejects_too_short(self):
+        with pytest.raises(Exception):
+            validate_guards(b"\x00\x61\x73\x6D\x01\x00\x00\x00")
+
+    def test_rejects_bad_magic(self):
+        with pytest.raises(Exception):
+            validate_guards(b"\xFF" * 100)
+
+    def test_import_whitelist_passes(self, clean_balance_gate_wasm):
+        """Whitelist that includes all imports → passes."""
+        mod = decode_module(clean_balance_gate_wasm)
+        whitelist = {i.name for i in mod.imports}
+        result = validate_guards(clean_balance_gate_wasm, import_whitelist=whitelist)
+        assert result.hook_wce > 0
+
+    def test_import_whitelist_rejects(self, clean_balance_gate_wasm):
+        """Whitelist missing an import → rejected."""
+        with pytest.raises(GuardError, match="not in whitelist"):
+            validate_guards(clean_balance_gate_wasm, import_whitelist={"_g"})
+
+
+@pytest.fixture(scope="module")
+def clean_govern_wasm() -> bytes:
+    return _compile_and_strip("hooks/genesis/govern.c")
+
+
+class TestGuardCheckerMultipleHooks:
+    """Test guard checker on different hooks with varying complexity."""
+
+    def test_govern_hook(self, clean_govern_wasm):
+        """Governance hook — complex with many loops."""
+        result = validate_guards(clean_govern_wasm)
+        assert result.hook_wce > 0
+        assert result.hook_wce < 65535
+        # Governance hook has no cbak
+        assert result.cbak_func_idx is None
+        assert result.cbak_wce == 0
+
+    def test_balance_gate_wce_reasonable(self, clean_balance_gate_wasm):
+        """Balance gate is simple — WCE should be low."""
+        result = validate_guards(clean_balance_gate_wasm)
+        assert result.hook_wce < 5000
