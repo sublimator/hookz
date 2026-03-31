@@ -57,7 +57,7 @@ HOOKS_TEST_ONLY=1 \
 
 ## Requirements
 
-- xahaud [`external-env-tests`](https://github.com/Xahau/xahaud) branch
+- xahaud [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch
 - [xahaud-scripts](https://github.com/sublimator/xahaud-scripts) (`x-run-tests`)
 - hookz on PATH (`uv tool install --editable ~/projects/hookz`)
 - conan, ccache, cmake, ninja — see xahaud build docs

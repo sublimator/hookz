@@ -32,7 +32,7 @@ For integration testing against real xahaud, see [xahaud-scripts](https://github
 
 - [uv](https://docs.astral.sh/uv/)
 - [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) (C to WASM compiler — `mise install wasi-sdk`)
-- A checkout of [xahaud](https://github.com/Xahau/xahaud) (for hook headers)
+- A checkout of [xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests) (for hook headers)
 - A checkout of hookz
 
 ### Setup
@@ -234,7 +234,7 @@ The key idea: **your tests live outside the xahaud repo**. xahaud becomes a test
 
 You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Your tests and hooks stay in your repo — xahaud is just the engine.
 
-Requires the [`external-env-tests`](https://github.com/Xahau/xahaud) branch of xahaud. See [docs/external-env-tests.md](docs/external-env-tests.md) for setup, CMake vars, coverage wiring, and test file format.
+Requires the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch of xahaud. See [docs/external-env-tests.md](docs/external-env-tests.md) for setup, CMake vars, coverage wiring, and test file format.
 
 **Test runtime vars** (read by running test binary):
 
