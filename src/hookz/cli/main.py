@@ -400,35 +400,35 @@ def cmd_wce(args: list[str]) -> int:
     source = Path(args[0])
     config = load_config()
 
-    # Compile with debug info for DWARF
-    import tempfile
-    wasm_path = Path(tempfile.mktemp(suffix=".wasm"))
-    wasm = compile_hook(source, wasm_path, config, debug=True, optimize=False)
-    wasm_path.unlink(missing_ok=True)
-    console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
-
-    # Parse DWARF from the raw debug build (addresses are accurate)
-    try:
-        dwarf_locs = parse_dwarf_locations(wasm)
-    except Exception:
-        dwarf_locs = []
-
-    # Build address → source line map
-    addr_to_line: dict[int, tuple[str, int]] = {}
-    for loc in dwarf_locs:
-        addr_to_line[loc.address] = (f"L{loc.line}", loc.line)
-
-    # Clean (rewrite guards) then analyze WCE on cleaned code
+    # Two-stage compile: clang -c -g -Oz → wasm-ld (preserves DWARF on optimized code)
+    from hookz.compiler import compile_hook_two_stage
     from hookz.wasm.clean import clean_hook_detailed
     from hookz.wasm.visitor import KeepDebugVisitor
     from hookz.wasm.guard import analyze_wce
 
+    try:
+        wasm = compile_hook_two_stage(source, config, opt_level="-Oz")
+        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, optimized with DWARF)[/dim]")
+    except Exception as e:
+        # Fall back to single-stage debug build
+        console.print(f"[dim]Two-stage compile failed ({e}), falling back to debug build[/dim]")
+        wasm = compile_hook(source, config=config, debug=True, optimize=False)
+        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
+
+    # Clean with DWARF preserved (rewrite guards, keep .debug_line)
     try:
         clean_result = clean_hook_detailed(wasm, visitor=KeepDebugVisitor())
         cleaned = clean_result.wasm
     except Exception:
         cleaned = wasm
 
+    # Parse DWARF from cleaned binary (addresses match the cleaned code)
+    try:
+        dwarf_locs = parse_dwarf_locations(cleaned)
+    except Exception:
+        dwarf_locs = []
+
+    # Analyze WCE on cleaned binary
     result = analyze_wce(cleaned)
 
     max_wce = 65535
@@ -499,57 +499,38 @@ def cmd_wce(args: list[str]) -> int:
             console.print(f"    [dim]{err}[/dim]")
         console.print()
 
-    # Annotated source view
+    # Annotated source view — compile debug build too for comparison
     if show_source and source.suffix == ".c":
-        _print_annotated_source(console, source, dwarf_locs, result)
+        debug_dwarf_locs = []
+        try:
+            debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
+            from hookz.wasm.clean import clean_hook_detailed as _clean_d
+            debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
+            debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
+        except Exception:
+            pass
+        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
 
     return 0
 
 
-def _print_annotated_source(console, source: Path, dwarf_locs, result) -> None:
-    """Print source code annotated with per-line WCE cost.
-
-    Uses the block tree from the guard checker to determine loop multipliers
-    per DWARF address, then aggregates by source line.
-    """
+def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result) -> None:
+    """Print source code with dual-column WCE: debug vs optimized."""
     from rich.panel import Panel
-    from hookz.wasm.guard import BlockInfo
 
-    # Collect all loops from the block trees with their byte ranges
-    # Each loop covers start_byte → (next sibling or parent end)
-    loop_ranges: list[tuple[int, int, int]] = []  # (start, end, bound)
+    # Count instructions per line for both builds
+    def _count_per_line(locs) -> dict[int, int]:
+        counts: dict[int, int] = {}
+        for loc in locs:
+            counts[loc.line] = counts.get(loc.line, 0) + 1
+        return counts
 
-    def _collect_ranges(node: BlockInfo | None, end_hint: int = 0) -> None:
-        if node is None:
-            return
-        for i, child in enumerate(node.children):
-            # Estimate end of this child as start of next sibling, or end_hint
-            child_end = node.children[i + 1].start_byte if i + 1 < len(node.children) else end_hint
-            if child.is_loop and child.iteration_bound > 1:
-                loop_ranges.append((child.start_byte, child_end, child.iteration_bound))
-            _collect_ranges(child, child_end)
-
-    if result.hook_tree:
-        _collect_ranges(result.hook_tree, 0xFFFFFF)
-    if result.cbak_tree:
-        _collect_ranges(result.cbak_tree, 0xFFFFFF)
-
-    # For each DWARF location, compute the product of all containing loop bounds
-    def _multiplier_for_addr(addr: int) -> int:
-        mult = 1
-        for start, end, bound in loop_ranges:
-            if start <= addr < end:
-                mult *= bound
-        return mult
-
-    # Aggregate per source line: sum(instructions × multiplier)
-    line_wce: dict[int, int] = {}
-    for loc in dwarf_locs:
-        mult = _multiplier_for_addr(loc.address)
-        line_wce[loc.line] = line_wce.get(loc.line, 0) + mult
+    opt_counts = _count_per_line(opt_locs)
+    debug_counts = _count_per_line(debug_locs)
 
     # Collect loop lines for markers
     loop_lines: dict[int, int] = {}
+    from hookz.wasm.guard import BlockInfo
     def _collect_loop_lines(node: BlockInfo | None) -> None:
         if node is None:
             return
@@ -568,34 +549,46 @@ def _print_annotated_source(console, source: Path, dwarf_locs, result) -> None:
         console.print("[yellow]Could not read source file[/yellow]")
         return
 
-    max_wce_line = max(line_wce.values()) if line_wce else 1
+    all_lines = set(opt_counts.keys()) | set(debug_counts.keys())
 
     out = []
-    for i, line_text in enumerate(src_lines, 1):
-        wce = line_wce.get(i, 0)
+    out.append(f" [bold]debug │ prod │      │[/bold]")
+    out.append(f" [dim]──────┼──────┼──────┼{'─' * 60}[/dim]")
 
-        if wce == 0:
-            cost_col = "        "
+    for i, line_text in enumerate(src_lines, 1):
+        d = debug_counts.get(i, 0)
+        o = opt_counts.get(i, 0)
+
+        d_col = f"{d:>5}" if d else "     "
+        if o > 0:
+            o_col = f"{o:>5}"
+        elif d > 0:
+            o_col = " [red]ELIM[/red]"
         else:
-            cost_col = f"{wce:>6}  "
+            o_col = "     "
+
+        ln_col = f"{i:>4}"
+        sep = "│"
 
         if i in loop_lines:
-            out.append(f"  [bold red]{cost_col}[/bold red][bold]{i:>4}[/bold] [red]►[/red] {line_text}")
-        elif wce > max_wce_line * 0.3:
-            out.append(f"  [yellow]{cost_col}[/yellow]{i:>4}   {line_text}")
-        elif wce > 0:
-            out.append(f"  {cost_col}{i:>4}   {line_text}")
+            out.append(f" [bold red]{d_col}[/bold red] {sep} [bold red]{o_col}[/bold red] {sep} [bold]{ln_col}[/bold] {sep} [red]►[/red] {line_text}")
+        elif d > 0 and o == 0:
+            out.append(f" [dim]{d_col}[/dim] {sep} [red] ELIM[/red] {sep} [dim]{ln_col}[/dim] {sep} [dim strike]{line_text}[/dim strike]")
+        elif o > 0 and d > 0 and o < d:
+            out.append(f" {d_col} {sep} [green]{o_col}[/green] {sep} {ln_col} {sep} {line_text}")
+        elif o > 0:
+            out.append(f" {d_col} {sep} {o_col} {sep} {ln_col} {sep} {line_text}")
         else:
-            out.append(f"  {cost_col}[dim]{i:>4}   {line_text}[/dim]")
+            out.append(f" {d_col} {sep} {o_col} {sep} [dim]{ln_col}[/dim] {sep} [dim]{line_text}[/dim]")
 
     console.print(Panel(
         "\n".join(out),
-        title=f"{source.name} — WCE per line",
+        title=f"{source.name} — instructions per line (debug vs prod)",
         border_style="blue",
     ))
     console.print(
-        "  [dim]Per-line costs use DWARF addresses × loop bounds from guard analysis."
-        " Loop totals (above) are exact.[/dim]"
+        "  [dim]debug = -O0 instrs │ prod = -Oz instrs │ ELIM = removed by optimizer"
+        " │ Loop totals (above) are exact.[/dim]"
     )
 
 

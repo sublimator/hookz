@@ -1,4 +1,9 @@
-"""Compile C hooks to WASM — wraps wasi-sdk clang."""
+"""Compile C hooks to WASM — wraps wasi-sdk clang.
+
+Supports two modes:
+- Single-stage: clang driver (may auto-invoke wasm-opt, losing DWARF at -Oz)
+- Two-stage: clang -c → .o, then wasm-ld directly (preserves DWARF at -Oz)
+"""
 
 from __future__ import annotations
 
@@ -16,7 +21,7 @@ def compile_hook(
     debug: bool = True,
     optimize: bool = False,
 ) -> bytes:
-    """Compile a C hook source to WASM.
+    """Compile a C hook source to WASM (single-stage, via clang driver).
 
     Args:
         source: path to .c file
@@ -84,3 +89,80 @@ def compile_hook(
 
     wasm_bytes = out_path.read_bytes()
     return wasm_bytes
+
+
+def compile_hook_two_stage(
+    source: Path,
+    config: HookzConfig | None = None,
+    opt_level: str = "-Oz",
+) -> bytes:
+    """Compile a C hook with two-stage build: clang -c → wasm-ld.
+
+    This bypasses the clang driver's auto-invocation of wasm-opt,
+    preserving DWARF line tables on optimized code. Produces a binary
+    with accurate source mapping at any optimization level.
+
+    Args:
+        source: path to .c file
+        config: hookz config
+        opt_level: optimization flag (e.g. "-Oz", "-Os", "-O2", "-O0")
+
+    Returns:
+        WASM bytes (optimized, with DWARF)
+    """
+    if config is None:
+        config = load_config()
+
+    clang = config.wasi_sdk / "bin" / "clang"
+    wasm_ld = config.wasi_sdk / "bin" / "wasm-ld"
+    sysroot = config.wasi_sdk / "share" / "wasi-sysroot"
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        obj_path = Path(tmpdir) / "hook.o"
+        wasm_path = Path(tmpdir) / "hook.wasm"
+
+        # Stage 1: compile to object file with debug info + optimization
+        compile_cmd = [
+            str(clang),
+            f"--target={config.compile_target}",
+            f"--sysroot={sysroot}",
+            "-g", opt_level, "-c",
+            "-Wno-incompatible-pointer-types",
+            "-Wno-int-conversion",
+            "-Wno-macro-redefined",
+        ]
+
+        if config.extra_cflags:
+            compile_cmd.extend(config.extra_cflags)
+
+        compile_cmd.extend([
+            f"-I{config.hook_headers}",
+            "-x", "c",
+            str(source),
+            "-o", str(obj_path),
+        ])
+
+        r = subprocess.run(compile_cmd, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"Compilation failed:\n{r.stderr.decode()}")
+
+        # Stage 2: link with wasm-ld directly (no wasm-opt auto-invocation)
+        link_cmd = [
+            str(wasm_ld),
+            str(obj_path),
+            "--no-entry",
+            "--allow-undefined",
+        ]
+
+        for export in (config.exports or ["hook", "cbak"]):
+            link_cmd.append(f"--export={export}")
+
+        link_cmd.extend([
+            "-o", str(wasm_path),
+        ])
+
+        r = subprocess.run(link_cmd, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"Linking failed:\n{r.stderr.decode()}")
+
+        return wasm_path.read_bytes()
