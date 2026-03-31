@@ -460,36 +460,67 @@ def cmd_wce(args: list[str]) -> int:
             loops.extend(_collect_loops(child))
         return loops
 
-    # Print analysis
+    # Also compile debug build for comparison
+    debug_result = None
+    debug_dwarf_locs = []
+    try:
+        debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
+        from hookz.wasm.clean import clean_hook_detailed as _clean_d
+        debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
+        debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
+        debug_result = analyze_wce(debug_cleaned)
+    except Exception:
+        pass
+
+    # Source view first (if requested)
+    if show_source and source.suffix == ".c":
+        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
+
+    # Then summary at the end
     console.print()
-    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Analysis")
+    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Summary")
     console.print()
 
-    for label, wce, tree in [
-        ("hook()", result.hook_wce, result.hook_tree),
-        ("cbak()", result.cbak_wce, result.cbak_tree),
+    for label, opt_wce, opt_tree, dbg_wce, dbg_tree in [
+        ("hook()", result.hook_wce, result.hook_tree,
+         debug_result.hook_wce if debug_result else 0,
+         debug_result.hook_tree if debug_result else None),
+        ("cbak()", result.cbak_wce, result.cbak_tree,
+         debug_result.cbak_wce if debug_result else 0,
+         debug_result.cbak_tree if debug_result else None),
     ]:
-        if tree is None:
+        if opt_tree is None:
             continue
-        pct = wce / max_wce * 100
+        pct = opt_wce / max_wce * 100
         bar_filled = int(pct / 5)
         bar = "█" * bar_filled + "░" * (20 - bar_filled)
-        console.print(f"  [bold]{label}[/bold] WCE: {wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}")
+        savings = ""
+        if dbg_wce and dbg_wce > opt_wce:
+            saved_pct = (1 - opt_wce / dbg_wce) * 100
+            savings = f"  [green]({saved_pct:.0f}% smaller than debug)[/green]"
+        console.print(f"  [bold]{label}[/bold] WCE: {opt_wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}{savings}")
         console.print()
 
-        loops = _collect_loops(tree)
-        if not loops:
+        # Dual-column loop breakdown
+        opt_loops = _collect_loops(opt_tree)
+        dbg_loops = _collect_loops(dbg_tree) if dbg_tree else []
+
+        if not opt_loops:
             console.print("    [dim]No loops found[/dim]")
             continue
 
-        loops.sort(key=lambda x: x[2], reverse=True)
-        for loc, bound, loop_wce in loops:
-            loop_pct = loop_wce / max(wce, 1) * 100
+        # Build lookup by line for debug loops
+        dbg_loop_by_line: dict[str, int] = {loc: wce for loc, _, wce in dbg_loops}
+
+        console.print(f"    [bold]{'':>20s}  {'':>10s}  {'debug':>8s}  {'prod':>8s}[/bold]")
+        opt_loops.sort(key=lambda x: x[2], reverse=True)
+        for loc, bound, loop_wce in opt_loops:
+            loop_pct = loop_wce / max(opt_wce, 1) * 100
             lbar_filled = int(loop_pct / 5)
             lbar = "█" * lbar_filled + "░" * (20 - lbar_filled)
+            dbg_wce_str = f"{dbg_loop_by_line.get(loc, 0):>6,}" if loc in dbg_loop_by_line else "     —"
             console.print(
-                f"    {loc:>20s}  GUARD({bound:<5d})  "
-                f"{loop_wce:>6,} instrs  {lbar}  {loop_pct:4.1f}%"
+                f"    {loc:>20s}  GUARD({bound:<5d})  {dbg_wce_str}  {loop_wce:>6,}  {lbar}  {loop_pct:4.1f}%"
             )
         console.print()
 
@@ -498,18 +529,6 @@ def cmd_wce(args: list[str]) -> int:
         for err in result.errors:
             console.print(f"    [dim]{err}[/dim]")
         console.print()
-
-    # Annotated source view — compile debug build too for comparison
-    if show_source and source.suffix == ".c":
-        debug_dwarf_locs = []
-        try:
-            debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
-            from hookz.wasm.clean import clean_hook_detailed as _clean_d
-            debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
-            debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
-        except Exception:
-            pass
-        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
 
     return 0
 
@@ -571,7 +590,9 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
         sep = "│"
 
         if i in loop_lines:
-            out.append(f" [bold red]{d_col}[/bold red] {sep} [bold red]{o_col}[/bold red] {sep} [bold]{ln_col}[/bold] {sep} [red]►[/red] {line_text}")
+            stripped = line_text.lstrip()
+            indent = line_text[:len(line_text) - len(stripped)]
+            out.append(f" [bold red]{d_col}[/bold red] {sep} [bold red]{o_col}[/bold red] {sep} [bold]{ln_col}[/bold] {sep} {indent}[red]►[/red] {stripped}")
         elif d > 0 and o == 0:
             out.append(f" [dim]{d_col}[/dim] {sep} [red] ELIM[/red] {sep} [dim]{ln_col}[/dim] {sep} [dim strike]{line_text}[/dim strike]")
         elif o > 0 and d > 0 and o < d:
