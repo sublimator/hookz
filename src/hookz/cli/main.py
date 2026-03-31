@@ -609,8 +609,8 @@ def _print_annotated_source(console, source: Path, dwarf_locs, result) -> None:
         border_style="blue",
     ))
     console.print(
-        "  [dim]Note: per-line WCE is approximate (DWARF instruction count × loop bound)."
-        " Actual WCE may differ due to compiler optimizations and nesting heuristics.[/dim]"
+        "  [dim]Note: per-line costs are estimated from DWARF instruction counts × loop"
+        " bounds. Loop totals (shown above) are exact from the guard checker.[/dim]"
     )
 
 
