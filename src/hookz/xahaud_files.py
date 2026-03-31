@@ -61,9 +61,8 @@ SHOW_COMMAND = {
 
 
 def _vendored_root() -> Path:
-    """Path to xahaud-lite vendored tree (ships with hookz)."""
-    # xahaud-lite/ is at the repo root, two levels up from src/hookz/
-    return Path(__file__).resolve().parent.parent.parent / "xahaud-lite"
+    """Path to xahaud-lite vendored tree (ships with hookz package)."""
+    return Path(__file__).resolve().parent / "xahaud_lite"
 
 
 def resolve(file: XahaudFile, xahaud_root: Path | None = None) -> Path:

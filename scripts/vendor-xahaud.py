@@ -31,7 +31,7 @@ _spec.loader.exec_module(_mod)
 XahaudFile = _mod.XahaudFile
 
 
-DEST = Path(__file__).resolve().parent.parent / "xahaud-lite"
+DEST = Path(__file__).resolve().parent.parent / "src" / "hookz" / "xahaud_lite"
 
 
 def vendor_from_tree(root: Path) -> None:
