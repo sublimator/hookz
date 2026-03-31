@@ -146,7 +146,7 @@ hookz build reward.c
     → reward.wasm (3171 bytes)
 ```
 
-The cleaner (Python port of [hook-cleaner-c](https://github.com/nicholasdudfield/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
+The cleaner (Python port of [hook-cleaner-c](https://github.com/RichardAH/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
 
 ## WCE analysis
 

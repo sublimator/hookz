@@ -25,8 +25,8 @@ This package reimplements both in Python, using our own internal types.
 
 | Tool | Location | Language | Lines |
 |------|----------|----------|-------|
-| Hook cleaner | [`/Users/nicholasdudfield/projects/hook-cleaner-c/cleaner.c`](https://github.com/nicholasdudfield/hook-cleaner-c) | C | 1559 |
-| Guard checker | `/Users/nicholasdudfield/projects/xahaud-worktrees/xahaud-feature-export-rng/include/xrpl/hook/Guard.h` | C++ | 1529 |
+| Hook cleaner | [`RichardAH/hook-cleaner-c`](https://github.com/RichardAH/hook-cleaner-c) | C | 1559 |
+| Guard checker | `xahaud include/xrpl/hook/Guard.h` | C++ | 1529 |
 | Guard checker (also) | `xahaud src/xrpld/app/tx/detail/SetHook.cpp` (calls `validateGuards`) | C++ | 2156 |
 | Hook API whitelist | `xahaud include/xrpl/hook/Enum.h` (`getImportWhitelist`) | C++ | 466 |
 | Hook API signatures | `xahaud include/xrpl/hook/hook_api.macro` | C macro | 374 |

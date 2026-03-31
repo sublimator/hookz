@@ -1,5 +1,5 @@
 """Auto-generated hook API constants from xahaud source.
-Source: /Users/nicholasdudfield/projects/xahaud-worktrees/xahaud-wasm-coverage
+Source: https://github.com/Xahau/xahaud (hook/sfcodes.h, hook/tts.h, hook/error.h, hook/hookapi.h)
 """
 
 # ---- error (hook/error.h) ----
