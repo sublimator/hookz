@@ -178,6 +178,7 @@ dependencies = [
     { name = "tree-sitter" },
     { name = "tree-sitter-c" },
     { name = "tree-sitter-cpp" },
+    { name = "wasm-tob" },
     { name = "wasmtime" },
     { name = "xrpl-py" },
 ]
@@ -202,6 +203,7 @@ requires-dist = [
     { name = "tree-sitter", specifier = ">=0.24" },
     { name = "tree-sitter-c", specifier = ">=0.23" },
     { name = "tree-sitter-cpp", specifier = ">=0.23" },
+    { name = "wasm-tob", specifier = ">=1.0.1" },
     { name = "wasmtime", specifier = ">=29" },
     { name = "xrpl-py", specifier = ">=4" },
 ]
