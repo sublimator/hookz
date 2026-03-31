@@ -9,6 +9,10 @@ WASM's structured control flow means inserting instructions never breaks branche
 2. Shift all existing call/ref.func function indices by 1
 3. Insert i32.const line; i32.const col; call $idx at each DWARF line boundary
 4. Update section and function body sizes
+
+TODO: Refactor to use hookz.wasm.types/decode/encode instead of the
+inline LEB128/section parsing code below. The hookz.wasm package now
+provides all of this. Dependency direction: hookz.coverage → hookz.wasm.
 """
 
 from __future__ import annotations

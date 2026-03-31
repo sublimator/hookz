@@ -7,6 +7,9 @@ Usage:
     hookz show <function>             Show hook API function implementation
     hookz show --list                 List all hook API functions + status
     hookz debug-compile <source.c>    Check if a hook compiles (debug build, not for deployment)
+    hookz build <source.c>            Compile + clean + guard-check (production build)
+    hookz clean <hook.wasm>           Clean a WASM binary for deployment
+    hookz guard-check <hook.wasm>     Validate guard calls in a WASM binary
 """
 
 from __future__ import annotations
@@ -253,6 +256,114 @@ def cmd_find_tests(args: list[str]) -> int:
     return 0
 
 
+def cmd_clean(args: list[str]) -> int:
+    """Clean a hook WASM binary for deployment.
+
+    Usage: hookz clean <input.wasm> [-o output.wasm]
+    """
+    from hookz.wasm.clean import clean_hook, CleanError
+
+    if not args:
+        print("Usage: hookz clean <input.wasm> [-o output.wasm]")
+        return 1
+
+    source = Path(args[0])
+    output = source  # overwrite by default
+
+    if len(args) >= 3 and args[1] == "-o":
+        output = Path(args[2])
+
+    wasm = source.read_bytes()
+    try:
+        cleaned = clean_hook(wasm)
+    except CleanError as e:
+        print(f"Clean failed: {e}")
+        return 1
+
+    output.write_bytes(cleaned)
+    print(f"Cleaned {source.name}: {len(wasm)} → {len(cleaned)} bytes → {output}")
+    return 0
+
+
+def cmd_guard_check(args: list[str]) -> int:
+    """Validate guard calls in a hook WASM binary.
+
+    Usage: hookz guard-check <hook.wasm>
+    """
+    from hookz.wasm.guard import validate_guards, GuardError
+
+    if not args:
+        print("Usage: hookz guard-check <hook.wasm>")
+        return 1
+
+    source = Path(args[0])
+    wasm = source.read_bytes()
+
+    try:
+        result = validate_guards(wasm)
+    except GuardError as e:
+        print(f"Guard check FAILED: {e}")
+        if e.codesec >= 0:
+            print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
+        return 1
+
+    print(f"Guard check PASSED: {source.name}")
+    print(f"  hook() WCE: {result.hook_wce}")
+    if result.cbak_func_idx is not None:
+        print(f"  cbak() WCE: {result.cbak_wce}")
+    print(f"  Imports: {result.import_count}")
+    return 0
+
+
+def cmd_build(args: list[str]) -> int:
+    """Compile, clean, and guard-check a hook in one step.
+
+    Usage: hookz build <source.c> [-o output.wasm]
+    """
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+    from hookz.wasm.clean import clean_hook, CleanError
+    from hookz.wasm.guard import validate_guards, GuardError
+
+    if not args:
+        print("Usage: hookz build <source.c> [-o output.wasm]")
+        return 1
+
+    source = Path(args[0])
+    output = source.with_suffix(".wasm")
+
+    if len(args) >= 3 and args[1] == "-o":
+        output = Path(args[2])
+
+    config = load_config()
+
+    # 1. Compile
+    print(f"Compiling {source.name}...")
+    wasm = compile_hook(source, output, config, debug=False, optimize=True)
+    print(f"  Compiled: {len(wasm)} bytes")
+
+    # 2. Clean
+    try:
+        cleaned = clean_hook(wasm)
+        print(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
+    except CleanError as e:
+        print(f"  Clean FAILED: {e}")
+        return 1
+
+    # 3. Guard check
+    try:
+        result = validate_guards(cleaned)
+        print(f"  Guard check PASSED (hook WCE={result.hook_wce})")
+    except GuardError as e:
+        print(f"  Guard check FAILED: {e}")
+        return 1
+
+    # Write output
+    output.write_bytes(cleaned)
+    print(f"  → {output} ({len(cleaned)} bytes)")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = argv if argv is not None else sys.argv[1:]
 
@@ -269,6 +380,9 @@ def main(argv: list[str] | None = None) -> int:
         "find-tests": cmd_find_tests,
         "show": cmd_show,
         "debug-compile": cmd_debug_compile,
+        "clean": cmd_clean,
+        "guard-check": cmd_guard_check,
+        "build": cmd_build,
     }
 
     if cmd not in commands:
