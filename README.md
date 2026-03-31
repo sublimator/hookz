@@ -164,7 +164,9 @@ hookz wce govern.c
       line 279  GUARD(21   )         2,478   1,953  ██░░░░░░░░░░░░░░░░░░  10.1%
 ```
 
-Uses two-stage compilation (`clang -c -g -Oz` → `wasm-ld`) to get DWARF line tables on optimized code — the numbers reflect actual production instruction counts, not debug build inflation.
+Uses two-stage compilation (`clang -c -g -O2` → `wasm-ld`) to get DWARF line tables on optimized code — the numbers reflect actual production instruction counts, not debug build inflation.*
+
+\* `-O2` is used instead of `-Oz` because wasi-sdk 32 ignores `-mno-bulk-memory` at other optimization levels, emitting `memory.fill` instructions that xahaud rejects.
 
 Add `--source` for an annotated source view showing per-line instruction counts in both debug and optimized builds, with `ELIM` markers for lines the optimizer removed entirely:
 
