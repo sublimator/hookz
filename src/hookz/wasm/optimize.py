@@ -1,6 +1,6 @@
 """wasm-opt wrapper — thin interface to binaryen CLI for hook-specific operations.
 
-Requires wasm-opt to be installed (brew install binaryen).
+Requires wasm-opt (binaryen) to be installed.
 """
 
 from __future__ import annotations
@@ -17,10 +17,17 @@ class WasmOptError(Exception):
 
 def _find_wasm_opt() -> str:
     """Find wasm-opt binary."""
+    import platform
     path = shutil.which("wasm-opt")
     if path is None:
-        raise WasmOptError(
-            "wasm-opt not found. Install with: brew install binaryen")
+        system = platform.system()
+        if system == "Darwin":
+            hint = "brew install binaryen"
+        elif system == "Linux":
+            hint = "apt install binaryen  # or your package manager"
+        else:
+            hint = "install binaryen from https://github.com/WebAssembly/binaryen/releases"
+        raise WasmOptError(f"wasm-opt not found. Install with: {hint}")
     return path
 
 
