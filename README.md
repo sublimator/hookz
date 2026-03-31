@@ -152,16 +152,34 @@ The cleaner (Python port of [hook-cleaner-c](https://github.com/nicholasdudfield
 
 ## WCE analysis
 
-`hookz wce` shows where your execution budget goes:
+`hookz wce` shows where your execution budget goes, using accurate production-optimized numbers:
 
 ```bash
 hookz wce govern.c
 
-  govern.c — Worst-Case Execution Analysis
-    hook() WCE: 32,849 / 65,535 (50.1%)  ██████████░░░░░░░░░░
-      line 722  GUARD(3    )  23,988 instrs  ██████████████░░░░░░  73.0%
-      line 724  GUARD(67   )   7,973 instrs  ████░░░░░░░░░░░░░░░░  24.3%
-      line 279  GUARD(21   )   2,478 instrs  █░░░░░░░░░░░░░░░░░░░   7.5%
+  govern.c — Worst-Case Execution Summary
+    hook() WCE: 19,314 / 65,535 (29.5%)  █████░░░░░░░░░░░░░░░  (41% smaller than debug)
+
+                                     debug    prod
+      line 722  GUARD(3    )        23,988  14,700  ███████████████░░░░░  76.1%
+      line 724  GUARD(67   )         7,973   4,891  █████░░░░░░░░░░░░░░░  25.3%
+      line 279  GUARD(21   )         2,478   1,953  ██░░░░░░░░░░░░░░░░░░  10.1%
+```
+
+Uses two-stage compilation (`clang -c -g -Oz` → `wasm-ld`) to get DWARF line tables on optimized code — the numbers reflect actual production instruction counts, not debug build inflation.
+
+Add `--source` for an annotated source view showing per-line instruction counts in both debug and optimized builds, with `ELIM` markers for lines the optimizer removed entirely:
+
+```
+ debug │ prod │      │
+ ──────┼──────┼──────┼──────────────────────────────────
+     7 │    6 │   27 │     ► for (int i = 0; GUARD(20), i < 20; ++i)
+     5 │    5 │   28 │         if (hook_acc != otxn_acc)
+     1 │ ELIM │   30 │             equal = 0;
+     2 │ ELIM │   31 │             break;
+     1 │ ELIM │   34 │             equal = 1;
+     1 │    1 │   36 │     if (equal)
+     2 │    1 │   21 │     hook_account(SBUF(hook_acc));
 ```
 
 Add `--source` for annotated source with per-line cost. Source lines are extracted from guard IDs (`_g` macro encodes `__LINE__`). Per-loop WCE totals are exact from the guard checker.
