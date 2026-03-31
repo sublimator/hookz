@@ -191,11 +191,17 @@ class CompilationCache:
 # Compilation — uses hookz pipeline directly
 # ---------------------------------------------------------------------------
 
-def _compile_hook(source: str, label: str, coverage: bool = False) -> bytes:
-    """Compile a hook source string to WASM bytes using hookz internals."""
+def _compile_hook(source: str, label: str, coverage: bool = False,
+                  guard_check: bool = True) -> bytes:
+    """Compile a hook source string to WASM bytes using hookz internals.
+
+    guard_check=False skips guard validation — useful for test hooks that
+    are intentionally malformed (no _g, memory.copy tests, etc.). xahaud
+    does its own guard check at SetHook time anyway.
+    """
     from hookz.compiler import compile_hook, compile_hook_two_stage, COVERAGE_OPT_LEVEL
     from hookz.config import load_config
-    from hookz.wasm.clean import clean_hook
+    from hookz.wasm.clean import clean_hook, CleanError
     from hookz.wasm.guard import validate_guards
     from hookz.wasm.whitelist import get_whitelist
 
@@ -211,14 +217,23 @@ def _compile_hook(source: str, label: str, coverage: bool = False) -> bytes:
 
             wasm = compile_hook_two_stage(source_path, config, opt_level=COVERAGE_OPT_LEVEL)
             wasm, _locs = instrument_wasm(wasm)
-            cleaned = clean_hook(wasm, coverage_call_idx=0)
-            coverage_whitelist = get_whitelist() | {"__on_source_line"}
-            validate_guards(cleaned, import_whitelist=coverage_whitelist)
+            try:
+                cleaned = clean_hook(wasm, coverage_call_idx=0)
+            except CleanError:
+                # Hook might not have _g (intentional test case)
+                cleaned = wasm
+            if guard_check:
+                coverage_whitelist = get_whitelist() | {"__on_source_line"}
+                validate_guards(cleaned, import_whitelist=coverage_whitelist)
             return cleaned
         else:
             wasm = compile_hook(source_path, config=config, debug=False, optimize=True)
-            cleaned = clean_hook(wasm)
-            validate_guards(cleaned)
+            try:
+                cleaned = clean_hook(wasm)
+            except CleanError:
+                cleaned = wasm
+            if guard_check:
+                validate_guards(cleaned)
             return cleaned
     finally:
         source_path.unlink(missing_ok=True)
@@ -401,7 +416,8 @@ class TestHookBuilder:
                 logger.warning(f"{label}: coverage not supported for WAT")
             bytecode = _compile_wat(block.source)
         else:
-            bytecode = _compile_hook(block.source, label, coverage=self.coverage)
+            bytecode = _compile_hook(block.source, label, coverage=self.coverage,
+                                     guard_check=False)
 
         # Store in cache
         if self.cache is not None:
