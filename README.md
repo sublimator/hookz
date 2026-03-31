@@ -319,13 +319,28 @@ hookz build-test-hooks <test.cpp>                   Generate _hooks.h
 
 ### Env vars
 
+**hookz env vars** (read by hookz CLI):
+
 | Variable | Effect |
 |----------|--------|
 | `HOOKZ_NO_COVERAGE` | Override `--coverage` flag (disable instrumentation) |
 | `HOOKZ_VALIDATE` | Enable output sanity checks (magic bytes, memory.fill, sections) |
-| `HOOKS_COVERAGE` | CMake: enable coverage for all hooks |
-| `HOOKS_TEST_DIR` | CMake: directory containing `*_test.cpp` files |
-| `HOOKS_C_DIR` | CMake: semicolon-separated `domain=path` entries |
+
+**CMake build vars** (set via `-D` or env, see `docs/external-env-tests.md`):
+
+| Variable | Effect |
+|----------|--------|
+| `HOOKS_TEST_DIR` | Directory containing `*_test.cpp` files |
+| `HOOKS_C_DIR` | Semicolon-separated `domain=path` entries |
+| `HOOKS_COVERAGE` | Instrument hooks with coverage callbacks |
+| `HOOKS_TEST_ONLY` | Exclude built-in `*_test.cpp` from `src/test/` |
+| `HOOKS_FORCE_RECOMPILE` | Bypass dependency tracking and bytecode cache |
+
+**Test runtime vars** (read by running test binary):
+
+| Variable | Effect |
+|----------|--------|
+| `TESTENV_LOGGING` | Per-partition log levels (e.g. `HooksTrace=trace,View=debug`) |
 
 ## Developing hookz
 

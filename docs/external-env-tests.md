@@ -27,17 +27,22 @@ Your tests and hooks live in your repo. xahaud is just the engine.
 
 ### CMake: external test support
 
-`RippledCore.cmake` accepts three variables:
+`RippledCore.cmake` accepts the following variables, either as CMake
+options (`-DFOO=value`) or environment variables (`FOO=value`), or both:
 
-| Variable | Example | Purpose |
-|----------|---------|---------|
-| `HOOKS_TEST_DIR` | `~/my-hooks/tests` | Directory with `*_test.cpp` files |
-| `HOOKS_C_DIR` | `tipbot=~/my-hooks` | `domain=path` pairs for file refs (`;`-separated) |
-| `HOOKS_COVERAGE` | `ON` | Instrument hooks with coverage callbacks |
+| Variable | CMake `-D` | Env var | Purpose |
+|----------|:----------:|:-------:|---------|
+| `HOOKS_TEST_DIR` | path | path | Directory with `*_test.cpp` files |
+| `HOOKS_C_DIR` | `domain=path;...` | `domain=path;...` | Hook source dirs for file refs |
+| `HOOKS_COVERAGE` | `ON` | set = enabled | Instrument hooks with coverage callbacks |
+| `HOOKS_TEST_ONLY` | `ON` | set = enabled | Exclude built-in `*_test.cpp` from `src/test/` |
+| `HOOKS_FORCE_RECOMPILE` | `ON` | set = enabled | Bypass dependency tracking and bytecode cache |
+
+**Note:** Boolean env vars are existence-checked — setting them to any
+value (even `0`) enables the feature. Use `unset VAR` to disable.
 
 CMake runs `hookz build-test-hooks` per test file, tracks `.c`/`.h`
-dependencies, and only recompiles when sources change. Set
-`HOOKS_FORCE_RECOMPILE=ON` to bypass caching.
+dependencies, and only recompiles when sources change.
 
 ### Enum.h: `__on_source_line` whitelist
 
@@ -76,12 +81,16 @@ Added `jh` (HooksTrace journal) to the `DEFINE_HOOK_FUNCTION` template.
 `TestEnv` wraps `Env` with:
 - Named accounts: `env.account("alice")` — auto-created, reusable
 - Log transform: r-addresses replaced with `Account(name)` in all output
+- `env.setPrefix("phase name")` — prepends `[phase name]` to every log line
 - `TESTENV_LOGGING` env var for per-partition log levels
+  (e.g. `TESTENV_LOGGING="HooksTrace=trace,View=debug"`)
 
-### SuiteLogsWithOverrides.h (new)
+### Log.h / SuiteJournal.h
 
-Per-partition severity overrides with stderr output (always visible,
-not buried in `suite_.log`).
+`Logs::setTransform()` hooks into all log output (including
+`SuiteJournalSink` used by the test framework). TestEnv installs a
+transform that replaces r-addresses with `Account(name)` and prepends
+the current prefix.
 
 ## Coverage pipeline
 
@@ -104,13 +113,49 @@ not buried in `suite_.log`).
 
 When a coverage-instrumented hook executes, each `__on_source_line` call
 hits `hook::onSourceLine()`, which records the (line, col) pair in a
-global map keyed by hook hash. After tests:
+global map keyed by hook hash.
+
+#### Wiring up coverage in your test suite
+
+In your `run()` method, reset coverage at the start, label your hooks,
+and dump after all tests:
 
 ```cpp
-hook::coverageDump("coverage.txt");
+void run() override
+{
+    using namespace test::jtx;
+    auto const sa = supported_amendments();
+
+    // Reset and label hooks
+    hook::coverageReset();
+    {
+        HOOK_WASM(tip, "file:tipbot/tip.c");
+        HOOK_WASM(top, "file:tipbot/top.c");
+        hook::coverageLabel(tip_hash, "file:tipbot/tip.c");
+        hook::coverageLabel(top_hash, "file:tipbot/top.c");
+    }
+
+    // Run tests...
+    RUN(testDeposit);
+    RUN(testWithdraw);
+
+    // Dump coverage to a file
+    auto const* covDir = std::getenv("HOOKS_COVERAGE_DIR");
+    if (covDir)
+    {
+        auto now = std::chrono::system_clock::now().time_since_epoch();
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+        std::string path = std::string(covDir) + "/MyHook_" + std::to_string(ms) + ".dat";
+        hook::coverageDump(path);
+    }
+}
 ```
 
-Output format:
+#### Output format
+
+Each section is a hook (by label or hash), followed by comma-separated
+`line:col` pairs sorted by packed key:
+
 ```
 [file:tipbot/tip.c]
 hits=42:5,43:9,44:13,...
@@ -118,6 +163,9 @@ hits=42:5,43:9,44:13,...
 [file:tipbot/top.c]
 hits=15:5,16:9,...
 ```
+
+The `line:col` values come directly from DWARF debug info — no
+post-processing symbolication needed.
 
 ## Vendored xahaud files
 
