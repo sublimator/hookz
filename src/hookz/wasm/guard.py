@@ -454,8 +454,20 @@ def _validate_calls(
                 raise GuardError("memory.copy not allowed", codesec, i)
             if fc == 11 and (rules_version & GUARD_RULE_FIX_20250131):
                 raise GuardError("memory.fill not allowed", codesec, i)
-            # Skip remaining operands
-            i = _skip_operands(wasm, OP_PREFIX_FC, i - 1)  # hacky but works
+            # Skip remaining 0xFC operands
+            if 12 <= fc <= 17:
+                _, i = _leb128(wasm, i)
+                if fc in (12, 14):
+                    _, i = _leb128(wasm, i)
+            elif fc == 8:
+                _, i = _leb128(wasm, i)
+                i += 1
+            elif fc == 9:
+                _, i = _leb128(wasm, i)
+            elif fc == 10:
+                i += 2
+            elif fc == 11:
+                i += 1
             continue
 
         try:

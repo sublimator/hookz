@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+from pathlib import Path
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -87,8 +88,21 @@ class SourceLoc:
     col: int
 
 
-def parse_dwarf_locations(wasm_path: str) -> list[SourceLoc]:
-    """Parse DWARF .debug_line via llvm-dwarfdump."""
+def parse_dwarf_locations(wasm_path_or_bytes: str | bytes) -> list[SourceLoc]:
+    """Parse DWARF .debug_line via llvm-dwarfdump.
+
+    Accepts a file path (str) or raw WASM bytes.
+    """
+    if isinstance(wasm_path_or_bytes, bytes):
+        tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
+        tmp.write(wasm_path_or_bytes)
+        tmp.close()
+        try:
+            return parse_dwarf_locations(tmp.name)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
+
+    wasm_path = wasm_path_or_bytes
     r = subprocess.run(
         ["xcrun", "llvm-dwarfdump", "--debug-line", wasm_path],
         capture_output=True, text=True,

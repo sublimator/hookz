@@ -12,6 +12,7 @@ binary into a production-ready Xahau hook by:
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from wasm_tob import (
     OP_UNREACHABLE, OP_NOP, OP_BLOCK, OP_LOOP, OP_IF, OP_ELSE, OP_END,
@@ -70,6 +71,35 @@ class CleanError(Exception):
     """Raised when cleaning fails."""
 
 
+@dataclass
+class CleanResult:
+    """Result of cleaning, including relocation info for DWARF adjustment."""
+    wasm: bytes
+    relocations: list[tuple[int, int]]  # [(input_offset, cumulative_delta), ...]
+
+    def adjust_address(self, addr: int) -> int:
+        """Adjust a DWARF address using the relocation table."""
+        delta = 0
+        for offset, d in self.relocations:
+            if addr >= offset:
+                delta = d
+            else:
+                break
+        return addr + delta
+
+
+def clean_hook_detailed(wasm: bytes, visitor: Visitor | None = None) -> CleanResult:
+    """Clean a WASM hook binary, returning result with relocation info."""
+    if visitor is None:
+        visitor = Visitor()
+    mod = decode_module(wasm)
+    original_size = len(wasm)
+    cleaned_mod, relocations = clean_module(mod, visitor)
+    result_bytes = encode_module(cleaned_mod)
+    visitor.on_complete(original_size, len(result_bytes))
+    return CleanResult(wasm=result_bytes, relocations=relocations)
+
+
 def clean_hook(wasm: bytes, visitor: Visitor | None = None) -> bytes:
     """Clean a WASM hook binary for deployment.
 
@@ -85,15 +115,10 @@ def clean_hook(wasm: bytes, visitor: Visitor | None = None) -> bytes:
     """
     if visitor is None:
         visitor = Visitor()
-    mod = decode_module(wasm)
-    original_size = len(wasm)
-    cleaned = clean_module(mod, visitor)
-    result = encode_module(cleaned)
-    visitor.on_complete(original_size, len(result))
-    return result
+    return clean_hook_detailed(wasm, visitor).wasm
 
 
-def clean_module(mod: Module, visitor: Visitor | None = None) -> Module:
+def clean_module(mod: Module, visitor: Visitor | None = None) -> tuple[Module, list[tuple[int, int]]]:
     """Clean a decoded Module.
 
     - Strips/keeps sections based on visitor decisions
@@ -164,13 +189,14 @@ def clean_module(mod: Module, visitor: Visitor | None = None) -> Module:
             break
 
     # --- Build code bodies (hook + optionally cbak) ---
-    # Rewrite guards in the code bodies
-    hook_body = _rewrite_guards(mod.code[hook_code_idx], guard_idx)
+    all_relocations: list[tuple[int, int]] = []
+
+    hook_body = _rewrite_guards(mod.code[hook_code_idx], guard_idx, visitor)
     new_code = [hook_body]
     new_functions = [hook_cbak_new_idx]
 
     if cbak_code_idx is not None:
-        cbak_body = _rewrite_guards(mod.code[cbak_code_idx], guard_idx)
+        cbak_body = _rewrite_guards(mod.code[cbak_code_idx], guard_idx, visitor)
         new_code.append(cbak_body)
         new_functions.append(hook_cbak_new_idx)
 
@@ -212,42 +238,66 @@ def clean_module(mod: Module, visitor: Visitor | None = None) -> Module:
         custom_sections=kept_custom,
     )
 
-    return cleaned
+    return cleaned, all_relocations
 
 
 # ---------------------------------------------------------------------------
 # Guard rewriting
 # ---------------------------------------------------------------------------
 
-def _rewrite_guards(body: CodeBody, guard_func_idx: int) -> CodeBody:
-    """Rewrite guard calls in a code body to canonical loop-top form.
+@dataclass
+class RewriteResult:
+    """Result of guard rewriting, including offset relocation map."""
+    code: bytes
+    # Maps old byte offset → new byte offset in the rewritten code.
+    # Only offsets that changed are included.
+    relocations: list[tuple[int, int]]  # [(old_offset, delta), ...]
 
-    Scans for the pattern: i32.const <id>, i32.const <maxiter>, call <_g>, drop
-    If found away from loop top, reconstructs and moves to loop top.
-    If "dirty" (other instructions between consts and call), reconstructs
-    a clean guard and inserts at loop top, NOP-filling the original.
-    """
+
+def _rewrite_guards(body: CodeBody, guard_func_idx: int,
+                    visitor: Visitor | None = None) -> CodeBody:
+    """Rewrite guard calls in a code body to canonical loop-top form."""
     code = bytearray(body.code)
-    result = _rewrite_guards_in_bytecode(code, guard_func_idx)
-    return CodeBody(locals=body.locals, code=bytes(result))
+    result = _rewrite_guards_in_bytecode(code, guard_func_idx, visitor)
+    return CodeBody(locals=body.locals, code=bytes(result.code))
 
 
-def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int) -> bytearray:
-    """Walk bytecode, find guard patterns, rewrite to canonical form.
+_OPCODE_NAMES = {
+    OP_UNREACHABLE: "unreachable", OP_NOP: "nop", OP_BLOCK: "block",
+    OP_LOOP: "loop", OP_IF: "if", OP_ELSE: "else", OP_END: "end",
+    OP_BR: "br", OP_BR_IF: "br_if", OP_BR_TABLE: "br_table",
+    OP_RETURN: "return", OP_CALL: "call", OP_CALL_INDIRECT: "call_indirect",
+    OP_DROP: "drop", OP_SELECT: "select",
+    OP_I32_CONST: "i32.const", OP_I64_CONST: "i64.const",
+    OP_F32_CONST: "f32.const", OP_F64_CONST: "f64.const",
+    OP_CURRENT_MEMORY: "memory.size", OP_GROW_MEMORY: "memory.grow",
+}
 
-    Returns new bytecode with guards at loop tops.
-    """
+
+def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
+                                visitor: Visitor | None = None) -> RewriteResult:
+    """Walk bytecode, find guard patterns, rewrite to canonical form."""
     out = bytearray()
 
+    # Track input offset → output offset mapping for DWARF relocation
+    # We record cumulative delta: at input offset X, output has shifted by delta
+    cumulative_delta = 0
+    relocations: list[tuple[int, int]] = []  # (input_offset, delta)
+
     # State for guard finder
-    last_loop_out_pos = -1  # position in output where last loop body starts
+    last_loop_out_pos = -1
+    last_loop_input_pos = -1  # corresponding input position
     i32_found = 0
-    call_guard_out_pos = -1  # position in output of call _g
+    call_guard_out_pos = -1
     last_i32_val = 0
     second_last_i32_val = 0
     last_i32_out_pos = -1
     second_last_i32_out_pos = -1
     between_const_and_guard = 0
+
+    # Loop depth tracking for visitor
+    loop_depth = 0
+    loop_bound_stack: list[int] = []
 
     def reset():
         nonlocal i32_found, call_guard_out_pos, last_i32_val, second_last_i32_val
@@ -277,6 +327,8 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int) -> bytearr
             out.extend(code[instr_start:i])
             if ins == OP_LOOP:
                 last_loop_out_pos = len(out)
+                last_loop_input_pos = i
+                loop_depth += 1
             reset()
             continue
 
@@ -306,39 +358,48 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int) -> bytearr
                 guard.extend(_encode_leb128(guard_func_idx))
                 guard.append(OP_DROP)
 
-                if between_const_and_guard > 0:
-                    # Dirty guard: NOP-fill the original guard location in output,
-                    # then insert canonical guard at loop top
-                    # NOP from second_last_i32_out_pos to current position (the drop we just wrote)
+                dirty = between_const_and_guard > 0
+
+                if dirty:
                     nop_start = second_last_i32_out_pos
                     nop_end = len(out)
                     for j in range(nop_start, nop_end):
                         out[j] = OP_NOP
-
-                    # Insert guard at loop top
                     loop_pos = last_loop_out_pos
                     rest = bytes(out[loop_pos:])
                     out[loop_pos:] = guard + rest
-
-                    log.debug("Dirty guard rewritten: _g(0x%08X, %d) at loop offset %d",
-                              guard_id, maxiter, loop_pos)
+                    # Everything from loop_input_pos onwards shifted by len(guard)
+                    cumulative_delta += len(guard)
+                    relocations.append((last_loop_input_pos, cumulative_delta))
+                    log.debug("Dirty guard rewritten: _g(0x%08X, %d), delta=%d",
+                              guard_id, maxiter, len(guard))
                 else:
-                    # Clean guard but misplaced: move to loop top
                     guard_start = second_last_i32_out_pos
-                    guard_end = len(out)  # includes the drop
+                    guard_end = len(out)
                     guard_bytes = bytes(out[guard_start:guard_end])
-
-                    # Remove from current position
                     del out[guard_start:guard_end]
-
-                    # Insert at loop top
                     loop_pos = last_loop_out_pos
                     rest = bytes(out[loop_pos:])
                     out[loop_pos:] = guard_bytes + rest
+                    # Clean move: no size change, but bytes between loop top
+                    # and original guard position shifted by len(guard_bytes)
+                    relocations.append((last_loop_input_pos, cumulative_delta))
+                    log.debug("Clean guard moved to loop top")
 
-                    log.debug("Clean guard moved to loop top at offset %d", loop_pos)
+                # Notify visitor
+                if visitor is not None:
+                    src_line = guard_id & 0x7FFFFFFF if (guard_id < 0 or guard_id & 0x80000000) else guard_id
+                    visitor.on_guard_rewrite(guard_id, maxiter, dirty)
+                    visitor.on_loop(LoopContext(
+                        guard_id=guard_id,
+                        iteration_bound=maxiter,
+                        source_line=src_line if 0 < src_line < 100000 else 0,
+                        depth=loop_depth,
+                        parent_bound=loop_bound_stack[-1] if loop_bound_stack else 1,
+                    ))
+                    loop_bound_stack.append(maxiter)
 
-                last_loop_out_pos = -1  # prevent double move
+                last_loop_out_pos = -1
             reset()
             continue
 
@@ -368,11 +429,26 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int) -> bytearr
         if i32_found > 0:
             between_const_and_guard += 1
 
+        # Track END for loop depth
+        if ins == OP_END and loop_depth > 0:
+            loop_depth -= 1
+            if loop_bound_stack:
+                loop_bound_stack.pop()
+
+        # Notify visitor
+        if visitor is not None:
+            mnemonic = _OPCODE_NAMES.get(ins, f"0x{ins:02X}")
+            visitor.on_instruction(InstructionContext(
+                opcode=ins, offset=instr_start, mnemonic=mnemonic,
+                loop_depth=loop_depth,
+                current_bound=loop_bound_stack[-1] if loop_bound_stack else 1,
+            ))
+
         # Parse instruction to advance i properly, then copy bytes
         i = _skip_instruction(code, ins, i)
         out.extend(code[instr_start:i])
 
-    return out
+    return RewriteResult(code=bytes(out), relocations=relocations)
 
 
 # ---------------------------------------------------------------------------
