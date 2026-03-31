@@ -122,12 +122,63 @@ uv run hookz test
 
 ```
 hookz test [pytest args...]          Run tests
-hookz find-tests tip.c:225-400       Which tests cover these lines?
-hookz show float_multiply            Show C++ source from xahaud
+hookz build hook.c                   Production build (compile + optimize + clean + guard-check)
+hookz wce hook.c                     WCE budget analysis with per-loop breakdown
+hookz wce --source hook.c            Annotated source with per-line WCE cost
+hookz guard-check hook.wasm          Validate guard calls and show WCE
+hookz clean hook.wasm                Clean WASM for deployment (strip + rewrite guards)
+hookz show float_multiply            Show C++ source + xahaud test vectors
 hookz show --list                    All 68 functions: implemented vs stub
 hookz coverage                       Tests + uncovered line report
-hookz debug-compile hook.c           Check compilation (not for deployment)
+hookz find-tests tip.c:225-400       Which tests cover these lines?
+hookz debug-compile hook.c           Debug build for testing (not for deployment)
 ```
+
+## Production builds
+
+`hookz build` produces deployment-ready WASM from C source in one command:
+
+```bash
+hookz build reward.c
+  Compiling reward.c...
+    Compiled: 3463 bytes
+    Optimized: 3463 → 3460 bytes        # wasm-opt, if available
+    Cleaned: 3460 → 3171 bytes          # strip sections, rewrite guards
+    Guard check PASSED (hook WCE=9,029 — 13.8% of budget)
+    → reward.wasm (3171 bytes)
+```
+
+The cleaner (Python port of [hook-cleaner-c](https://github.com/nicholasdudfield/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
+
+## WCE analysis
+
+`hookz wce` shows where your execution budget goes:
+
+```bash
+hookz wce govern.c
+
+  govern.c — Worst-Case Execution Analysis
+    hook() WCE: 32,849 / 65,535 (50.1%)  ██████████░░░░░░░░░░
+      line 722  GUARD(3    )  23,988 instrs  ██████████████░░░░░░  73.0%
+      line 724  GUARD(67   )   7,973 instrs  ████░░░░░░░░░░░░░░░░  24.3%
+      line 279  GUARD(21   )   2,478 instrs  █░░░░░░░░░░░░░░░░░░░   7.5%
+```
+
+Add `--source` for annotated source with per-line cost. Source lines are extracted from guard IDs (`_g` macro encodes `__LINE__`). Per-loop WCE totals are exact from the guard checker.
+
+## Ledger model
+
+Hooks that look up accounts or trust lines via keylets work without mocking:
+
+```python
+from hookz.ledger import account_root
+
+kl, data = account_root("rBob...", Balance="50000000")
+rt.ledger[kl] = data
+result = rt.run(hook)  # hook's util_keylet + slot_set just works
+```
+
+20+ keylet functions matching xahaud exactly (verified against rippled). `slot_set` with a 34-byte keylet automatically looks up `rt.ledger`. `slot_subfield`/`slot_count`/`slot_subarray` parse real serialized data.
 
 ## Traces
 
@@ -171,8 +222,16 @@ uv sync
 ### Run framework tests
 
 ```bash
-uv run pytest tests/                  # framework tests (262 tests)
-uv run pytest tests/test_handlers/    # handler unit tests (219 tests)
+uv run pytest tests/                  # framework tests (570+ tests)
+uv run pytest tests/test_handlers/    # handler unit tests
+uv run pytest tests/test_wasm.py      # WASM decode/encode/guard/clean tests
+```
+
+### Run e2e tests (Xahau genesis hooks + community hooks)
+
+```bash
+cd tests/e2e
+uv run hookz test                     # 100+ tests across 13 hooks
 ```
 
 ### Run example tests
@@ -203,10 +262,19 @@ For AI agents: `/impl-handler float_multiply` runs the full workflow.
 
 ```
 src/hookz/
-  runtime.py              WASM executor
+  runtime.py              WASM executor + ledger model
   handlers/               68 auto-discovered host functions
+  wasm/                   WASM binary manipulation:
+    types.py                internal Module representation
+    decode.py               WASM → Module (via wasm-tob)
+    encode.py               Module → WASM (LEB128 writer)
+    guard.py                guard checker + WCE analysis
+    clean.py                cleaner (strip, rewrite guards, rebuild exports)
+    optimize.py             wasm-opt CLI wrapper
+    visitor.py              pluggable visitor for clean decisions
   coverage/               DWARF rewriter + AST-aware tracker
   xrpl/                   txn parser, xahaud source extraction
+  ledger.py               keylet computation + ledger object builders
   testing/                pytest plugin + fixture generation
   cli/                    hookz CLI
   xfl.py                  XFL <-> float
@@ -215,4 +283,11 @@ src/hookz/
   hookapi.py              482 auto-generated constants
 examples/
   tipbot/                 self-contained example (62 tests, 100% coverage)
+tests/
+  test_handlers/          handler unit tests (530+ tests)
+  test_wasm.py            WASM package tests (decode, encode, guard, clean)
+  e2e/                    end-to-end hook tests:
+    hooks/genesis/          xahaud genesis hooks (govern, mint, nftoken, reward)
+    hooks/misc/             custom hooks (balance_gate, treasury)
+    hooks/XahauHooks101/    community hook examples (submodule)
 ```
