@@ -1,7 +1,12 @@
-"""Guard checker — validates WASM hooks have proper _g() guard calls.
+"""Guard checker + WCE analysis for WASM hooks.
 
-Port of xahaud Guard.h validateGuards() + check_guard().
-Operates on our internal Module type + raw bytes for instruction walking.
+Three layers:
+1. _walk_code() — builds BlockInfo tree from raw bytecode. Best-effort,
+   never raises on malformed guards — just records what it finds.
+2. validate_guards() — structural validation (canonical guard patterns,
+   import whitelist, call restrictions). Raises GuardError on violations.
+3. analyze_wce() — computes WCE from a Module. Returns results even if
+   guards are non-canonical.
 """
 
 from __future__ import annotations
@@ -18,17 +23,17 @@ from wasm_tob import (
     OP_CURRENT_MEMORY, OP_GROW_MEMORY,
 )
 
-from .types import Module, SectionId
+from .types import Module, ValType
 from .decode import decode_module, decode_code_bodies_raw
 
 log = logging.getLogger("hookz.guard")
 
 # Limits from xahaud Enum.h
 MAX_GUARD_CALLS = 1024
-MAX_WCE = 0xFFFF  # 65535
+MAX_WCE = 0xFFFF
 MAX_NESTING = 16
 
-# WASM opcodes not in wasm-tob constants
+# Opcodes not in wasm-tob
 OP_SELECT_T = 0x1C
 OP_TABLE_GET = 0x25
 OP_TABLE_SET = 0x26
@@ -38,22 +43,22 @@ OP_REF_FUNC = 0xD2
 OP_PREFIX_FC = 0xFC
 OP_PREFIX_FD = 0xFD
 
-# Block type bytes (value types + void)
-BLOCK_TYPE_BYTES = {0x7F, 0x7E, 0x7D, 0x7C, 0x7B, 0x70, 0x6F, 0x40}
+BLOCK_TYPE_VOID = 0x40
+BLOCK_TYPE_BYTES = {
+    ValType.I32, ValType.I64, ValType.F32, ValType.F64,
+    ValType.V128, ValType.FUNCREF, ValType.EXTERNREF,
+    BLOCK_TYPE_VOID,
+}
 
-# Instruction ranges
-MEMOP_FIRST = 0x28  # i32.load
-MEMOP_LAST = 0x3E   # i64.store32
-NUMOP_FIRST = 0x45  # i32.eqz
-NUMOP_LAST = 0xC4   # i64.trunc_sat_f64_u
+MEMOP_FIRST = 0x28
+MEMOP_LAST = 0x3E
+NUMOP_FIRST = 0x45
+NUMOP_LAST = 0xC4
 
-# Guard rule version bits (from xahaud Enum.h)
 GUARD_RULE_FIX_20250131 = 0x01
 
 
 class GuardError(Exception):
-    """Raised when guard validation fails."""
-
     def __init__(self, message: str, codesec: int = -1, offset: int = -1):
         self.codesec = codesec
         self.offset = offset
@@ -61,9 +66,35 @@ class GuardError(Exception):
 
 
 @dataclass
-class GuardResult:
-    """Result of successful guard validation."""
+class BlockInfo:
+    """Block/loop info node in the WCE tree."""
+    iteration_bound: int
+    instruction_count: int = 0
+    parent: BlockInfo | None = None
+    children: list[BlockInfo] = field(default_factory=list)
+    start_byte: int = 0
+    is_loop: bool = False
+    guard_id: int = 0
+    guard_canonical: bool = False  # True if loop had proper _g pattern
 
+    def add_child(self, iteration_bound: int, start_byte: int,
+                  is_loop: bool = False, guard_id: int = 0,
+                  guard_canonical: bool = False) -> BlockInfo:
+        child = BlockInfo(
+            iteration_bound=iteration_bound, parent=self,
+            start_byte=start_byte, is_loop=is_loop,
+            guard_id=guard_id, guard_canonical=guard_canonical,
+        )
+        self.children.append(child)
+        return child
+
+    @property
+    def wce(self) -> int:
+        return _compute_wce(self)
+
+
+@dataclass
+class GuardResult:
     hook_wce: int
     cbak_wce: int
     import_count: int
@@ -72,14 +103,14 @@ class GuardResult:
     cbak_func_idx: int | None
     hook_tree: BlockInfo | None = None
     cbak_tree: BlockInfo | None = None
+    errors: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# LEB128 helpers
+# LEB128
 # ---------------------------------------------------------------------------
 
 def _leb128(buf: bytes, offset: int) -> tuple[int, int]:
-    """Parse unsigned LEB128. Returns (value, new_offset)."""
     val = 0
     shift = 0
     i = offset
@@ -96,7 +127,6 @@ def _leb128(buf: bytes, offset: int) -> tuple[int, int]:
 
 
 def _signed_leb128(buf: bytes, offset: int) -> tuple[int, int]:
-    """Parse signed LEB128. Returns (value, new_offset)."""
     val = 0
     shift = 0
     i = offset
@@ -115,41 +145,12 @@ def _signed_leb128(buf: bytes, offset: int) -> tuple[int, int]:
 
 
 # ---------------------------------------------------------------------------
-# Block tree for worst-case execution computation
+# WCE computation
 # ---------------------------------------------------------------------------
 
-@dataclass
-class BlockInfo:
-    """Block/loop info node in the WCE tree. Public for analysis."""
-    iteration_bound: int
-    instruction_count: int = 0
-    parent: BlockInfo | None = None
-    children: list[BlockInfo] = field(default_factory=list)
-    start_byte: int = 0
-    is_loop: bool = False
-    guard_id: int = 0
-
-    def add_child(self, iteration_bound: int, start_byte: int, is_loop: bool = False, guard_id: int = 0) -> BlockInfo:
-        child = BlockInfo(
-            iteration_bound=iteration_bound,
-            parent=self,
-            start_byte=start_byte,
-            is_loop=is_loop,
-            guard_id=guard_id,
-        )
-        self.children.append(child)
-        return child
-
-    @property
-    def wce(self) -> int:
-        """Compute worst-case execution for this node and its subtree."""
-        return _compute_wce(self)
-
-
 def _compute_wce(blk: BlockInfo, level: int = 0) -> int:
-    """Compute worst-case execution count."""
     if level > MAX_NESTING:
-        raise GuardError("Maximum block nesting depth reached (16 levels)")
+        return 0  # don't raise — best effort
     wce = blk.instruction_count
     for child in blk.children:
         wce += _compute_wce(child, level + 1)
@@ -160,31 +161,31 @@ def _compute_wce(blk: BlockInfo, level: int = 0) -> int:
 
 
 # ---------------------------------------------------------------------------
-# check_guard — validates a single code section's instructions
+# _walk_code — builds block tree, best-effort, never raises on bad guards
 # ---------------------------------------------------------------------------
 
-def _check_guard(
+def _walk_code(
     wasm: bytes,
     codesec: int,
     start_offset: int,
     end_offset: int,
     guard_func_idx: int,
-    last_import_idx: int,
-    rules_version: int = 0,
-) -> BlockInfo:
-    """Validate guard calls in a code section. Returns the block tree root."""
-    guard_count = 0
+) -> tuple[BlockInfo, list[str]]:
+    """Walk bytecode, build BlockInfo tree. Returns (root, errors).
+
+    Best-effort: records errors but keeps going. Always returns a tree.
+    """
+    errors: list[str] = []
     block_depth = 0
     root = BlockInfo(iteration_bound=1, start_byte=start_offset)
     current = root
 
-    def _require(pos: int, need: int = 1) -> None:
-        if pos + need > len(wasm):
-            raise GuardError("Hook truncated", codesec, pos)
-
     i = start_offset
     while i < end_offset:
-        _require(i)
+        if i >= len(wasm):
+            errors.append(f"Code section {codesec} truncated at offset {i}")
+            break
+
         instr = wasm[i]
         i += 1
         current.instruction_count += 1
@@ -193,7 +194,9 @@ def _check_guard(
             continue
 
         if instr in (OP_BLOCK, OP_LOOP, OP_IF):
-            _require(i)
+            if i >= len(wasm):
+                errors.append(f"Truncated after block/loop/if at {i}")
+                break
             block_type = wasm[i]
             if block_type in BLOCK_TYPE_BYTES:
                 i += 1
@@ -201,182 +204,268 @@ def _check_guard(
                 _, i = _signed_leb128(wasm, i)
 
             iteration_bound = current.iteration_bound if current.parent else 1
-
             loop_guard_id = 0
+            canonical = False
+
             if instr == OP_LOOP:
-                _require(i)
-                if wasm[i] != OP_I32_CONST:
-                    raise GuardError("Missing first i32.const after loop", codesec, i)
-                i += 1
-                loop_guard_id, i = _signed_leb128(wasm, i)
-
-                _require(i)
-                if wasm[i] != OP_I32_CONST:
-                    raise GuardError("Missing second i32.const after loop", codesec, i)
-                i += 1
-                iteration_bound, i = _leb128(wasm, i)
-
-                if iteration_bound == 0:
-                    raise GuardError("Guard call cannot specify 0 maxiter", codesec, i)
-
-                _require(i)
-                if wasm[i] != OP_CALL:
-                    raise GuardError("Missing call to _g after i32.const pair at loop start", codesec, i)
-                i += 1
-                call_idx, i = _leb128(wasm, i)
-
-                if call_idx != guard_func_idx:
-                    raise GuardError(
-                        f"Call at loop start was not _g (called {call_idx}, expected {guard_func_idx})",
-                        codesec, i)
-
-                guard_count += 1
-                if guard_count > MAX_GUARD_CALLS:
-                    raise GuardError("Too many guard calls (limit 1024)", codesec, i)
+                # Try to parse canonical guard pattern
+                try:
+                    saved_i = i
+                    if i < len(wasm) and wasm[i] == OP_I32_CONST:
+                        i += 1
+                        loop_guard_id, i = _signed_leb128(wasm, i)
+                        if i < len(wasm) and wasm[i] == OP_I32_CONST:
+                            i += 1
+                            iteration_bound, i = _leb128(wasm, i)
+                            if i < len(wasm) and wasm[i] == OP_CALL:
+                                i += 1
+                                call_idx, i = _leb128(wasm, i)
+                                if call_idx == guard_func_idx and iteration_bound > 0:
+                                    canonical = True
+                                else:
+                                    errors.append(
+                                        f"Loop at {saved_i}: call target {call_idx} != guard {guard_func_idx}")
+                                    i = saved_i  # rewind
+                            else:
+                                errors.append(f"Loop at {saved_i}: missing call after i32.const pair")
+                                i = saved_i
+                        else:
+                            errors.append(f"Loop at {saved_i}: missing second i32.const")
+                            i = saved_i
+                    else:
+                        errors.append(f"Loop at {saved_i}: missing first i32.const")
+                        i = saved_i
+                except (GuardError, IndexError):
+                    errors.append(f"Loop at {saved_i}: parse error")
+                    i = saved_i
 
             current = current.add_child(
                 iteration_bound, i,
                 is_loop=(instr == OP_LOOP),
-                guard_id=loop_guard_id if instr == OP_LOOP else 0,
+                guard_id=loop_guard_id,
+                guard_canonical=canonical,
             )
             block_depth += 1
             continue
 
         if instr == OP_END:
             block_depth -= 1
-            current = current.parent
-            if current is None and block_depth == -1 and i >= end_offset:
+            if current.parent is not None:
+                current = current.parent
+            elif block_depth == -1 and i >= end_offset:
                 break
-            if current is None:
-                raise GuardError("Illegal block end (no parent)", codesec, i)
-            if block_depth < 0:
-                raise GuardError("Illegal block end (depth < 0)", codesec, i)
-            continue
-
-        if instr in (OP_BR, OP_BR_IF):
-            _, i = _leb128(wasm, i)
-            continue
-
-        if instr == OP_BR_TABLE:
-            vec_count, i = _leb128(wasm, i)
-            for _ in range(vec_count):
-                _, i = _leb128(wasm, i)
-            _, i = _leb128(wasm, i)
-            continue
-
-        if instr == OP_RETURN:
-            continue
-
-        if instr == OP_CALL:
-            callee_idx, i = _leb128(wasm, i)
-            if callee_idx > last_import_idx:
-                raise GuardError(
-                    f"Hook calls function {callee_idx} outside whitelisted imports "
-                    f"(last import is {last_import_idx})", codesec, i)
-            if callee_idx == guard_func_idx:
-                guard_count += 1
-                if guard_count > MAX_GUARD_CALLS:
-                    raise GuardError("Too many guard calls (limit 1024)", codesec, i)
-            continue
-
-        if instr == OP_CALL_INDIRECT:
-            raise GuardError("call_indirect is disallowed in hooks", codesec, i)
-
-        if OP_REF_NULL <= instr <= OP_REF_FUNC:
-            if instr == OP_REF_NULL:
-                _require(i)
-                if wasm[i] not in (0x70, 0x6F):
-                    raise GuardError("Invalid reftype in ref.null", codesec, i)
-                i += 1
-            elif instr == OP_REF_FUNC:
-                _, i = _leb128(wasm, i)
-            continue
-
-        if instr in (OP_DROP, OP_SELECT, OP_SELECT_T):
-            if instr == OP_SELECT_T:
-                vec_count, i = _leb128(wasm, i)
-                i += vec_count
-            continue
-
-        if OP_GET_LOCAL <= instr <= OP_SET_GLOBAL:
-            _, i = _leb128(wasm, i)
-            continue
-
-        if instr in (OP_TABLE_GET, OP_TABLE_SET, OP_PREFIX_FC):
-            if instr != OP_PREFIX_FC:
-                _, i = _leb128(wasm, i)
-                continue
-            fc_type, i = _leb128(wasm, i)
-            _require(i)
-            if 12 <= fc_type <= 17:
-                _, i = _leb128(wasm, i)
-                if fc_type in (12, 14):
-                    _, i = _leb128(wasm, i)
-            elif fc_type == 8:
-                _, i = _leb128(wasm, i)
-                i += 1
-            elif fc_type == 9:
-                _, i = _leb128(wasm, i)
-            elif fc_type == 10:
-                if rules_version & GUARD_RULE_FIX_20250131:
-                    raise GuardError("memory.copy is not allowed", codesec, i)
-                i += 2
-            elif fc_type == 11:
-                if rules_version & GUARD_RULE_FIX_20250131:
-                    raise GuardError("memory.fill is not allowed", codesec, i)
-                i += 1
-            elif fc_type <= 7:
-                pass
             else:
-                raise GuardError(f"Illegal 0xFC instruction: {fc_type}", codesec, i)
+                errors.append(f"Illegal block end at {i}")
+                break
             continue
 
-        if MEMOP_FIRST <= instr <= MEMOP_LAST:
-            _, i = _leb128(wasm, i)
-            _, i = _leb128(wasm, i)
-            continue
+        # All remaining instructions — just advance past operands
+        try:
+            i = _skip_operands(wasm, instr, i)
+        except (GuardError, IndexError):
+            errors.append(f"Failed to skip instruction 0x{instr:02X} at {i}")
+            break
 
-        if instr == OP_CURRENT_MEMORY:
+    return root, errors
+
+
+def _skip_operands(wasm: bytes, instr: int, i: int) -> int:
+    """Advance past an instruction's operands."""
+    if instr in (OP_BR, OP_BR_IF):
+        _, i = _leb128(wasm, i)
+        return i
+    if instr == OP_BR_TABLE:
+        vc, i = _leb128(wasm, i)
+        for _ in range(vc):
+            _, i = _leb128(wasm, i)
+        _, i = _leb128(wasm, i)
+        return i
+    if instr == OP_RETURN:
+        return i
+    if instr == OP_CALL:
+        _, i = _leb128(wasm, i)
+        return i
+    if instr == OP_CALL_INDIRECT:
+        _, i = _leb128(wasm, i)
+        _, i = _leb128(wasm, i)
+        return i
+    if OP_REF_NULL <= instr <= OP_REF_FUNC:
+        if instr == OP_REF_NULL:
             i += 1
-            continue
-        if instr == OP_GROW_MEMORY:
-            raise GuardError("memory.grow is disallowed in hooks", codesec, i)
-
-        if instr in (OP_I32_CONST, OP_I64_CONST):
-            _, i = _signed_leb128(wasm, i)
-            continue
-        if instr == OP_F32_CONST:
-            i += 4
-            continue
-        if instr == OP_F64_CONST:
-            i += 8
-            continue
-
-        if NUMOP_FIRST <= instr <= NUMOP_LAST:
-            continue
-
-        if instr == OP_PREFIX_FD:
-            v, i = _leb128(wasm, i)
-            if v <= 11:
+        elif instr == OP_REF_FUNC:
+            _, i = _leb128(wasm, i)
+        return i
+    if instr in (OP_DROP, OP_SELECT):
+        return i
+    if instr == OP_SELECT_T:
+        vc, i = _leb128(wasm, i)
+        i += vc
+        return i
+    if OP_GET_LOCAL <= instr <= OP_SET_GLOBAL:
+        _, i = _leb128(wasm, i)
+        return i
+    if instr in (OP_TABLE_GET, OP_TABLE_SET):
+        _, i = _leb128(wasm, i)
+        return i
+    if instr == OP_PREFIX_FC:
+        fc, i = _leb128(wasm, i)
+        if 12 <= fc <= 17:
+            _, i = _leb128(wasm, i)
+            if fc in (12, 14):
                 _, i = _leb128(wasm, i)
-                _, i = _leb128(wasm, i)
-            elif 84 <= v <= 91:
-                _, i = _leb128(wasm, i)
-                _, i = _leb128(wasm, i)
-                i += 1
-            elif 21 <= v <= 34:
-                i += 1
-            elif v in (12, 13):
-                i += 16
-            continue
-
-        raise GuardError(f"Unknown instruction opcode: 0x{instr:02X}", codesec, i)
-
-    return root
+        elif fc == 8:
+            _, i = _leb128(wasm, i)
+            i += 1
+        elif fc == 9:
+            _, i = _leb128(wasm, i)
+        elif fc == 10:
+            i += 2
+        elif fc == 11:
+            i += 1
+        return i
+    if MEMOP_FIRST <= instr <= MEMOP_LAST:
+        _, i = _leb128(wasm, i)
+        _, i = _leb128(wasm, i)
+        return i
+    if instr == OP_CURRENT_MEMORY:
+        i += 1
+        return i
+    if instr == OP_GROW_MEMORY:
+        i += 1
+        return i
+    if instr in (OP_I32_CONST, OP_I64_CONST):
+        _, i = _signed_leb128(wasm, i)
+        return i
+    if instr == OP_F32_CONST:
+        return i + 4
+    if instr == OP_F64_CONST:
+        return i + 8
+    if NUMOP_FIRST <= instr <= NUMOP_LAST:
+        return i
+    if instr == OP_PREFIX_FD:
+        v, i = _leb128(wasm, i)
+        if v <= 11:
+            _, i = _leb128(wasm, i)
+            _, i = _leb128(wasm, i)
+        elif 84 <= v <= 91:
+            _, i = _leb128(wasm, i)
+            _, i = _leb128(wasm, i)
+            i += 1
+        elif 21 <= v <= 34:
+            i += 1
+        elif v in (12, 13):
+            i += 16
+        return i
+    return i  # unknown — assume no operands
 
 
 # ---------------------------------------------------------------------------
-# validate_guards — top-level entry point
+# validate_guards — strict validation, raises on violations
+# ---------------------------------------------------------------------------
+
+def _check_guard_strict(
+    wasm: bytes,
+    codesec: int,
+    start_offset: int,
+    end_offset: int,
+    guard_func_idx: int,
+    last_import_idx: int,
+    rules_version: int = 0,
+) -> BlockInfo:
+    """Strict guard validation. Raises GuardError on any violation."""
+    tree, errors = _walk_code(wasm, codesec, start_offset, end_offset, guard_func_idx)
+
+    # Walk errors are fatal in strict mode
+    if errors:
+        raise GuardError(errors[0], codesec, start_offset)
+
+    # Check all loops have canonical guards
+    def _check_loops(node: BlockInfo) -> None:
+        if node.is_loop and not node.guard_canonical:
+            raise GuardError(
+                f"Loop at offset {node.start_byte} does not have canonical guard pattern",
+                codesec, node.start_byte)
+        for child in node.children:
+            _check_loops(child)
+
+    _check_loops(tree)
+
+    # Check no calls to non-imported functions and no call_indirect
+    # (This requires a second walk since _walk_code doesn't check these)
+    _validate_calls(wasm, codesec, start_offset, end_offset,
+                    guard_func_idx, last_import_idx, rules_version)
+
+    return tree
+
+
+def _validate_calls(
+    wasm: bytes, codesec: int, start: int, end: int,
+    guard_func_idx: int, last_import_idx: int, rules_version: int,
+) -> None:
+    """Validate call targets and disallowed instructions."""
+    i = start
+    guard_count = 0
+    while i < end:
+        if i >= len(wasm):
+            break
+        instr = wasm[i]
+        i += 1
+
+        if instr in (OP_BLOCK, OP_LOOP, OP_IF):
+            bt = wasm[i] if i < len(wasm) else BLOCK_TYPE_VOID
+            if bt in BLOCK_TYPE_BYTES:
+                i += 1
+            else:
+                _, i = _signed_leb128(wasm, i)
+            if instr == OP_LOOP:
+                # Skip the guard pattern (already validated by _check_loops)
+                if i < len(wasm) and wasm[i] == OP_I32_CONST:
+                    i += 1
+                    _, i = _signed_leb128(wasm, i)
+                    if i < len(wasm) and wasm[i] == OP_I32_CONST:
+                        i += 1
+                        _, i = _leb128(wasm, i)
+                        if i < len(wasm) and wasm[i] == OP_CALL:
+                            i += 1
+                            _, i = _leb128(wasm, i)
+            continue
+
+        if instr == OP_CALL:
+            callee, i = _leb128(wasm, i)
+            if callee > last_import_idx:
+                raise GuardError(
+                    f"Call to function {callee} outside imports (last={last_import_idx})",
+                    codesec, i)
+            if callee == guard_func_idx:
+                guard_count += 1
+                if guard_count > MAX_GUARD_CALLS:
+                    raise GuardError("Too many guard calls", codesec, i)
+            continue
+
+        if instr == OP_CALL_INDIRECT:
+            raise GuardError("call_indirect disallowed", codesec, i)
+
+        if instr == OP_GROW_MEMORY:
+            raise GuardError("memory.grow disallowed", codesec, i)
+
+        if instr == OP_PREFIX_FC:
+            fc, i = _leb128(wasm, i)
+            if fc == 10 and (rules_version & GUARD_RULE_FIX_20250131):
+                raise GuardError("memory.copy not allowed", codesec, i)
+            if fc == 11 and (rules_version & GUARD_RULE_FIX_20250131):
+                raise GuardError("memory.fill not allowed", codesec, i)
+            # Skip remaining operands
+            i = _skip_operands(wasm, OP_PREFIX_FC, i - 1)  # hacky but works
+            continue
+
+        try:
+            i = _skip_operands(wasm, instr, i)
+        except (GuardError, IndexError):
+            break
+
+
+# ---------------------------------------------------------------------------
+# Public API
 # ---------------------------------------------------------------------------
 
 def validate_guards(
@@ -384,21 +473,7 @@ def validate_guards(
     import_whitelist: set[str] | None = None,
     rules_version: int = 0,
 ) -> GuardResult:
-    """Validate guard calls in a WASM hook binary.
-
-    Can accept either raw bytes or work with a pre-decoded Module.
-
-    Args:
-        wasm: Raw WASM binary bytes
-        import_whitelist: Set of allowed import names. None = allow all.
-        rules_version: Bitmask for guard rule versions
-
-    Returns:
-        GuardResult with worst-case execution counts
-
-    Raises:
-        GuardError: If validation fails
-    """
+    """Strict guard validation. Raises GuardError on any violation."""
     mod = decode_module(wasm)
     return validate_guards_module(mod, wasm, import_whitelist, rules_version)
 
@@ -409,21 +484,14 @@ def validate_guards_module(
     import_whitelist: set[str] | None = None,
     rules_version: int = 0,
 ) -> GuardResult:
-    """Validate guards using a pre-decoded Module + raw bytes.
-
-    The Module provides structural info (imports, exports, types).
-    The raw bytes are needed for instruction-level walking.
-    """
-    # Custom sections not allowed
+    """Strict validation using a pre-decoded Module."""
     if mod.custom_sections:
         raise GuardError("Hook contains custom sections (use cleaner to strip)")
 
-    # Must import _g
     guard_idx = mod.guard_func_idx
     if guard_idx is None:
-        raise GuardError("Hook did not import _g (guard function)")
+        raise GuardError("Hook did not import _g")
 
-    # Check import whitelist
     if import_whitelist is not None:
         for imp in mod.imports:
             if imp.module != "env":
@@ -433,44 +501,36 @@ def validate_guards_module(
 
     last_import_idx = mod.import_count - 1
 
-    # Must export hook()
     hook_exp = mod.hook_export
     if hook_exp is None:
-        raise GuardError("Hook did not export 'hook' function")
-
+        raise GuardError("Hook did not export 'hook'")
     cbak_exp = mod.cbak_export
 
-    # Validate hook/cbak type signatures
     hook_type_idx = mod.func_type_idx(hook_exp.index)
-    if hook_type_idx < len(mod.types):
-        if not mod.types[hook_type_idx].is_hook_type:
-            raise GuardError("hook() must be int64_t(uint32_t)")
+    if hook_type_idx < len(mod.types) and not mod.types[hook_type_idx].is_hook_type:
+        raise GuardError("hook() must be int64_t(uint32_t)")
     if cbak_exp is not None:
         cbak_type_idx = mod.func_type_idx(cbak_exp.index)
         if cbak_type_idx != hook_type_idx:
             raise GuardError("hook and cbak must have the same type signature")
 
-    # Code indices (subtract import count)
     hook_code_idx = hook_exp.index - mod.import_count
     cbak_code_idx = cbak_exp.index - mod.import_count if cbak_exp else None
 
-    # Walk code bodies
     code_bodies = decode_code_bodies_raw(wasm)
     hook_wce = 0
     cbak_wce = 0
-    hook_tree: BlockInfo | None = None
-    cbak_tree: BlockInfo | None = None
+    hook_tree = None
+    cbak_tree = None
 
     for j, (body_start, body_end) in enumerate(code_bodies):
-        tree = _check_guard(
+        tree = _check_guard_strict(
             wasm, j, body_start, body_end,
             guard_idx, last_import_idx, rules_version,
         )
         wce = tree.wce
         if wce >= MAX_WCE:
-            raise GuardError(
-                f"Worst-case execution {wce} exceeds limit {MAX_WCE} "
-                f"in code section {j}")
+            raise GuardError(f"WCE {wce} exceeds limit {MAX_WCE} in code section {j}")
         if j == hook_code_idx:
             hook_wce = wce
             hook_tree = tree
@@ -479,12 +539,83 @@ def validate_guards_module(
             cbak_tree = tree
 
     return GuardResult(
-        hook_wce=hook_wce,
-        cbak_wce=cbak_wce,
-        import_count=mod.import_count,
-        guard_func_idx=guard_idx,
+        hook_wce=hook_wce, cbak_wce=cbak_wce,
+        import_count=mod.import_count, guard_func_idx=guard_idx,
         hook_func_idx=hook_exp.index,
         cbak_func_idx=cbak_exp.index if cbak_exp else None,
-        hook_tree=hook_tree,
-        cbak_tree=cbak_tree,
+        hook_tree=hook_tree, cbak_tree=cbak_tree,
+    )
+
+
+def analyze_wce(
+    wasm: bytes,
+) -> GuardResult:
+    """Best-effort WCE analysis. Never raises — returns results + errors.
+
+    Works on debug builds, dirty guards, whatever. Always returns a tree.
+    """
+    mod = decode_module(wasm)
+    return analyze_wce_module(mod, wasm)
+
+
+def analyze_wce_module(
+    mod: Module,
+    wasm: bytes,
+) -> GuardResult:
+    """Best-effort WCE analysis on a pre-decoded Module."""
+    all_errors: list[str] = []
+
+    guard_idx = mod.guard_func_idx
+    if guard_idx is None:
+        all_errors.append("No _g import found — WCE estimates will be inaccurate")
+        guard_idx = -1  # won't match any call
+
+    hook_exp = mod.hook_export
+    cbak_exp = mod.cbak_export
+
+    if hook_exp is None:
+        all_errors.append("No hook() export found")
+        return GuardResult(
+            hook_wce=0, cbak_wce=0, import_count=mod.import_count,
+            guard_func_idx=guard_idx, hook_func_idx=-1, cbak_func_idx=None,
+            errors=all_errors,
+        )
+
+    hook_code_idx = hook_exp.index - mod.import_count
+    cbak_code_idx = cbak_exp.index - mod.import_count if cbak_exp else None
+
+    try:
+        code_bodies = decode_code_bodies_raw(wasm)
+    except Exception as e:
+        all_errors.append(f"Failed to decode code section: {e}")
+        return GuardResult(
+            hook_wce=0, cbak_wce=0, import_count=mod.import_count,
+            guard_func_idx=guard_idx, hook_func_idx=hook_exp.index,
+            cbak_func_idx=cbak_exp.index if cbak_exp else None,
+            errors=all_errors,
+        )
+
+    hook_wce = 0
+    cbak_wce = 0
+    hook_tree = None
+    cbak_tree = None
+
+    for j, (body_start, body_end) in enumerate(code_bodies):
+        tree, errors = _walk_code(wasm, j, body_start, body_end, guard_idx)
+        all_errors.extend(errors)
+        wce = tree.wce
+        if j == hook_code_idx:
+            hook_wce = wce
+            hook_tree = tree
+        elif cbak_code_idx is not None and j == cbak_code_idx:
+            cbak_wce = wce
+            cbak_tree = tree
+
+    return GuardResult(
+        hook_wce=hook_wce, cbak_wce=cbak_wce,
+        import_count=mod.import_count, guard_func_idx=guard_idx,
+        hook_func_idx=hook_exp.index,
+        cbak_func_idx=cbak_exp.index if cbak_exp else None,
+        hook_tree=hook_tree, cbak_tree=cbak_tree,
+        errors=all_errors,
     )

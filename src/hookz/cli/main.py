@@ -389,8 +389,11 @@ def cmd_wce(args: list[str]) -> int:
     from hookz.wasm.guard import GuardError, BlockInfo
     from hookz.coverage.rewriter import parse_dwarf_locations
 
+    show_source = "--source" in args or "-s" in args
+    args = [a for a in args if a not in ("--source", "-s")]
+
     if not args:
-        print("Usage: hookz wce <source.c>")
+        print("Usage: hookz wce <source.c> [--source]")
         return 1
 
     console = Console()
@@ -416,21 +419,10 @@ def cmd_wce(args: list[str]) -> int:
     for loc in dwarf_locs:
         addr_to_line[loc.address] = (f"L{loc.line}", loc.line)
 
-    # Clean (rewrite guards, strip sections) then guard-check
-    from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards
+    # Best-effort WCE analysis — works on debug builds, dirty guards, whatever
+    from hookz.wasm.guard import analyze_wce
 
-    try:
-        cleaned = clean_hook(wasm)
-    except CleanError as e:
-        console.print(f"[red]Clean failed:[/red] {e}")
-        return 1
-
-    try:
-        result = validate_guards(cleaned)
-    except GuardError as e:
-        console.print(f"[red]Guard check failed:[/red] {e}")
-        return 1
+    result = analyze_wce(wasm)
 
     max_wce = 65535
 
@@ -494,7 +486,125 @@ def cmd_wce(args: list[str]) -> int:
             )
         console.print()
 
+    if result.errors:
+        console.print(f"  [yellow]⚠ {len(result.errors)} warning(s):[/yellow]")
+        for err in result.errors:
+            console.print(f"    [dim]{err}[/dim]")
+        console.print()
+
+    # Annotated source view
+    if show_source and source.suffix == ".c":
+        _print_annotated_source(console, source, dwarf_locs, result)
+
     return 0
+
+
+def _print_annotated_source(console, source: Path, dwarf_locs, result) -> None:
+    """Print source code annotated with per-line WCE cost."""
+    from rich.panel import Panel
+
+    # Count DWARF instruction entries per source line
+    line_instrs: dict[int, int] = {}
+    for loc in dwarf_locs:
+        line_instrs[loc.line] = line_instrs.get(loc.line, 0) + 1
+
+    # Collect loop info: which lines are loop tops, and their bounds
+    # Also build a map of line ranges → iteration multiplier
+    loop_lines: dict[int, int] = {}  # line → iteration_bound
+
+    def _collect_loop_info(node) -> None:
+        if node is None:
+            return
+        if node.is_loop and node.guard_id:
+            line = node.guard_id & 0x7FFFFFFF
+            if 0 < line < 100000:
+                loop_lines[line] = node.iteration_bound
+        for child in node.children:
+            _collect_loop_info(child)
+
+    _collect_loop_info(result.hook_tree)
+    _collect_loop_info(result.cbak_tree)
+
+    # For each DWARF location, figure out which loop(s) it's inside
+    # by checking if there's a loop line above it. Simple heuristic:
+    # track the "current" loop multiplier as we scan top to bottom.
+    # This is approximate but good enough for annotation.
+
+    try:
+        src_lines = source.read_text().splitlines()
+    except Exception:
+        console.print("[yellow]Could not read source file[/yellow]")
+        return
+
+    # Build a stack-based loop multiplier per line
+    # Walk source lines, track nesting via brace counting
+    line_multiplier: dict[int, int] = {}
+    brace_depth = 0
+    loop_stack: list[int] = []  # stack of iteration bounds
+
+    for i, text in enumerate(src_lines, 1):
+        stripped = text.strip()
+        # Track braces for nesting
+        opens = stripped.count('{')
+        closes = stripped.count('}')
+
+        # Pop loops that ended
+        while closes > 0 and loop_stack:
+            closes -= 1
+            brace_depth -= 1
+            if loop_stack and brace_depth < len(loop_stack):
+                loop_stack.pop()
+
+        brace_depth += opens - (stripped.count('}'))  # net opens
+        if brace_depth < 0:
+            brace_depth = 0
+
+        # Check if this line starts a loop
+        if i in loop_lines:
+            loop_stack.append(loop_lines[i])
+
+        # Current multiplier is product of all active loop bounds
+        mult = 1
+        for bound in loop_stack:
+            mult *= bound
+        line_multiplier[i] = mult
+
+    # Compute per-line WCE cost = instructions × multiplier
+    line_wce: dict[int, int] = {}
+    for line_no, instrs in line_instrs.items():
+        mult = line_multiplier.get(line_no, 1)
+        line_wce[line_no] = instrs * mult
+
+    max_wce_line = max(line_wce.values()) if line_wce else 1
+
+    out = []
+    for i, line_text in enumerate(src_lines, 1):
+        wce = line_wce.get(i, 0)
+
+        if wce == 0:
+            cost_col = "        "
+        else:
+            cost_col = f"{wce:>6}  "
+
+        if i in loop_lines:
+            bound = loop_lines[i]
+            out.append(f"  [bold red]{cost_col}[/bold red][bold]{i:>4}[/bold] [red]►[/red] {line_text}")
+        elif wce > max_wce_line * 0.3:
+            out.append(f"  [yellow]{cost_col}[/yellow]{i:>4}   {line_text}")
+        elif wce > 0:
+            out.append(f"  {cost_col}{i:>4}   {line_text}")
+        else:
+            out.append(f"  {cost_col}[dim]{i:>4}   {line_text}[/dim]")
+
+    console.print(Panel(
+        "\n".join(out),
+        title=f"{source.name} — WCE per line",
+        border_style="blue",
+    ))
+    console.print(
+        "  [dim]Note: per-line WCE is approximate (DWARF instruction count × loop bound)."
+        " Actual WCE may differ due to compiler optimizations and nesting heuristics.[/dim]"
+    )
 
 
 def _try_optimize(wasm: bytes) -> bytes:
