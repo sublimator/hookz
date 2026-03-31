@@ -379,6 +379,8 @@ class TestHookBuilder:
         hooks_c_dirs: dict[str, Path] | None = None,
         coverage: bool = False,
         no_cache: bool = False,
+        output_file: Path | None = None,
+        symbol_name: str | None = None,
     ) -> None:
         self.jobs = jobs or os.cpu_count() or 1
         self.force_write = force_write
@@ -386,8 +388,21 @@ class TestHookBuilder:
         self.input_file = input_file
 
         stem = input_file.stem
-        self.output_file = input_file.parent / f"{stem}_hooks.h"
-        self.symbol_name = f"{stem.lower()}_wasm"
+
+        if output_file is not None:
+            self.output_file = output_file
+        elif stem == "SetHook_test":
+            # Backward compat with xahaud's build_test_hooks.sh
+            self.output_file = input_file.parent / "SetHook_wasm.h"
+        else:
+            self.output_file = input_file.parent / f"{stem}_hooks.h"
+
+        if symbol_name is not None:
+            self.symbol_name = symbol_name
+        elif stem == "SetHook_test":
+            self.symbol_name = "wasm"
+        else:
+            self.symbol_name = f"{stem.lower()}_wasm"
 
         self.cache = None if no_cache else CompilationCache()
         self.extractor = SourceExtractor(input_file, hooks_c_dirs=hooks_c_dirs)

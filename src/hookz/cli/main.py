@@ -905,6 +905,8 @@ def wce(source, show_source):
 
 @cli.command("build-test-hooks")
 @click.argument("input_file", type=click.Path(exists=True, path_type=Path))
+@click.option("-o", "--output", default=None, help="Output header path (default: auto from input name).")
+@click.option("--symbol", default=None, help="C++ symbol name for the map (default: auto from input name).")
 @click.option("-j", "--jobs", type=int, default=0, help="Parallel workers (default: CPU count).")
 @click.option("--force-write", is_flag=True, help="Always write output even if unchanged.")
 @click.option("--hooks-c-dir", "hooks_c_dir_raw", multiple=True,
@@ -912,7 +914,7 @@ def wce(source, show_source):
 @click.option("--hook-coverage/--no-hook-coverage", default=False,
               help="Compile with coverage instrumentation.")
 @click.option("--no-cache", is_flag=True, help="Bypass compilation cache.")
-def build_test_hooks(input_file, jobs, force_write, hooks_c_dir_raw, hook_coverage, no_cache):
+def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_raw, hook_coverage, no_cache):
     """Generate _hooks.h from a C++ test file containing WASM blocks.
 
     Extracts inline hooks (R"[test.hook](...)[test.hook]") and file
@@ -957,6 +959,8 @@ def build_test_hooks(input_file, jobs, force_write, hooks_c_dir_raw, hook_covera
             hooks_c_dirs=hooks_c_dirs or None,
             coverage=hook_coverage,
             no_cache=no_cache,
+            output_file=Path(output) if output else None,
+            symbol_name=symbol,
         )
         builder.build()
     except RuntimeError as e:
