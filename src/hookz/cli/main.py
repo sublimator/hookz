@@ -1,66 +1,16 @@
-"""hookz — CLI for the hook testing framework.
-
-Usage:
-    hookz test [pytest args...]       Run tests via pytest
-    hookz coverage [--threshold N]    Run tests + show uncovered report
-    hookz find-tests <file>:<start>-<end>  Find tests that cover a line range
-    hookz show <function>             Show hook API function implementation
-    hookz show --list                 List all hook API functions + status
-    hookz debug-compile <source.c>    Check if a hook compiles (debug build, not for deployment)
-    hookz build <source.c>            Compile + clean + guard-check (production build)
-    hookz clean <hook.wasm>           Clean a WASM binary for deployment
-    hookz guard-check <hook.wasm>     Validate guard calls in a WASM binary
-    hookz wce <source.c>              Analyze WCE budget usage with source lines
-"""
+"""hookz — CLI for the hook testing framework."""
 
 from __future__ import annotations
 
 import sys
 from pathlib import Path
 
-
-def cmd_test(args: list[str]) -> int:
-    """Run pytest with hookz config."""
-    import pytest
-    return pytest.main(args)
+import click
 
 
-def cmd_coverage(args: list[str]) -> int:
-    """Run tests and show coverage report."""
-    import pytest
-
-    # Inject -v if not present, and add our coverage marker
-    if "-v" not in args and "--verbose" not in args:
-        args = ["-v"] + args
-
-    result = pytest.main(args)
-
-    # Check threshold
-    from hookz.config import load_config
-    config = load_config()
-
-    for i, a in enumerate(args):
-        if a == "--threshold":
-            config.coverage_threshold = int(args[i + 1])
-
-    return result
-
-
-def cmd_show(args: list[str]) -> int:
-    """Show hook API function implementation from xahaud source."""
-    from rich.console import Console
-
-    from hookz.config import load_config
-
-    console = Console()
-    config = load_config()
-
-    if not args or args[0] == "--list":
-        return _show_list(console, config)
-
-    name = args[0]
-    return _show_function(console, config, name)
-
+# ---------------------------------------------------------------------------
+# Helper / utility functions (module-level, not nested)
+# ---------------------------------------------------------------------------
 
 def _print_legend(console, config):
     """Print path legend so the user knows where sources come from."""
@@ -175,144 +125,6 @@ def _show_function(console, config, name: str) -> int:
     return 0
 
 
-def cmd_debug_compile(args: list[str]) -> int:
-    """Debug-compile a hook to check it builds. Not for deployment."""
-    from hookz.compiler import compile_hook
-    from hookz.config import load_config
-
-    if not args:
-        print("Usage: hookz debug-compile <source.c> [-o output.wasm]")
-        print("  Compiles with debug info (-g -O0) and test flags from hookz.toml.")
-        print("  This is for checking compilation, not producing deployable WASM.")
-        return 1
-
-    source = Path(args[0])
-    output = None
-
-    if len(args) >= 3 and args[1] == "-o":
-        output = Path(args[2])
-
-    if output is None:
-        output = source.with_suffix(".wasm")
-
-    config = load_config()
-    wasm = compile_hook(source, output, config, debug=True, optimize=False)
-    print(f"Debug-compiled {source.name} → {output} ({len(wasm)} bytes)")
-    return 0
-
-
-def cmd_find_tests(args: list[str]) -> int:
-    """Find tests that cover a given line range.
-
-    Usage: hookz find-tests tip.c:225-400
-           hookz find-tests top.c:300
-    """
-    import re
-    import pytest
-
-    if not args:
-        print("Usage: hookz find-tests <file>:<start>[-<end>]")
-        print("  Example: hookz find-tests tip.c:225-400")
-        return 1
-
-    # Parse file:start-end
-    m = re.match(r'(\w+\.\w+):(\d+)(?:-(\d+))?$', args[0])
-    if not m:
-        print(f"Invalid format: {args[0]}")
-        print("Expected: <file>:<start>[-<end>]  e.g. tip.c:225-400")
-        return 1
-
-    filename = m.group(1)
-    start = int(m.group(2))
-    end = int(m.group(3)) if m.group(3) else start
-
-    # Run all tests silently to collect per-test coverage
-    pytest.main(["-x", "-q", "--tb=no", "--no-header"] + args[1:])
-
-    # Query which tests hit those lines
-    from hookz.testing.plugin import find_tests_for_lines, _hook_registry
-
-    # Match filename to hook name
-    hook_name = None
-    for name, path in _hook_registry.items():
-        if path.name == filename:
-            hook_name = name
-            break
-
-    if hook_name is None:
-        print(f"No registered hook matches '{filename}'")
-        print(f"Registered: {', '.join(f'{n} ({p.name})' for n, p in _hook_registry.items())}")
-        return 1
-
-    tests = find_tests_for_lines(hook_name, start, end)
-
-    if not tests:
-        print(f"No tests cover {filename}:{start}-{end}")
-    else:
-        print(f"\nTests covering {filename}:{start}-{end}:")
-        for t in sorted(tests):
-            print(f"  {t}")
-        print(f"\n{len(tests)} test(s) found")
-
-    return 0
-
-
-def cmd_clean(args: list[str]) -> int:
-    """Clean a hook WASM binary for deployment.
-
-    Usage: hookz clean <input.wasm> [-o output.wasm]
-    """
-    from hookz.wasm.clean import clean_hook, CleanError
-
-    if not args:
-        print("Usage: hookz clean <input.wasm> [-o output.wasm]")
-        return 1
-
-    source = Path(args[0])
-    output = source  # overwrite by default
-
-    if len(args) >= 3 and args[1] == "-o":
-        output = Path(args[2])
-
-    wasm = source.read_bytes()
-    try:
-        cleaned = clean_hook(wasm)
-    except CleanError as e:
-        print(f"Clean failed: {e}")
-        return 1
-
-    output.write_bytes(cleaned)
-    print(f"Cleaned {source.name}: {len(wasm)} → {len(cleaned)} bytes → {output}")
-    return 0
-
-
-def cmd_guard_check(args: list[str]) -> int:
-    """Validate guard calls in a hook WASM binary.
-
-    Usage: hookz guard-check <hook.wasm>
-    """
-    from hookz.wasm.guard import validate_guards, GuardError
-
-    if not args:
-        print("Usage: hookz guard-check <hook.wasm>")
-        return 1
-
-    source = Path(args[0])
-    wasm = source.read_bytes()
-
-    try:
-        result = validate_guards(wasm)
-    except GuardError as e:
-        print(f"Guard check FAILED: {e}")
-        if e.codesec >= 0:
-            print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
-        return 1
-
-    print(f"Guard check PASSED: {source.name}")
-    _print_guard_result(result)
-    return 0
-
-
 def _print_guard_result(result) -> None:
     """Print detailed guard check results."""
     max_wce = 65535
@@ -325,212 +137,27 @@ def _print_guard_result(result) -> None:
     print(f"  Guard function: import #{result.guard_func_idx}")
 
 
-def cmd_build(args: list[str]) -> int:
-    """Compile, clean, and guard-check a hook in one step.
+def _try_optimize(wasm: bytes) -> bytes:
+    """Run wasm-opt if available, return original bytes if not."""
+    import platform
+    import shutil
 
-    Usage: hookz build <source.c> [-o output.wasm]
-    """
-    from hookz.compiler import compile_hook
-    from hookz.config import load_config
-    from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards, GuardError
-
-    if not args:
-        print("Usage: hookz build <source.c> [-o output.wasm]")
-        return 1
-
-    source = Path(args[0])
-    output = source.with_suffix(".wasm")
-
-    if len(args) >= 3 and args[1] == "-o":
-        output = Path(args[2])
-
-    config = load_config()
-
-    # 1. Compile
-    print(f"Compiling {source.name}...")
-    wasm = compile_hook(source, output, config, debug=False, optimize=True)
-    print(f"  Compiled: {len(wasm)} bytes")
-
-    # 2. Optimize (if wasm-opt available)
-    wasm = _try_optimize(wasm)
-
-    # 3. Clean
-    try:
-        cleaned = clean_hook(wasm)
-        print(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
-    except CleanError as e:
-        print(f"  Clean FAILED: {e}")
-        return 1
-
-    # 4. Guard check
-    try:
-        result = validate_guards(cleaned)
-        hook_pct = result.hook_wce / 65535 * 100
-        print(f"  Guard check PASSED (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
-    except GuardError as e:
-        print(f"  Guard check FAILED: {e}")
-        return 1
-
-    # Write output
-    output.write_bytes(cleaned)
-    print(f"  → {output} ({len(cleaned)} bytes)")
-    return 0
-
-
-def cmd_wce(args: list[str]) -> int:
-    """Analyze worst-case execution budget usage with source line mapping.
-
-    Usage: hookz wce <source.c>
-    """
-    from rich.console import Console
-    from hookz.compiler import compile_hook
-    from hookz.config import load_config
-    from hookz.wasm.guard import GuardError, BlockInfo
-    from hookz.coverage.rewriter import parse_dwarf_locations
-
-    show_source = "--source" in args or "-s" in args
-    args = [a for a in args if a not in ("--source", "-s")]
-
-    if not args:
-        print("Usage: hookz wce <source.c> [--source]")
-        return 1
-
-    console = Console()
-    source = Path(args[0])
-    config = load_config()
-
-    # Two-stage compile: clang -c -g -Oz → wasm-ld (preserves DWARF on optimized code)
-    from hookz.compiler import compile_hook_two_stage
-    from hookz.wasm.clean import clean_hook_detailed
-    from hookz.wasm.visitor import KeepDebugVisitor
-    from hookz.wasm.guard import analyze_wce
-
-    try:
-        wasm = compile_hook_two_stage(source, config, opt_level="-Oz")
-        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, optimized with DWARF)[/dim]")
-    except Exception as e:
-        # Fall back to single-stage debug build
-        console.print(f"[dim]Two-stage compile failed ({e}), falling back to debug build[/dim]")
-        wasm = compile_hook(source, config=config, debug=True, optimize=False)
-        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
-
-    # Clean with DWARF preserved (rewrite guards, keep .debug_line)
-    try:
-        clean_result = clean_hook_detailed(wasm, visitor=KeepDebugVisitor())
-        cleaned = clean_result.wasm
-    except Exception:
-        cleaned = wasm
-
-    # Parse DWARF from cleaned binary (addresses match the cleaned code)
-    try:
-        dwarf_locs = parse_dwarf_locations(cleaned)
-    except Exception:
-        dwarf_locs = []
-
-    # Analyze WCE on cleaned binary
-    result = analyze_wce(cleaned)
-
-    max_wce = 65535
-
-    def _line_from_guard_id(guard_id: int) -> str:
-        """Extract source line from guard ID.
-
-        The _g() macro encodes line as: (1 << 31) + __LINE__
-        So the line number is guard_id & 0x7FFFFFFF, but only if bit 31 is set.
-        """
-        if guard_id < 0:
-            # Signed: undo two's complement
-            line = guard_id & 0x7FFFFFFF
-        elif guard_id & 0x80000000:
-            line = guard_id & 0x7FFFFFFF
+    if shutil.which("wasm-opt") is None:
+        system = platform.system()
+        if system == "Darwin":
+            hint = "brew install binaryen"
+        elif system == "Linux":
+            hint = "apt install binaryen  # or your package manager"
         else:
-            line = guard_id  # raw line number
-        if 0 < line < 100000:
-            return f"line {line}"
-        return f"guard 0x{guard_id & 0xFFFFFFFF:08X}"
+            hint = "install binaryen from https://github.com/WebAssembly/binaryen/releases"
+        print(f"  ⚠ wasm-opt not found — skipping optimization ({hint})")
+        return wasm
 
-    def _collect_loops(node: BlockInfo) -> list[tuple[str, int, int]]:
-        """Collect all loop nodes with (source_location, bound, wce)."""
-        loops = []
-        if node.is_loop:
-            loc = _line_from_guard_id(node.guard_id)
-            loops.append((loc, node.iteration_bound, node.wce))
-        for child in node.children:
-            loops.extend(_collect_loops(child))
-        return loops
-
-    # Also compile debug build for comparison
-    debug_result = None
-    debug_dwarf_locs = []
-    try:
-        debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
-        from hookz.wasm.clean import clean_hook_detailed as _clean_d
-        debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
-        debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
-        debug_result = analyze_wce(debug_cleaned)
-    except Exception:
-        pass
-
-    # Source view first (if requested)
-    if show_source and source.suffix == ".c":
-        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
-
-    # Then summary at the end
-    console.print()
-    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Summary")
-    console.print()
-
-    for label, opt_wce, opt_tree, dbg_wce, dbg_tree in [
-        ("hook()", result.hook_wce, result.hook_tree,
-         debug_result.hook_wce if debug_result else 0,
-         debug_result.hook_tree if debug_result else None),
-        ("cbak()", result.cbak_wce, result.cbak_tree,
-         debug_result.cbak_wce if debug_result else 0,
-         debug_result.cbak_tree if debug_result else None),
-    ]:
-        if opt_tree is None:
-            continue
-        pct = opt_wce / max_wce * 100
-        bar_filled = int(pct / 5)
-        bar = "█" * bar_filled + "░" * (20 - bar_filled)
-        savings = ""
-        if dbg_wce and dbg_wce > opt_wce:
-            saved_pct = (1 - opt_wce / dbg_wce) * 100
-            savings = f"  [green]({saved_pct:.0f}% smaller than debug)[/green]"
-        console.print(f"  [bold]{label}[/bold] WCE: {opt_wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}{savings}")
-        console.print()
-
-        # Dual-column loop breakdown
-        opt_loops = _collect_loops(opt_tree)
-        dbg_loops = _collect_loops(dbg_tree) if dbg_tree else []
-
-        if not opt_loops:
-            console.print("    [dim]No loops found[/dim]")
-            continue
-
-        # Build lookup by line for debug loops
-        dbg_loop_by_line: dict[str, int] = {loc: wce for loc, _, wce in dbg_loops}
-
-        console.print(f"    [bold]{'':>20s}  {'':>10s}  {'debug':>8s}  {'prod':>8s}[/bold]")
-        opt_loops.sort(key=lambda x: x[2], reverse=True)
-        for loc, bound, loop_wce in opt_loops:
-            loop_pct = loop_wce / max(opt_wce, 1) * 100
-            lbar_filled = int(loop_pct / 5)
-            lbar = "█" * lbar_filled + "░" * (20 - lbar_filled)
-            dbg_wce_str = f"{dbg_loop_by_line.get(loc, 0):>6,}" if loc in dbg_loop_by_line else "     —"
-            console.print(
-                f"    {loc:>20s}  GUARD({bound:<5d})  {dbg_wce_str}  {loop_wce:>6,}  {lbar}  {loop_pct:4.1f}%"
-            )
-        console.print()
-
-    if result.errors:
-        console.print(f"  [yellow]⚠ {len(result.errors)} warning(s):[/yellow]")
-        for err in result.errors:
-            console.print(f"    [dim]{err}[/dim]")
-        console.print()
-
-    return 0
+    from hookz.wasm.optimize import optimize_hook
+    before = len(wasm)
+    wasm = optimize_hook(wasm)
+    print(f"  Optimized: {before} → {len(wasm)} bytes")
+    return wasm
 
 
 def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result) -> None:
@@ -613,58 +240,396 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
     )
 
 
-def _try_optimize(wasm: bytes) -> bytes:
-    """Run wasm-opt if available, return original bytes if not."""
-    import platform
-    import shutil
+def _line_from_guard_id(guard_id: int) -> str:
+    """Extract source line from guard ID.
 
-    if shutil.which("wasm-opt") is None:
-        system = platform.system()
-        if system == "Darwin":
-            hint = "brew install binaryen"
-        elif system == "Linux":
-            hint = "apt install binaryen  # or your package manager"
-        else:
-            hint = "install binaryen from https://github.com/WebAssembly/binaryen/releases"
-        print(f"  ⚠ wasm-opt not found — skipping optimization ({hint})")
-        return wasm
-
-    from hookz.wasm.optimize import optimize_hook
-    before = len(wasm)
-    wasm = optimize_hook(wasm)
-    print(f"  Optimized: {before} → {len(wasm)} bytes")
-    return wasm
+    The _g() macro encodes line as: (1 << 31) + __LINE__
+    So the line number is guard_id & 0x7FFFFFFF, but only if bit 31 is set.
+    """
+    if guard_id < 0:
+        # Signed: undo two's complement
+        line = guard_id & 0x7FFFFFFF
+    elif guard_id & 0x80000000:
+        line = guard_id & 0x7FFFFFFF
+    else:
+        line = guard_id  # raw line number
+    if 0 < line < 100000:
+        return f"line {line}"
+    return f"guard 0x{guard_id & 0xFFFFFFFF:08X}"
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = argv if argv is not None else sys.argv[1:]
+def _collect_loops(node, /) -> list[tuple[str, int, int]]:
+    """Collect all loop nodes with (source_location, bound, wce)."""
+    loops = []
+    if node.is_loop:
+        loc = _line_from_guard_id(node.guard_id)
+        loops.append((loc, node.iteration_bound, node.wce))
+    for child in node.children:
+        loops.extend(_collect_loops(child))
+    return loops
 
-    if not args or args[0] in ("-h", "--help", "help"):
-        print(__doc__)
-        return 0
 
-    cmd = args[0]
-    rest = args[1:]
+# ---------------------------------------------------------------------------
+# Click CLI
+# ---------------------------------------------------------------------------
 
-    commands = {
-        "test": cmd_test,
-        "coverage": cmd_coverage,
-        "find-tests": cmd_find_tests,
-        "show": cmd_show,
-        "debug-compile": cmd_debug_compile,
-        "clean": cmd_clean,
-        "guard-check": cmd_guard_check,
-        "build": cmd_build,
-        "wce": cmd_wce,
-    }
+class AliasedGroup(click.Group):
+    """Allow abbreviated/aliased commands (e.g. 'hookz gc' for guard-check)."""
 
-    if cmd not in commands:
-        print(f"Unknown command: {cmd}")
-        print(f"Available: {', '.join(commands)}")
-        return 1
 
-    return commands[cmd](rest)
+@click.group(cls=AliasedGroup)
+def cli():
+    """hookz — CLI for the hook testing framework."""
+
+
+@cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
+def test(pytest_args):
+    """Run tests via pytest (extra args passed through)."""
+    import pytest
+    sys.exit(pytest.main(list(pytest_args)))
+
+
+@cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
+def coverage(pytest_args):
+    """Run tests and show coverage report."""
+    import pytest
+
+    args = list(pytest_args)
+
+    if "-v" not in args and "--verbose" not in args:
+        args = ["-v"] + args
+
+    result = pytest.main(args)
+
+    from hookz.config import load_config
+    config = load_config()
+
+    for i, a in enumerate(args):
+        if a == "--threshold":
+            config.coverage_threshold = int(args[i + 1])
+
+    sys.exit(result)
+
+
+@cli.command("find-tests")
+@click.argument("spec")
+@click.argument("extra_args", nargs=-1, type=click.UNPROCESSED)
+def find_tests(spec, extra_args):
+    """Find tests that cover a line range.
+
+    SPEC is <file>:<start>[-<end>], e.g. tip.c:225-400
+    """
+    import re
+    import pytest
+
+    m = re.match(r'(\w+\.\w+):(\d+)(?:-(\d+))?$', spec)
+    if not m:
+        print(f"Invalid format: {spec}")
+        print("Expected: <file>:<start>[-<end>]  e.g. tip.c:225-400")
+        sys.exit(1)
+
+    filename = m.group(1)
+    start = int(m.group(2))
+    end = int(m.group(3)) if m.group(3) else start
+
+    # Run all tests silently to collect per-test coverage
+    pytest.main(["-x", "-q", "--tb=no", "--no-header"] + list(extra_args))
+
+    # Query which tests hit those lines
+    from hookz.testing.plugin import find_tests_for_lines, _hook_registry
+
+    # Match filename to hook name
+    hook_name = None
+    for name, path in _hook_registry.items():
+        if path.name == filename:
+            hook_name = name
+            break
+
+    if hook_name is None:
+        print(f"No registered hook matches '{filename}'")
+        print(f"Registered: {', '.join(f'{n} ({p.name})' for n, p in _hook_registry.items())}")
+        sys.exit(1)
+
+    tests = find_tests_for_lines(hook_name, start, end)
+
+    if not tests:
+        print(f"No tests cover {filename}:{start}-{end}")
+    else:
+        print(f"\nTests covering {filename}:{start}-{end}:")
+        for t in sorted(tests):
+            print(f"  {t}")
+        print(f"\n{len(tests)} test(s) found")
+
+    sys.exit(0)
+
+
+@cli.command()
+@click.option("--list", "list_all", is_flag=True, help="List all hook API functions and their status.")
+@click.argument("name", required=False)
+def show(list_all, name):
+    """Show hook API function implementation from xahaud source.
+
+    With --list, shows all functions and their implementation status.
+    With a NAME argument, shows detailed info for that function.
+    """
+    from rich.console import Console
+    from hookz.config import load_config
+
+    console = Console()
+    config = load_config()
+
+    if list_all or name is None:
+        sys.exit(_show_list(console, config))
+    else:
+        sys.exit(_show_function(console, config, name))
+
+
+@cli.command("debug-compile")
+@click.argument("source", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path.")
+def debug_compile(source, output):
+    """Check if a hook compiles (debug build, not for deployment)."""
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+
+    source = Path(source)
+    if output is None:
+        output = source.with_suffix(".wasm")
+    else:
+        output = Path(output)
+
+    config = load_config()
+    wasm = compile_hook(source, output, config, debug=True, optimize=False)
+    print(f"Debug-compiled {source.name} → {output} ({len(wasm)} bytes)")
+    sys.exit(0)
+
+
+@cli.command()
+@click.argument("source", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path.")
+def build(source, output):
+    """Compile, clean, and guard-check a hook (production build)."""
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+    from hookz.wasm.clean import clean_hook, CleanError
+    from hookz.wasm.guard import validate_guards, GuardError
+
+    source = Path(source)
+    if output is None:
+        output = source.with_suffix(".wasm")
+    else:
+        output = Path(output)
+
+    config = load_config()
+
+    # 1. Compile
+    print(f"Compiling {source.name}...")
+    wasm = compile_hook(source, output, config, debug=False, optimize=True)
+    print(f"  Compiled: {len(wasm)} bytes")
+
+    # 2. Optimize (if wasm-opt available)
+    wasm = _try_optimize(wasm)
+
+    # 3. Clean
+    try:
+        cleaned = clean_hook(wasm)
+        print(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
+    except CleanError as e:
+        print(f"  Clean FAILED: {e}")
+        sys.exit(1)
+
+    # 4. Guard check
+    try:
+        result = validate_guards(cleaned)
+        hook_pct = result.hook_wce / 65535 * 100
+        print(f"  Guard check PASSED (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
+    except GuardError as e:
+        print(f"  Guard check FAILED: {e}")
+        sys.exit(1)
+
+    # Write output
+    output.write_bytes(cleaned)
+    print(f"  → {output} ({len(cleaned)} bytes)")
+    sys.exit(0)
+
+
+@cli.command()
+@click.argument("input_wasm", type=click.Path(exists=True))
+@click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path (default: overwrite input).")
+def clean(input_wasm, output):
+    """Clean a hook WASM binary for deployment."""
+    from hookz.wasm.clean import clean_hook, CleanError
+
+    source = Path(input_wasm)
+    if output is None:
+        output = source  # overwrite by default
+    else:
+        output = Path(output)
+
+    wasm = source.read_bytes()
+    try:
+        cleaned = clean_hook(wasm)
+    except CleanError as e:
+        print(f"Clean failed: {e}")
+        sys.exit(1)
+
+    output.write_bytes(cleaned)
+    print(f"Cleaned {source.name}: {len(wasm)} → {len(cleaned)} bytes → {output}")
+    sys.exit(0)
+
+
+@cli.command("guard-check")
+@click.argument("hook_wasm", type=click.Path(exists=True))
+def guard_check(hook_wasm):
+    """Validate guard calls in a hook WASM binary."""
+    from hookz.wasm.guard import validate_guards, GuardError
+
+    source = Path(hook_wasm)
+    wasm = source.read_bytes()
+
+    try:
+        result = validate_guards(wasm)
+    except GuardError as e:
+        print(f"Guard check FAILED: {e}")
+        if e.codesec >= 0:
+            print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
+        sys.exit(1)
+
+    print(f"Guard check PASSED: {source.name}")
+    _print_guard_result(result)
+    sys.exit(0)
+
+
+@cli.command()
+@click.argument("source", type=click.Path(exists=True))
+@click.option("--source", "-s", "show_source", is_flag=True, help="Show annotated source with instruction counts.")
+def wce(source, show_source):
+    """Analyze WCE budget usage with source line mapping."""
+    from rich.console import Console
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+    from hookz.wasm.guard import GuardError, BlockInfo
+    from hookz.coverage.rewriter import parse_dwarf_locations
+
+    console = Console()
+    source = Path(source)
+    config = load_config()
+
+    # Two-stage compile: clang -c -g -Oz -> wasm-ld (preserves DWARF on optimized code)
+    from hookz.compiler import compile_hook_two_stage
+    from hookz.wasm.clean import clean_hook_detailed
+    from hookz.wasm.visitor import KeepDebugVisitor
+    from hookz.wasm.guard import analyze_wce
+
+    try:
+        wasm = compile_hook_two_stage(source, config, opt_level="-Oz")
+        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, optimized with DWARF)[/dim]")
+    except Exception as e:
+        # Fall back to single-stage debug build
+        console.print(f"[dim]Two-stage compile failed ({e}), falling back to debug build[/dim]")
+        wasm = compile_hook(source, config=config, debug=True, optimize=False)
+        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
+
+    # Clean with DWARF preserved (rewrite guards, keep .debug_line)
+    try:
+        clean_result = clean_hook_detailed(wasm, visitor=KeepDebugVisitor())
+        cleaned = clean_result.wasm
+    except Exception:
+        cleaned = wasm
+
+    # Parse DWARF from cleaned binary (addresses match the cleaned code)
+    try:
+        dwarf_locs = parse_dwarf_locations(cleaned)
+    except Exception:
+        dwarf_locs = []
+
+    # Analyze WCE on cleaned binary
+    result = analyze_wce(cleaned)
+
+    max_wce = 65535
+
+    # Also compile debug build for comparison
+    debug_result = None
+    debug_dwarf_locs = []
+    try:
+        debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
+        from hookz.wasm.clean import clean_hook_detailed as _clean_d
+        debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
+        debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
+        debug_result = analyze_wce(debug_cleaned)
+    except Exception:
+        pass
+
+    # Source view first (if requested)
+    if show_source and source.suffix == ".c":
+        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
+
+    # Then summary at the end
+    console.print()
+    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Summary")
+    console.print()
+
+    for label, opt_wce, opt_tree, dbg_wce, dbg_tree in [
+        ("hook()", result.hook_wce, result.hook_tree,
+         debug_result.hook_wce if debug_result else 0,
+         debug_result.hook_tree if debug_result else None),
+        ("cbak()", result.cbak_wce, result.cbak_tree,
+         debug_result.cbak_wce if debug_result else 0,
+         debug_result.cbak_tree if debug_result else None),
+    ]:
+        if opt_tree is None:
+            continue
+        pct = opt_wce / max_wce * 100
+        bar_filled = int(pct / 5)
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        savings = ""
+        if dbg_wce and dbg_wce > opt_wce:
+            saved_pct = (1 - opt_wce / dbg_wce) * 100
+            savings = f"  [green]({saved_pct:.0f}% smaller than debug)[/green]"
+        console.print(f"  [bold]{label}[/bold] WCE: {opt_wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}{savings}")
+        console.print()
+
+        # Dual-column loop breakdown
+        opt_loops = _collect_loops(opt_tree)
+        dbg_loops = _collect_loops(dbg_tree) if dbg_tree else []
+
+        if not opt_loops:
+            console.print("    [dim]No loops found[/dim]")
+            continue
+
+        # Build lookup by line for debug loops
+        dbg_loop_by_line: dict[str, int] = {loc: wce for loc, _, wce in dbg_loops}
+
+        console.print(f"    [bold]{'':>20s}  {'':>10s}  {'debug':>8s}  {'prod':>8s}[/bold]")
+        opt_loops.sort(key=lambda x: x[2], reverse=True)
+        for loc, bound, loop_wce in opt_loops:
+            loop_pct = loop_wce / max(opt_wce, 1) * 100
+            lbar_filled = int(loop_pct / 5)
+            lbar = "█" * lbar_filled + "░" * (20 - lbar_filled)
+            dbg_wce_str = f"{dbg_loop_by_line.get(loc, 0):>6,}" if loc in dbg_loop_by_line else "     —"
+            console.print(
+                f"    {loc:>20s}  GUARD({bound:<5d})  {dbg_wce_str}  {loop_wce:>6,}  {lbar}  {loop_pct:4.1f}%"
+            )
+        console.print()
+
+    if result.errors:
+        console.print(f"  [yellow]⚠ {len(result.errors)} warning(s):[/yellow]")
+        for err in result.errors:
+            console.print(f"    [dim]{err}[/dim]")
+        console.print()
+
+    sys.exit(0)
+
+
+# ---------------------------------------------------------------------------
+# Entry point — referenced in pyproject.toml [project.scripts]
+# ---------------------------------------------------------------------------
+
+def main():
+    cli(standalone_mode=False)
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
