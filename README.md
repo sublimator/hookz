@@ -1,7 +1,5 @@
 # hookz
 
-![PyCharm running tipbot tests with 100% coverage](docs/pycharm-tests.png)
-
 **Experimental.** Test framework for [Xahau](https://xahau.network) WASM hooks. Execute C hooks in Python, get line-level coverage, explore the hook API — without running xahaud.
 
 ## Why
