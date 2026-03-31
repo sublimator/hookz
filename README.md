@@ -263,7 +263,7 @@ This requires the [`external-env-tests`](https://github.com/Xahau/xahaud) branch
 - Void return type support for coverage imports in `Guard.h`
 - `hookz build-test-hooks` CMake integration
 
-See `docs/external-env-tests.md` for the full details.
+See [docs/external-env-tests.md](docs/external-env-tests.md) for the full details.
 
 ### Quick start
 
