@@ -35,16 +35,7 @@ jobs:
 
       - name: Clone xahaud hook headers (sparse)
         run: |
-          git clone --depth 1 --filter=blob:none --sparse \
-            -b dev \
-            https://github.com/Xahau/xahaud.git /tmp/xahaud
-          cd /tmp/xahaud && git sparse-checkout set \
-            hook/ \
-            src/xrpld/app/hook/ \
-            src/test/app/SetHook_test.cpp \
-            include/xrpl/hook/ \
-            include/xrpl/protocol/SField.h \
-            src/libxrpl/protocol/Indexes.cpp
+          git clone --depth 1 -b dev https://github.com/Xahau/xahaud.git /tmp/xahaud
           echo "HOOKZ_XAHAUD=/tmp/xahaud" >> $GITHUB_ENV
 
       - name: Install dependencies
