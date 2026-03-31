@@ -36,6 +36,7 @@ from .types import (
 )
 from .decode import decode_module
 from .encode import encode_module, _encode_leb128, _encode_signed_leb128
+from .visitor import Visitor, KeepDebugVisitor, Action, LoopContext, InstructionContext
 
 # Opcodes not in wasm-tob
 OP_SELECT_T = 0x1C
@@ -69,14 +70,12 @@ class CleanError(Exception):
     """Raised when cleaning fails."""
 
 
-def clean_hook(wasm: bytes) -> bytes:
+def clean_hook(wasm: bytes, visitor: Visitor | None = None) -> bytes:
     """Clean a WASM hook binary for deployment.
-
-    Takes raw compiler output and produces a binary ready for guard checking
-    and on-chain deployment.
 
     Args:
         wasm: Raw WASM binary (e.g. from clang/wasi-sdk)
+        visitor: Visitor to control cleaning behavior. Default strips everything.
 
     Returns:
         Cleaned WASM binary bytes
@@ -84,15 +83,20 @@ def clean_hook(wasm: bytes) -> bytes:
     Raises:
         CleanError: If the binary can't be cleaned
     """
+    if visitor is None:
+        visitor = Visitor()
     mod = decode_module(wasm)
-    cleaned = clean_module(mod)
-    return encode_module(cleaned)
+    original_size = len(wasm)
+    cleaned = clean_module(mod, visitor)
+    result = encode_module(cleaned)
+    visitor.on_complete(original_size, len(result))
+    return result
 
 
-def clean_module(mod: Module) -> Module:
+def clean_module(mod: Module, visitor: Visitor | None = None) -> Module:
     """Clean a decoded Module.
 
-    - Strips custom sections
+    - Strips/keeps sections based on visitor decisions
     - Keeps only imports that are function imports
     - Rebuilds type section with only used types
     - Keeps only hook/cbak code bodies
@@ -185,6 +189,16 @@ def clean_module(mod: Module) -> Module:
         if cbak_exp is not None:
             new_exports.append(Export(name="cbak", kind=ExportKind.FUNC, index=new_import_count + 1))
 
+    # --- Custom sections ---
+    if visitor is None:
+        visitor = Visitor()
+
+    kept_custom = []
+    for cs in mod.custom_sections:
+        action = visitor.on_custom_section(cs.name, len(cs.data))
+        if action == Action.KEEP:
+            kept_custom.append(cs)
+
     # --- Assemble cleaned module ---
     cleaned = Module(
         types=new_types,
@@ -192,11 +206,10 @@ def clean_module(mod: Module) -> Module:
         functions=new_functions,
         exports=new_exports,
         code=new_code,
-        # Copy through sections that are preserved as-is
         memories=mod.memories,
         globals=mod.globals,
         data=mod.data,
-        # Dropped: custom_sections, tables, elements, start
+        custom_sections=kept_custom,
     )
 
     return cleaned

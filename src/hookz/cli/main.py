@@ -419,10 +419,17 @@ def cmd_wce(args: list[str]) -> int:
     for loc in dwarf_locs:
         addr_to_line[loc.address] = (f"L{loc.line}", loc.line)
 
-    # Best-effort WCE analysis — works on debug builds, dirty guards, whatever
+    # Clean with debug info preserved, then best-effort WCE analysis
+    from hookz.wasm.clean import clean_hook
+    from hookz.wasm.visitor import KeepDebugVisitor
     from hookz.wasm.guard import analyze_wce
 
-    result = analyze_wce(wasm)
+    try:
+        cleaned = clean_hook(wasm, visitor=KeepDebugVisitor())
+    except Exception:
+        cleaned = wasm  # fall back to raw if cleaning fails
+
+    result = analyze_wce(cleaned)
 
     max_wce = 65535
 

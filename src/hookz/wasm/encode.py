@@ -154,7 +154,7 @@ def encode_module(mod: Module) -> bytes:
     type, import, function, table, memory, global, export, start,
     element, data_count, code, data.
 
-    Custom sections are NOT included (they're stripped during cleaning).
+    Custom sections are included if present on the Module.
     """
     out = bytearray(WASM_HEADER)
 
@@ -199,5 +199,14 @@ def encode_module(mod: Module) -> bytes:
     # 11. Data section(s)
     for sec in mod.data:
         out.extend(_encode_raw_section(sec))
+
+    # Custom sections (appended at end — valid per WASM spec)
+    for cs in mod.custom_sections:
+        payload = bytearray()
+        name_bytes = cs.name.encode("utf-8")
+        payload.extend(_encode_leb128(len(name_bytes)))
+        payload.extend(name_bytes)
+        payload.extend(cs.data)
+        out.extend(_encode_section(0, bytes(payload)))
 
     return bytes(out)
