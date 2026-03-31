@@ -226,6 +226,107 @@ hookz instruments WASM via DWARF debug info, then uses tree-sitter to filter non
   top.c: 100% coverage!
 ```
 
+## Integration testing with xahaud
+
+hookz also supports a second mode: using xahaud itself as a test runner for your hooks. You write C++ test files (`*_test.cpp`) in your own project, and a special branch of xahaud builds and runs them — with real ledger closes, real transactions, real guard validation.
+
+The key idea: **your tests live outside the xahaud repo**. xahaud becomes a test runner you point at your code, not a repo you fork and modify.
+
+### How it works
+
+```
+ Your project                         xahaud (external-env-tests branch)
+ ┌─────────────────────┐              ┌──────────────────────────┐
+ │ tests/               │              │ cmake ..                 │
+ │   MyHook_test.cpp    │──────────────│   -DHOOKS_TEST_DIR=...   │
+ │   MyHook_test_hooks.h│  (generated) │   -DHOOKS_C_DIR=...      │
+ │ src/                 │              │                          │
+ │   my_hook.c          │              │ hookz build-test-hooks   │
+ │                      │              │   extracts + compiles    │
+ │                      │              │   hooks from your .cpp   │
+ │                      │              │                          │
+ │                      │              │ rippled runs your tests  │
+ │                      │              │   real Env, real ledger   │
+ └─────────────────────┘              └──────────────────────────┘
+```
+
+1. Write `*_test.cpp` files using xahaud's `Env` test framework, in your own repo
+2. Reference your hook source with `"file:domain/path.c"` or inline it
+3. CMake calls `hookz build-test-hooks` to compile hooks and generate a C++ header
+4. xahaud builds and runs the tests with full ledger simulation
+
+### xahaud branch
+
+This requires the [`external-env-tests`](https://github.com/Xahau/xahaud) branch of xahaud, which adds:
+- External test file support in CMake (`HOOKS_TEST_DIR`, `HOOKS_C_DIR`)
+- `__on_source_line` coverage callback in the WASM host
+- Void return type support for coverage imports in `Guard.h`
+- `hookz build-test-hooks` CMake integration
+
+See `docs/external-env-tests.md` for the full details.
+
+### Quick start
+
+```bash
+# Install hookz as a CLI tool (needs to be on PATH for CMake)
+uv tool install --editable ~/projects/hookz
+
+# Clone xahaud external-env-tests branch
+git clone -b external-env-tests https://github.com/Xahau/xahaud ~/projects/xahaud
+
+# Build xahaud, pointing at your tests
+cd ~/projects/xahaud
+cmake -B build \
+  -DHOOKS_TEST_DIR=~/projects/my-hooks/tests \
+  -DHOOKS_C_DIR="myhooks=~/projects/my-hooks" \
+  -DHOOKS_COVERAGE=ON
+
+cmake --build build --target rippled
+./build/rippled --unittest=MyHook_test
+```
+
+### Test file format
+
+```cpp
+// Inline hook — compiled directly from the test file
+TestHook simple_wasm = wasm[R"[test.hook](
+    #include "hookapi.h"
+    int64_t hook(uint32_t r) {
+        _g(1,1);
+        return accept(0, 0, 0);
+    }
+)[test.hook]"];
+
+// External file reference — your real hook source
+TestHook tip_wasm = wasm["file:tipbot/tip.c"];
+```
+
+### Coverage
+
+With `HOOKS_COVERAGE=ON`, every hook is instrumented with `__on_source_line(line, col)` callbacks. xahaud records which lines execute during each test, giving you C source-level coverage from integration tests.
+
+### Standalone hook compilation
+
+You can also use `hookz build-test-hooks` directly without CMake:
+
+```
+hookz build-test-hooks <test.cpp>                   Generate _hooks.h
+  --hooks-c-dir domain=path                          Map file refs to directories
+  --hook-coverage / --no-hook-coverage               Instrument for coverage
+  -j N                                               Parallel workers
+  --no-cache                                         Bypass compilation cache
+```
+
+### Env vars
+
+| Variable | Effect |
+|----------|--------|
+| `HOOKZ_NO_COVERAGE` | Override `--coverage` flag (disable instrumentation) |
+| `HOOKZ_VALIDATE` | Enable output sanity checks (magic bytes, memory.fill, sections) |
+| `HOOKS_COVERAGE` | CMake: enable coverage for all hooks |
+| `HOOKS_TEST_DIR` | CMake: directory containing `*_test.cpp` files |
+| `HOOKS_C_DIR` | CMake: semicolon-separated `domain=path` entries |
+
 ## Developing hookz
 
 ### Setup
