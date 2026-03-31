@@ -70,9 +70,12 @@ class HookResult:
     error: Exception | None = None
 
 
-# Amendments enabled by default — all current Xahau amendments.
-# Tests can rt.amendments.add/discard to toggle specific ones.
-_DEFAULT_AMENDMENTS: set[str] = {
+# Amendments enabled by default.
+# The whitelist-gating amendments (featureHooksUpdate1, featureHooksUpdate2)
+# are derived from hook_api.macro at runtime. The behavioral amendments
+# (fixHookAPI20251128, etc.) are listed here since they don't appear in
+# the macro file — they affect handler behavior, not the import whitelist.
+_BEHAVIORAL_AMENDMENTS: set[str] = {
     "fixHookAPI20251128",
     "featureHookAPISerializedType240",
     "featureHooksUpdate1",
@@ -80,6 +83,15 @@ _DEFAULT_AMENDMENTS: set[str] = {
     "featurePriceOracle",
     "featureCron",
 }
+
+
+def _get_default_amendments() -> set[str]:
+    """Build default amendments: behavioral + whitelist-gating from macro."""
+    try:
+        from hookz.wasm.whitelist import get_default_amendments
+        return _BEHAVIORAL_AMENDMENTS | get_default_amendments()
+    except Exception:
+        return _BEHAVIORAL_AMENDMENTS.copy()
 
 
 class HookRuntime:
@@ -116,7 +128,7 @@ class HookRuntime:
         self.handlers: dict[str, Callable] = {}
         self._slot_overrides: dict[str, Any] = {}
         self.ledger: dict[bytes, bytes] = {}  # keylet → serialized STObject
-        self.amendments: set[str] = _DEFAULT_AMENDMENTS.copy()
+        self.amendments: set[str] = _get_default_amendments()
         self._memory: wasmtime.Memory | None = None
         self._store: wasmtime.Store | None = None
 
