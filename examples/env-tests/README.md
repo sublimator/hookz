@@ -49,7 +49,7 @@ HOOKS_TEST_ONLY=1 \
 2. `HOOKS_COVERAGE=1` — instruments hooks with `__on_source_line` callbacks
 3. `HOOKS_TEST_DIR` — points CMake at the test files in this directory
 4. `HOOKS_C_DIR` — maps the `tipbot` domain to your hook source checkout
-5. `x-run-tests` — from [xahaud-scripts](https://github.com/nicholasdudfield/xahaud-scripts),
+5. `x-run-tests` — from [xahaud-scripts](https://github.com/sublimator/xahaud-scripts),
    handles cmake configure + build + test execution
 6. `--reconfigure-build` — re-runs cmake configure (needed when changing
    `HOOKS_*` vars)
@@ -58,7 +58,7 @@ HOOKS_TEST_ONLY=1 \
 ## Requirements
 
 - xahaud [`external-env-tests`](https://github.com/Xahau/xahaud) branch
-- [xahaud-scripts](https://github.com/nicholasdudfield/xahaud-scripts) (`x-run-tests`)
+- [xahaud-scripts](https://github.com/sublimator/xahaud-scripts) (`x-run-tests`)
 - hookz on PATH (`uv tool install --editable ~/projects/hookz`)
 - conan, ccache, cmake, ninja — see xahaud build docs
 
