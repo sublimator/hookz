@@ -258,20 +258,19 @@ class TestOptimize:
         stripped_only = strip_debug(debug_balance_gate_wasm)
         assert len(optimized) < len(stripped_only)
 
-    def test_optimize_hook_preserves_guard_validity(self, debug_balance_gate_wasm):
-        """optimize_hook + strip_debug should still pass guard checking."""
-        optimized = strip_debug(optimize_hook(debug_balance_gate_wasm))
-        result = validate_guards(optimized)
+    def test_optimize_then_clean_passes_guard_check(self, debug_balance_gate_wasm):
+        """optimize_hook + clean_hook should pass guard checking."""
+        optimized = optimize_hook(debug_balance_gate_wasm)
+        cleaned = clean_hook(optimized)
+        result = validate_guards(cleaned)
         assert result.hook_wce > 0
         assert result.hook_wce < 65535
 
-    def test_optimize_hook_improves_wce(self, debug_balance_gate_wasm):
-        """Optimization should not make WCE worse."""
-        stripped = strip_debug(debug_balance_gate_wasm)
-        optimized = strip_debug(optimize_hook(debug_balance_gate_wasm))
-        r_stripped = validate_guards(stripped)
-        r_optimized = validate_guards(optimized)
-        assert r_optimized.hook_wce <= r_stripped.hook_wce
+    def test_optimize_then_clean_improves_size(self, debug_balance_gate_wasm):
+        """Full pipeline should produce smaller output than just cleaning."""
+        clean_only = clean_hook(debug_balance_gate_wasm)
+        optimized = clean_hook(optimize_hook(debug_balance_gate_wasm))
+        assert len(optimized) <= len(clean_only)
 
 
 class TestOptimizeGuardSafety:

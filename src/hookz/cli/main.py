@@ -10,6 +10,7 @@ Usage:
     hookz build <source.c>            Compile + clean + guard-check (production build)
     hookz clean <hook.wasm>           Clean a WASM binary for deployment
     hookz guard-check <hook.wasm>     Validate guard calls in a WASM binary
+    hookz wce <source.c>              Analyze WCE budget usage with source lines
 """
 
 from __future__ import annotations
@@ -308,11 +309,20 @@ def cmd_guard_check(args: list[str]) -> int:
         return 1
 
     print(f"Guard check PASSED: {source.name}")
-    print(f"  hook() WCE: {result.hook_wce}")
-    if result.cbak_func_idx is not None:
-        print(f"  cbak() WCE: {result.cbak_wce}")
-    print(f"  Imports: {result.import_count}")
+    _print_guard_result(result)
     return 0
+
+
+def _print_guard_result(result) -> None:
+    """Print detailed guard check results."""
+    max_wce = 65535
+    hook_pct = result.hook_wce / max_wce * 100
+    print(f"  hook() WCE: {result.hook_wce:,} / {max_wce:,} ({hook_pct:.1f}% of budget)")
+    if result.cbak_func_idx is not None:
+        cbak_pct = result.cbak_wce / max_wce * 100
+        print(f"  cbak() WCE: {result.cbak_wce:,} / {max_wce:,} ({cbak_pct:.1f}% of budget)")
+    print(f"  Imports: {result.import_count}")
+    print(f"  Guard function: import #{result.guard_func_idx}")
 
 
 def cmd_build(args: list[str]) -> int:
@@ -342,7 +352,10 @@ def cmd_build(args: list[str]) -> int:
     wasm = compile_hook(source, output, config, debug=False, optimize=True)
     print(f"  Compiled: {len(wasm)} bytes")
 
-    # 2. Clean
+    # 2. Optimize (if wasm-opt available)
+    wasm = _try_optimize(wasm)
+
+    # 3. Clean
     try:
         cleaned = clean_hook(wasm)
         print(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
@@ -350,10 +363,11 @@ def cmd_build(args: list[str]) -> int:
         print(f"  Clean FAILED: {e}")
         return 1
 
-    # 3. Guard check
+    # 4. Guard check
     try:
         result = validate_guards(cleaned)
-        print(f"  Guard check PASSED (hook WCE={result.hook_wce})")
+        hook_pct = result.hook_wce / 65535 * 100
+        print(f"  Guard check PASSED (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
     except GuardError as e:
         print(f"  Guard check FAILED: {e}")
         return 1
@@ -362,6 +376,148 @@ def cmd_build(args: list[str]) -> int:
     output.write_bytes(cleaned)
     print(f"  → {output} ({len(cleaned)} bytes)")
     return 0
+
+
+def cmd_wce(args: list[str]) -> int:
+    """Analyze worst-case execution budget usage with source line mapping.
+
+    Usage: hookz wce <source.c>
+    """
+    from rich.console import Console
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+    from hookz.wasm.guard import GuardError, BlockInfo
+    from hookz.coverage.rewriter import parse_dwarf_locations
+
+    if not args:
+        print("Usage: hookz wce <source.c>")
+        return 1
+
+    console = Console()
+    source = Path(args[0])
+    config = load_config()
+
+    # Compile with debug info for DWARF
+    import tempfile
+    wasm_path = Path(tempfile.mktemp(suffix=".wasm"))
+    wasm = compile_hook(source, wasm_path, config, debug=True, optimize=False)
+    console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
+
+    # Parse DWARF locations
+    try:
+        dwarf_locs = parse_dwarf_locations(str(wasm_path))
+    except Exception:
+        dwarf_locs = []
+    finally:
+        wasm_path.unlink(missing_ok=True)
+
+    # Build address → source line map
+    addr_to_line: dict[int, tuple[str, int]] = {}
+    for loc in dwarf_locs:
+        addr_to_line[loc.address] = (f"L{loc.line}", loc.line)
+
+    # Clean (rewrite guards, strip sections) then guard-check
+    from hookz.wasm.clean import clean_hook, CleanError
+    from hookz.wasm.guard import validate_guards
+
+    try:
+        cleaned = clean_hook(wasm)
+    except CleanError as e:
+        console.print(f"[red]Clean failed:[/red] {e}")
+        return 1
+
+    try:
+        result = validate_guards(cleaned)
+    except GuardError as e:
+        console.print(f"[red]Guard check failed:[/red] {e}")
+        return 1
+
+    max_wce = 65535
+
+    def _line_from_guard_id(guard_id: int) -> str:
+        """Extract source line from guard ID.
+
+        The _g() macro encodes line as: (1 << 31) + __LINE__
+        So the line number is guard_id & 0x7FFFFFFF, but only if bit 31 is set.
+        """
+        if guard_id < 0:
+            # Signed: undo two's complement
+            line = guard_id & 0x7FFFFFFF
+        elif guard_id & 0x80000000:
+            line = guard_id & 0x7FFFFFFF
+        else:
+            line = guard_id  # raw line number
+        if 0 < line < 100000:
+            return f"line {line}"
+        return f"guard 0x{guard_id & 0xFFFFFFFF:08X}"
+
+    def _collect_loops(node: BlockInfo) -> list[tuple[str, int, int]]:
+        """Collect all loop nodes with (source_location, bound, wce)."""
+        loops = []
+        if node.is_loop:
+            loc = _line_from_guard_id(node.guard_id)
+            loops.append((loc, node.iteration_bound, node.wce))
+        for child in node.children:
+            loops.extend(_collect_loops(child))
+        return loops
+
+    # Print analysis
+    console.print()
+    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Analysis")
+    console.print()
+
+    for label, wce, tree in [
+        ("hook()", result.hook_wce, result.hook_tree),
+        ("cbak()", result.cbak_wce, result.cbak_tree),
+    ]:
+        if tree is None:
+            continue
+        pct = wce / max_wce * 100
+        bar_filled = int(pct / 5)
+        bar = "█" * bar_filled + "░" * (20 - bar_filled)
+        console.print(f"  [bold]{label}[/bold] WCE: {wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}")
+        console.print()
+
+        loops = _collect_loops(tree)
+        if not loops:
+            console.print("    [dim]No loops found[/dim]")
+            continue
+
+        loops.sort(key=lambda x: x[2], reverse=True)
+        for loc, bound, loop_wce in loops:
+            loop_pct = loop_wce / max(wce, 1) * 100
+            lbar_filled = int(loop_pct / 5)
+            lbar = "█" * lbar_filled + "░" * (20 - lbar_filled)
+            console.print(
+                f"    {loc:>20s}  GUARD({bound:<5d})  "
+                f"{loop_wce:>6,} instrs  {lbar}  {loop_pct:4.1f}%"
+            )
+        console.print()
+
+    return 0
+
+
+def _try_optimize(wasm: bytes) -> bytes:
+    """Run wasm-opt if available, return original bytes if not."""
+    import platform
+    import shutil
+
+    if shutil.which("wasm-opt") is None:
+        system = platform.system()
+        if system == "Darwin":
+            hint = "brew install binaryen"
+        elif system == "Linux":
+            hint = "apt install binaryen  # or your package manager"
+        else:
+            hint = "install binaryen from https://github.com/WebAssembly/binaryen/releases"
+        print(f"  ⚠ wasm-opt not found — skipping optimization ({hint})")
+        return wasm
+
+    from hookz.wasm.optimize import optimize_hook
+    before = len(wasm)
+    wasm = optimize_hook(wasm)
+    print(f"  Optimized: {before} → {len(wasm)} bytes")
+    return wasm
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -383,6 +539,7 @@ def main(argv: list[str] | None = None) -> int:
         "clean": cmd_clean,
         "guard-check": cmd_guard_check,
         "build": cmd_build,
+        "wce": cmd_wce,
     }
 
     if cmd not in commands:

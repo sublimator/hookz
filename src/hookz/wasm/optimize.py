@@ -63,12 +63,13 @@ def optimize_size(wasm: bytes) -> bytes:
 def optimize_hook(wasm: bytes) -> bytes:
     """Full hook optimization pipeline matching xahaud genesis makefile.
 
-    Aggressive optimization + flattening to canonicalize guard patterns.
+    Runs in two passes:
+    1. Flatten + aggressive optimization
+    2. Size optimization
     """
-    return _run_wasm_opt(wasm, [
+    # Pass 1: flatten then optimize (some passes require flat IR)
+    wasm = _run_wasm_opt(wasm, [
         "--flatten",
-        "--shrink-level=1000",
-        "--coalesce-locals-learning",
         "--vacuum",
         "--merge-blocks",
         "--merge-locals",
@@ -82,13 +83,19 @@ def optimize_hook(wasm: bytes) -> bytes:
         "--simplify-globals-optimizing",
         "--simplify-locals-nonesting",
         "--reorder-locals",
-        "--rereloop",
         "--precompute-propagate",
         "--local-cse",
         "--remove-unused-brs",
         "--memory-packing",
         "-c",
         "--avoid-reinterprets",
+        "-Oz",
+    ])
+    # Pass 2: coalesce and shrink further
+    return _run_wasm_opt(wasm, [
+        "--coalesce-locals-learning",
+        "--vacuum",
+        "--dce",
         "-Oz",
     ])
 

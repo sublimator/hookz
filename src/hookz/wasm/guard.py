@@ -70,6 +70,8 @@ class GuardResult:
     guard_func_idx: int
     hook_func_idx: int
     cbak_func_idx: int | None
+    hook_tree: BlockInfo | None = None
+    cbak_tree: BlockInfo | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -117,24 +119,34 @@ def _signed_leb128(buf: bytes, offset: int) -> tuple[int, int]:
 # ---------------------------------------------------------------------------
 
 @dataclass
-class _BlockInfo:
+class BlockInfo:
+    """Block/loop info node in the WCE tree. Public for analysis."""
     iteration_bound: int
     instruction_count: int = 0
-    parent: _BlockInfo | None = None
-    children: list[_BlockInfo] = field(default_factory=list)
+    parent: BlockInfo | None = None
+    children: list[BlockInfo] = field(default_factory=list)
     start_byte: int = 0
+    is_loop: bool = False
+    guard_id: int = 0
 
-    def add_child(self, iteration_bound: int, start_byte: int) -> _BlockInfo:
-        child = _BlockInfo(
+    def add_child(self, iteration_bound: int, start_byte: int, is_loop: bool = False, guard_id: int = 0) -> BlockInfo:
+        child = BlockInfo(
             iteration_bound=iteration_bound,
             parent=self,
             start_byte=start_byte,
+            is_loop=is_loop,
+            guard_id=guard_id,
         )
         self.children.append(child)
         return child
 
+    @property
+    def wce(self) -> int:
+        """Compute worst-case execution for this node and its subtree."""
+        return _compute_wce(self)
 
-def _compute_wce(blk: _BlockInfo, level: int = 0) -> int:
+
+def _compute_wce(blk: BlockInfo, level: int = 0) -> int:
     """Compute worst-case execution count."""
     if level > MAX_NESTING:
         raise GuardError("Maximum block nesting depth reached (16 levels)")
@@ -159,11 +171,11 @@ def _check_guard(
     guard_func_idx: int,
     last_import_idx: int,
     rules_version: int = 0,
-) -> int:
-    """Validate guard calls in a code section. Returns worst-case execution count."""
+) -> BlockInfo:
+    """Validate guard calls in a code section. Returns the block tree root."""
     guard_count = 0
     block_depth = 0
-    root = _BlockInfo(iteration_bound=1, start_byte=start_offset)
+    root = BlockInfo(iteration_bound=1, start_byte=start_offset)
     current = root
 
     def _require(pos: int, need: int = 1) -> None:
@@ -190,12 +202,13 @@ def _check_guard(
 
             iteration_bound = current.iteration_bound if current.parent else 1
 
+            loop_guard_id = 0
             if instr == OP_LOOP:
                 _require(i)
                 if wasm[i] != OP_I32_CONST:
                     raise GuardError("Missing first i32.const after loop", codesec, i)
                 i += 1
-                _, i = _signed_leb128(wasm, i)
+                loop_guard_id, i = _signed_leb128(wasm, i)
 
                 _require(i)
                 if wasm[i] != OP_I32_CONST:
@@ -221,7 +234,11 @@ def _check_guard(
                 if guard_count > MAX_GUARD_CALLS:
                     raise GuardError("Too many guard calls (limit 1024)", codesec, i)
 
-            current = current.add_child(iteration_bound, i)
+            current = current.add_child(
+                iteration_bound, i,
+                is_loop=(instr == OP_LOOP),
+                guard_id=loop_guard_id if instr == OP_LOOP else 0,
+            )
             block_depth += 1
             continue
 
@@ -355,7 +372,7 @@ def _check_guard(
 
         raise GuardError(f"Unknown instruction opcode: 0x{instr:02X}", codesec, i)
 
-    return _compute_wce(root)
+    return root
 
 
 # ---------------------------------------------------------------------------
@@ -441,20 +458,25 @@ def validate_guards_module(
     code_bodies = decode_code_bodies_raw(wasm)
     hook_wce = 0
     cbak_wce = 0
+    hook_tree: BlockInfo | None = None
+    cbak_tree: BlockInfo | None = None
 
     for j, (body_start, body_end) in enumerate(code_bodies):
-        wce = _check_guard(
+        tree = _check_guard(
             wasm, j, body_start, body_end,
             guard_idx, last_import_idx, rules_version,
         )
+        wce = tree.wce
         if wce >= MAX_WCE:
             raise GuardError(
                 f"Worst-case execution {wce} exceeds limit {MAX_WCE} "
                 f"in code section {j}")
         if j == hook_code_idx:
             hook_wce = wce
+            hook_tree = tree
         elif cbak_code_idx is not None and j == cbak_code_idx:
             cbak_wce = wce
+            cbak_tree = tree
 
     return GuardResult(
         hook_wce=hook_wce,
@@ -463,4 +485,6 @@ def validate_guards_module(
         guard_func_idx=guard_idx,
         hook_func_idx=hook_exp.index,
         cbak_func_idx=cbak_exp.index if cbak_exp else None,
+        hook_tree=hook_tree,
+        cbak_tree=cbak_tree,
     )
