@@ -52,15 +52,11 @@ def derive_amendments(functions: list[HookApiFunction]) -> set[str]:
 
 @lru_cache(maxsize=1)
 def load_from_config() -> list[HookApiFunction]:
-    """Load hook API functions from the xahaud path in hookz.toml."""
+    """Load hook API functions, preferring xahaud checkout, falling back to vendored."""
+    from hookz.xahaud_files import XahaudFile, resolve
     from hookz.config import load_config
     config = load_config()
-    macro_path = config.xahaud_root / "include" / "xrpl" / "hook" / "hook_api.macro"
-    if not macro_path.exists():
-        raise FileNotFoundError(
-            f"hook_api.macro not found at {macro_path}. "
-            f"Check [paths] xahaud in hookz.toml."
-        )
+    macro_path = resolve(XahaudFile.HOOK_API_MACRO, config.xahaud_root)
     return parse_hook_api_macro(macro_path)
 
 

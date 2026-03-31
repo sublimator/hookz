@@ -88,24 +88,28 @@ class CleanResult:
         return addr + delta
 
 
-def clean_hook_detailed(wasm: bytes, visitor: Visitor | None = None) -> CleanResult:
+def clean_hook_detailed(wasm: bytes, visitor: Visitor | None = None,
+                        coverage_call_idx: int | None = None) -> CleanResult:
     """Clean a WASM hook binary, returning result with relocation info."""
     if visitor is None:
         visitor = Visitor()
     mod = decode_module(wasm)
     original_size = len(wasm)
-    cleaned_mod, relocations = clean_module(mod, visitor)
+    cleaned_mod, relocations = clean_module(mod, visitor, coverage_call_idx)
     result_bytes = encode_module(cleaned_mod)
     visitor.on_complete(original_size, len(result_bytes))
     return CleanResult(wasm=result_bytes, relocations=relocations)
 
 
-def clean_hook(wasm: bytes, visitor: Visitor | None = None) -> bytes:
+def clean_hook(wasm: bytes, visitor: Visitor | None = None,
+               coverage_call_idx: int | None = None) -> bytes:
     """Clean a WASM hook binary for deployment.
 
     Args:
         wasm: Raw WASM binary (e.g. from clang/wasi-sdk)
         visitor: Visitor to control cleaning behavior. Default strips everything.
+        coverage_call_idx: Function index of coverage callback to treat as
+            transparent during guard rewriting (e.g. __on_source_line at 0).
 
     Returns:
         Cleaned WASM binary bytes
@@ -115,10 +119,11 @@ def clean_hook(wasm: bytes, visitor: Visitor | None = None) -> bytes:
     """
     if visitor is None:
         visitor = Visitor()
-    return clean_hook_detailed(wasm, visitor).wasm
+    return clean_hook_detailed(wasm, visitor, coverage_call_idx).wasm
 
 
-def clean_module(mod: Module, visitor: Visitor | None = None) -> tuple[Module, list[tuple[int, int]]]:
+def clean_module(mod: Module, visitor: Visitor | None = None,
+                 coverage_call_idx: int | None = None) -> tuple[Module, list[tuple[int, int]]]:
     """Clean a decoded Module.
 
     - Strips/keeps sections based on visitor decisions
@@ -127,6 +132,11 @@ def clean_module(mod: Module, visitor: Visitor | None = None) -> tuple[Module, l
     - Keeps only hook/cbak code bodies
     - Rebuilds export section with only hook/cbak
     - Rewrites guard calls in code bodies to canonical form
+
+    Args:
+        coverage_call_idx: If set, the function index of the coverage callback
+            (e.g. __on_source_line). The guard rewriter will treat calls to this
+            index as transparent rather than resetting guard search state.
     """
     hook_exp = mod.hook_export
     if hook_exp is None:
@@ -191,12 +201,12 @@ def clean_module(mod: Module, visitor: Visitor | None = None) -> tuple[Module, l
     # --- Build code bodies (hook + optionally cbak) ---
     all_relocations: list[tuple[int, int]] = []
 
-    hook_body = _rewrite_guards(mod.code[hook_code_idx], guard_idx, visitor)
+    hook_body = _rewrite_guards(mod.code[hook_code_idx], guard_idx, visitor, coverage_call_idx)
     new_code = [hook_body]
     new_functions = [hook_cbak_new_idx]
 
     if cbak_code_idx is not None:
-        cbak_body = _rewrite_guards(mod.code[cbak_code_idx], guard_idx, visitor)
+        cbak_body = _rewrite_guards(mod.code[cbak_code_idx], guard_idx, visitor, coverage_call_idx)
         new_code.append(cbak_body)
         new_functions.append(hook_cbak_new_idx)
 
@@ -255,10 +265,11 @@ class RewriteResult:
 
 
 def _rewrite_guards(body: CodeBody, guard_func_idx: int,
-                    visitor: Visitor | None = None) -> CodeBody:
+                    visitor: Visitor | None = None,
+                    coverage_call_idx: int | None = None) -> CodeBody:
     """Rewrite guard calls in a code body to canonical loop-top form."""
     code = bytearray(body.code)
-    result = _rewrite_guards_in_bytecode(code, guard_func_idx, visitor)
+    result = _rewrite_guards_in_bytecode(code, guard_func_idx, visitor, coverage_call_idx)
     return CodeBody(locals=body.locals, code=bytes(result.code))
 
 
@@ -275,8 +286,16 @@ _OPCODE_NAMES = {
 
 
 def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
-                                visitor: Visitor | None = None) -> RewriteResult:
-    """Walk bytecode, find guard patterns, rewrite to canonical form."""
+                                visitor: Visitor | None = None,
+                                coverage_call_idx: int | None = None) -> RewriteResult:
+    """Walk bytecode, find guard patterns, rewrite to canonical form.
+
+    Args:
+        coverage_call_idx: If set, calls to this function index (e.g.
+            __on_source_line at index 0) are treated as transparent —
+            their preceding i32.const args are rolled back from tracking
+            instead of resetting the guard search state.
+    """
     out = bytearray()
 
     # Track input offset → output offset mapping for DWARF relocation
@@ -284,30 +303,24 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
     cumulative_delta = 0
     relocations: list[tuple[int, int]] = []  # (input_offset, delta)
 
-    # State for guard finder
+    # State for guard finder — uses a history list so coverage calls can
+    # roll back their i32.const args without losing the guard values.
     last_loop_out_pos = -1
     last_loop_input_pos = -1  # corresponding input position
-    i32_found = 0
     call_guard_out_pos = -1
-    last_i32_val = 0
-    second_last_i32_val = 0
-    last_i32_out_pos = -1
-    second_last_i32_out_pos = -1
     between_const_and_guard = 0
+
+    # History of i32.const values: [(value, output_position), ...]
+    i32_history: list[tuple[int, int]] = []
 
     # Loop depth tracking for visitor
     loop_depth = 0
     loop_bound_stack: list[int] = []
 
     def reset():
-        nonlocal i32_found, call_guard_out_pos, last_i32_val, second_last_i32_val
-        nonlocal last_i32_out_pos, second_last_i32_out_pos, between_const_and_guard
-        i32_found = 0
+        nonlocal call_guard_out_pos, between_const_and_guard
+        i32_history.clear()
         call_guard_out_pos = -1
-        last_i32_val = 0
-        second_last_i32_val = 0
-        last_i32_out_pos = -1
-        second_last_i32_out_pos = -1
         between_const_and_guard = 0
 
     i = 0
@@ -335,11 +348,13 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
         # drop — trigger for guard detection
         if ins == OP_DROP:
             out.append(ins)
-            if i32_found >= 2 and call_guard_out_pos >= 0 and last_loop_out_pos >= 0:
+            if len(i32_history) >= 2 and call_guard_out_pos >= 0 and last_loop_out_pos >= 0:
                 # Found a guard pattern! Rewrite it.
                 # The guard ID has bit 31 set (from _g macro: (1<<31) + __LINE__)
                 # The maxiter is always a small positive number.
                 # Identify which is which by checking bit 31.
+                second_last_i32_val, second_last_i32_out_pos = i32_history[-2]
+                last_i32_val, _ = i32_history[-1]
                 val_a = second_last_i32_val
                 val_b = last_i32_val
                 if (val_a & 0x80000000) or (val_a < 0):
@@ -410,23 +425,29 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
             out.extend(code[instr_start:i])
             if func_idx == guard_func_idx:
                 call_guard_out_pos = call_out_start
+            elif coverage_call_idx is not None and func_idx == coverage_call_idx:
+                # Coverage call: roll back the two i32.const args it consumed
+                # so they don't pollute guard tracking.
+                if len(i32_history) >= 2:
+                    i32_history.pop()
+                    i32_history.pop()
+                else:
+                    i32_history.clear()
+                between_const_and_guard += 1
             else:
                 reset()
             continue
 
         # i32.const
         if ins == OP_I32_CONST:
-            second_last_i32_out_pos = last_i32_out_pos
-            second_last_i32_val = last_i32_val
-            last_i32_out_pos = len(out)
+            out_pos = len(out)
             val, i = _parse_signed_leb(code, i)
-            last_i32_val = val
             out.extend(code[instr_start:i])
-            i32_found += 1
+            i32_history.append((val, out_pos))
             continue
 
         # Any other instruction: copy through, track if between consts and guard
-        if i32_found > 0:
+        if len(i32_history) > 0:
             between_const_and_guard += 1
 
         # Track END for loop depth

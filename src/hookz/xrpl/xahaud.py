@@ -112,11 +112,12 @@ class XahaudRepo:
 
     def parse_all_hook_constants(self) -> dict[str, dict[str, int]]:
         """Parse all hook header constants."""
+        from hookz.xahaud_files import XahaudFile
         headers = {
-            "sfcodes": "hook/sfcodes.h",
-            "tts": "hook/tts.h",
-            "error": "hook/error.h",
-            "hookapi": "hook/hookapi.h",
+            "sfcodes": XahaudFile.SFCODES_H.value,
+            "tts": XahaudFile.TTS_H.value,
+            "error": XahaudFile.ERROR_H.value,
+            "hookapi": XahaudFile.HOOKAPI_H.value,
         }
         result = {}
         for key, path in headers.items():
@@ -131,7 +132,8 @@ class XahaudRepo:
 
         Returns [(return_type, name, [param_types]), ...]
         """
-        source = self._read("hook/extern.h")
+        from hookz.xahaud_files import XahaudFile
+        source = self._read(XahaudFile.EXTERN_H.value)
         tree = self._parser.parse(source)
 
         results: list[tuple[str, str, list[str]]] = []
@@ -162,8 +164,9 @@ class XahaudRepo:
 
     def list_hook_functions(self) -> list[str]:
         """List all hook API function names from DEFINE_HOOK_FUNCTION in applyHook.cpp."""
+        from hookz.xahaud_files import XahaudFile
         source = self._read(
-            "src/xrpld/app/hook/detail/applyHook.cpp"
+            XahaudFile.APPLY_HOOK_CPP.value
         ).decode(errors="replace")
 
         pattern = re.compile(
@@ -173,8 +176,9 @@ class XahaudRepo:
 
     def find_hook_function(self, name: str) -> str | None:
         """Find a DEFINE_HOOK_FUNCTION(return_type, name, ...) block in applyHook.cpp."""
+        from hookz.xahaud_files import XahaudFile
         source = self._read(
-            "src/xrpld/app/hook/detail/applyHook.cpp"
+            XahaudFile.APPLY_HOOK_CPP.value
         ).decode(errors="replace")
 
         # DEFINE_HOOK_FUNCTION blocks can span multiple lines
@@ -206,8 +210,9 @@ class XahaudRepo:
 
     def find_api_method(self, name: str) -> str | None:
         """Find HookAPI::name(...) implementation in HookAPI.cpp."""
+        from hookz.xahaud_files import XahaudFile
         source = self._read(
-            "src/xrpld/app/hook/detail/HookAPI.cpp"
+            XahaudFile.HOOK_API_CPP.value
         ).decode(errors="replace")
 
         # Pattern: return_type\nHookAPI::name(params) const\n{...}
@@ -248,9 +253,10 @@ class XahaudRepo:
         E.g. find_macro_definition("DEFINE_HOOK_FUNCTION") or
              find_macro_definition("HOOK_SETUP")
         """
-        for header in ("hook/hookapi.h", "hook/macro.h",
-                        "src/xrpld/app/hook/applyHook.h",
-                        "include/xrpl/hook/Macro.h"):
+        from hookz.xahaud_files import XahaudFile
+        for header in (XahaudFile.HOOKAPI_H.value, XahaudFile.MACRO_H.value,
+                        XahaudFile.APPLY_HOOK_H.value,
+                        XahaudFile.INCLUDE_MACRO_H.value):
             try:
                 source = self._read(header).decode(errors="replace")
             except FileNotFoundError:
@@ -279,7 +285,8 @@ class XahaudRepo:
 
     # ---- Find test functions in SetHook_test.cpp ----
 
-    _TEST_FILE = "src/test/app/SetHook_test.cpp"
+    from hookz.xahaud_files import XahaudFile
+    _TEST_FILE = XahaudFile.SET_HOOK_TEST_CPP.value
 
     def find_test_function(self, name: str) -> str | None:
         """Find test_{name} method in SetHook_test.cpp using tree-sitter."""
@@ -333,10 +340,10 @@ class XahaudRepo:
     # ---- Generate Python constants ----
 
     _HEADER_MAP = {
-        "error": "hook/error.h",
-        "hookapi": "hook/hookapi.h",
-        "sfcodes": "hook/sfcodes.h",
-        "tts": "hook/tts.h",
+        "error": XahaudFile.ERROR_H.value,
+        "hookapi": XahaudFile.HOOKAPI_H.value,
+        "sfcodes": XahaudFile.SFCODES_H.value,
+        "tts": XahaudFile.TTS_H.value,
     }
 
     def generate_hookapi_py(self, output_path: str | Path | None = None) -> str:

@@ -11,7 +11,49 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from hookz.config import HookzConfig, load_config
+# xahaud Guard.h rejects memory.fill (0xFC 0x0B) and memory.copy (0xFC 0x0A)
+# when GuardRuleFix20250131 is active. These come from LLVM lowering
+# llvm.memset/llvm.memcpy intrinsics to wasm bulk-memory instructions.
+#
+# What we tried:
+#   -mno-bulk-memory              — ignored by wasi-sdk 32 (clang 22) at -Oz/-Os/-O1/-O0
+#   -Xclang -target-feature -Xclang -bulk-memory  — same, no effect
+#   -fno-builtin-memset -fno-builtin-memcpy       — prevents user code from becoming
+#                                                    llvm.memset, but the optimizer still
+#                                                    pattern-matches stores into memset
+#   -fno-builtin (nuclear)        — same result, intrinsics still emitted
+#
+# What works:
+#   -O2 is the only opt level where clang respects -mno-bulk-memory on wasi-sdk 32.
+#   At -O2, LLVM unrolls small memsets into store sequences before the wasm backend
+#   sees them, so memory.fill is never emitted.
+#
+# Tested on: wasi-sdk 32, clang 22.1.0, tip.c/top.c (tipbot hooks)
+#   -O0: memory.fill=1  -O1: memory.fill=1  -O2: memory.fill=0
+#   -Os: memory.fill=1  -Oz: memory.fill=1
+COVERAGE_OPT_LEVEL = "-O2"
+
+from hookz.config import HookzConfig, load_config, _global_config_path
+
+
+def _raise_wasi_sdk_error(config: HookzConfig) -> None:
+    """Raise a clear error when wasi-sdk can't be found."""
+    global_cfg = _global_config_path()
+    msg = (
+        f"wasi-sdk not found (looked for {config.wasi_sdk / 'bin' / 'clang'}).\n"
+        f"\n"
+        f"Set wasi_sdk in one of:\n"
+        f"  1. hookz.toml (in your project directory)\n"
+        f"  2. {global_cfg} (machine-level default)\n"
+        f"  3. HOOKZ_WASI_SDK or WASI_SDK_PATH env var\n"
+        f"\n"
+        f"Example hookz.toml:\n"
+        f"  [paths]\n"
+        f"  wasi_sdk = \"/opt/wasi-sdk\"\n"
+        f"\n"
+        f"Install: https://github.com/WebAssembly/wasi-sdk/releases"
+    )
+    raise RuntimeError(msg)
 
 
 def compile_hook(
@@ -37,6 +79,8 @@ def compile_hook(
         config = load_config()
 
     clang = config.wasi_sdk / "bin" / "clang"
+    if not clang.exists():
+        _raise_wasi_sdk_error(config)
     sysroot = config.wasi_sdk / "share" / "wasi-sysroot"
 
     if output is None:
@@ -63,6 +107,7 @@ def compile_hook(
         "-Wno-incompatible-pointer-types",
         "-Wno-int-conversion",
         "-Wno-macro-redefined",
+        "-mno-bulk-memory",  # xahaud rejects memory.fill/memory.copy
     ])
 
     if config.extra_cflags:
@@ -94,7 +139,7 @@ def compile_hook(
 def compile_hook_two_stage(
     source: Path,
     config: HookzConfig | None = None,
-    opt_level: str = "-Oz",
+    opt_level: str = COVERAGE_OPT_LEVEL,
 ) -> bytes:
     """Compile a C hook with two-stage build: clang -c → wasm-ld.
 
@@ -105,7 +150,7 @@ def compile_hook_two_stage(
     Args:
         source: path to .c file
         config: hookz config
-        opt_level: optimization flag (e.g. "-Oz", "-Os", "-O2", "-O0")
+        opt_level: optimization flag (default: COVERAGE_OPT_LEVEL)
 
     Returns:
         WASM bytes (optimized, with DWARF)
@@ -114,6 +159,8 @@ def compile_hook_two_stage(
         config = load_config()
 
     clang = config.wasi_sdk / "bin" / "clang"
+    if not clang.exists():
+        _raise_wasi_sdk_error(config)
     wasm_ld = config.wasi_sdk / "bin" / "wasm-ld"
     sysroot = config.wasi_sdk / "share" / "wasi-sysroot"
 
@@ -130,6 +177,7 @@ def compile_hook_two_stage(
             "-Wno-incompatible-pointer-types",
             "-Wno-int-conversion",
             "-Wno-macro-redefined",
+            "-mno-bulk-memory",  # xahaud rejects memory.fill/memory.copy
         ]
 
         if config.extra_cflags:

@@ -128,6 +128,18 @@ class KeepAllVisitor(Visitor):
         return Action.KEEP
 
 
+class CoverageVisitor(Visitor):
+    """Visitor for coverage-instrumented builds.
+
+    Strips all custom sections (DWARF not needed post-instrumentation —
+    line/col info is encoded in __on_source_line call arguments).
+    """
+
+    # Default Visitor already strips all custom sections and keeps only
+    # hook/cbak exports + function imports. Nothing to override — this
+    # subclass exists for clarity and future coverage-specific hooks.
+
+
 class WceVisitor(Visitor):
     """Collects WCE analysis data during walking."""
 

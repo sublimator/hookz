@@ -483,7 +483,7 @@ def _validate_calls(
 def validate_guards(
     wasm: bytes,
     import_whitelist: set[str] | None = None,
-    rules_version: int = 0,
+    rules_version: int = GUARD_RULE_FIX_20250131,
 ) -> GuardResult:
     """Strict guard validation. Raises GuardError on any violation.
 
