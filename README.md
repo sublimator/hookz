@@ -31,9 +31,9 @@ For integration testing against real xahaud, see [Integration testing with xahau
 ### Prerequisites
 
 - [uv](https://docs.astral.sh/uv/)
-- [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) (C to WASM compiler — `mise install wasi-sdk`)
-- A checkout of [xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests) (for hook headers)
-- A checkout of hookz
+- [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) (C to WASM compiler — `mise install wasi-sdk`, or auto-detected from common paths)
+- Optional: [wasm-opt](https://github.com/WebAssembly/binaryen) (size optimization — `brew install binaryen` / `apt install binaryen`)
+- Optional: xahaud checkout (for `hookz show` source lookup — falls back to vendored headers)
 
 ### Setup
 
