@@ -8,7 +8,17 @@ real guard validation.
 cmake, clang — see xahaud's build docs). This is non-trivial to set up
 and the CI story is still being worked out.
 
-## Example: TipBot integration tests
+## Included test files
+
+This directory contains real TipBot integration tests as a reference:
+
+- `TipBot_test.cpp` — basic deposit/withdraw/tip tests
+- `TipBotClaude_test.cpp` — extended tests (generated with Claude)
+
+These reference `"file:tipbot/tip.c"` and `"file:tipbot/top.c"` which
+need the actual hook source from a tipbot-hooks checkout.
+
+## Running the TipBot tests
 
 ```bash
 # Env vars for the test run
@@ -23,9 +33,10 @@ export HOOKS_VALIDATE_FAIL_FAST=1
 export HOOKS_GUARDCHECK_FAIL_FAST=1
 
 # Run via xahaud-scripts (x-run-tests)
+# Point HOOKS_TEST_DIR at this directory (or your own test dir)
 HOOKS_TEST_ONLY=1 \
   HOOKS_COVERAGE=1 \
-  HOOKS_TEST_DIR=~/projects/tipbot-hooks/tests \
+  HOOKS_TEST_DIR=$(pwd) \
   HOOKS_C_DIR="tipbot=~/projects/tipbot-hooks" \
   HOOKS_COVERAGE_DIR=/tmp/hook_coverage \
   x-run-tests --reconfigure-build -- "ripple.app.TipBotClaude"
@@ -36,13 +47,13 @@ HOOKS_TEST_ONLY=1 \
 1. `HOOKS_TEST_ONLY=1` — excludes xahaud's built-in `*_test.cpp` files,
    only compiles your external tests
 2. `HOOKS_COVERAGE=1` — instruments hooks with `__on_source_line` callbacks
-3. `HOOKS_TEST_DIR` / `HOOKS_C_DIR` — tells CMake where your tests and
-   hook source live
-4. `x-run-tests` — from [xahaud-scripts](https://github.com/nicholasdudfield/xahaud-scripts),
+3. `HOOKS_TEST_DIR` — points CMake at the test files in this directory
+4. `HOOKS_C_DIR` — maps the `tipbot` domain to your hook source checkout
+5. `x-run-tests` — from [xahaud-scripts](https://github.com/nicholasdudfield/xahaud-scripts),
    handles cmake configure + build + test execution
-5. `--reconfigure-build` — re-runs cmake configure (needed when changing
+6. `--reconfigure-build` — re-runs cmake configure (needed when changing
    `HOOKS_*` vars)
-6. `"ripple.app.TipBotClaude"` — run just the TipBotClaude test suite
+7. `"ripple.app.TipBotClaude"` — run just the TipBotClaude test suite
 
 ## Requirements
 
