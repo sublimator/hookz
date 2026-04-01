@@ -25,7 +25,7 @@ steps:
       - --build-arg
       - BUILD_JOBS=16
       - -t
-      - hookz-xahaud:fat
+      - $_IMAGE:$_TAG
       - -f
       - Dockerfile
       - .
@@ -33,37 +33,12 @@ steps:
     id: runtime
     waitFor: ['conan-deps']
 
-  # Squash: flatten all layers into one, stripping deleted files and duplication
-  - name: gcr.io/cloud-builders/docker
-    entrypoint: bash
-    args:
-      - -c
-      - |
-        echo "=== Squashing image ==="
-        CONTAINER=$(docker create hookz-xahaud:fat)
-        docker export $CONTAINER | docker import \
-          --change 'WORKDIR /xahaud' \
-          --change 'ENV DEBIAN_FRONTEND=noninteractive' \
-          --change 'ENV PATH="/root/.local/bin:${PATH}"' \
-          --change 'ENV WASI_SDK_PATH=/opt/wasi-sdk' \
-          --change 'ENV CCACHE_DIR=/ccache' \
-          --change 'ENV CCACHE_CONFIGPATH=/root/.config/xahaud-scripts/ccache.conf' \
-          --change 'ENV CCACHE_NOHASHDIR=true' \
-          --change 'ENTRYPOINT ["/entrypoint.sh"]' \
-          --change 'CMD ["ripple.app.SetHook"]' \
-          - $_IMAGE
-        docker rm $CONTAINER
-        echo "=== Fat vs slim ==="
-        docker images hookz-xahaud:fat --format 'fat: {{.Size}}'
-        docker images $_IMAGE --format 'slim: {{.Size}}'
-    id: squash
-    waitFor: ['runtime']
-
 images:
-  - $_IMAGE
+  - $_IMAGE:$_TAG
 
 substitutions:
-  _IMAGE: gcr.io/hookz-public/hookz-xahaud:latest
+  _IMAGE: gcr.io/hookz-public/hookz-xahaud
+  _TAG: staging
 
 options:
   machineType: E2_HIGHCPU_32

@@ -6,22 +6,31 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      image:
+        description: "Docker image to test (default: latest)"
+        required: false
+        default: ""
 
 env:
-  IMAGE: gcr.io/hookz-public/hookz-xahaud:latest
+  DEFAULT_IMAGE: gcr.io/hookz-public/hookz-xahaud:latest
   TIPBOT: ${{ github.workspace }}/examples/tipbot
 
 jobs:
   integration:
     name: Run hook tests in xahaud
     runs-on: ubuntu-latest
+    env:
+      IMAGE: ${{ github.event.inputs.image || 'gcr.io/hookz-public/hookz-xahaud:latest' }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 1
 
       - name: Pull xahaud image
-        run: docker pull ${{ env.IMAGE }}
+        run: |
+          echo "Using image: ${{ env.IMAGE }}"
+          docker pull ${{ env.IMAGE }}
 
       - name: Run tipbot tests
         run: |
