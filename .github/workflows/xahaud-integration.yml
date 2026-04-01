@@ -11,7 +11,7 @@ on:
   workflow_dispatch:
 
 env:
-  IMAGE: ghcr.io/sublimator/hookz-xahaud:latest
+  IMAGE: gcr.io/hookz-public/hookz-xahaud:latest
 
 jobs:
   integration:
