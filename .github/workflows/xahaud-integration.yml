@@ -36,4 +36,4 @@ jobs:
             -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
             -e HOOKS_FORCE_RECOMPILE=1 \
             ${{ env.IMAGE }} \
-            "ripple.app.TipBotClaude"
+            "ripple.app.TipBot,ripple.app.TipBotClaude"
