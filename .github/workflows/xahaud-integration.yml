@@ -1,0 +1,39 @@
+name: xahaud integration tests
+
+on:
+  workflow_run:
+    workflows: ["Build xahaud image"]
+    types: [completed]
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  IMAGE: ghcr.io/sublimator/hookz-xahaud:latest
+
+jobs:
+  integration:
+    name: Run hook tests in xahaud
+    runs-on: ubuntu-latest
+    # Skip if triggered by a failed build workflow
+    if: github.event.workflow_run.conclusion == 'success' || github.event_name != 'workflow_run'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Pull xahaud image
+        run: docker pull ${{ env.IMAGE }}
+
+      - name: Run tipbot tests
+        run: |
+          docker run --rm \
+            -v ${{ github.workspace }}/examples/tipbot/env-tests:/tests \
+            -v ${{ github.workspace }}/examples/tipbot/hooks:/hooks/tipbot \
+            -e HOOKS_TEST_DIR=/tests \
+            -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
+            -e HOOKS_FORCE_RECOMPILE=1 \
+            ${{ env.IMAGE }} \
+            "ripple.app.TipBotClaude"

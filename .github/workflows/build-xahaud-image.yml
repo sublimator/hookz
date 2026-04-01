@@ -13,10 +13,6 @@ jobs:
     permissions:
       packages: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 1
-
       - name: Log in to ghcr.io
         uses: docker/login-action@v3
         with:
@@ -24,36 +20,39 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull conan-deps (skip build if exists)
-        id: conan
+      - name: Check if xahaud image already exists
+        id: check
+        run: |
+          if docker pull ${{ env.IMAGE }}:latest; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Image already exists, nothing to do."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.check.outputs.exists != 'true'
+        with:
+          fetch-depth: 1
+
+      - name: Pull or build conan-deps
+        if: steps.check.outputs.exists != 'true'
         run: |
           if docker pull ${{ env.CONAN_IMAGE }}:latest; then
             docker tag ${{ env.CONAN_IMAGE }}:latest hookz-conan-deps:latest
-            echo "cached=true" >> "$GITHUB_OUTPUT"
           else
-            echo "cached=false" >> "$GITHUB_OUTPUT"
+            docker build \
+              -t hookz-conan-deps:latest \
+              -t ${{ env.CONAN_IMAGE }}:latest \
+              -f docker/Dockerfile.conan-deps \
+              docker/
+            docker push ${{ env.CONAN_IMAGE }}:latest
           fi
 
-      - name: Build conan-deps base
-        if: steps.conan.outputs.cached != 'true'
-        run: |
-          docker build \
-            -t hookz-conan-deps:latest \
-            -t ${{ env.CONAN_IMAGE }}:latest \
-            -f docker/Dockerfile.conan-deps \
-            docker/
-
-      - name: Push conan-deps
-        if: steps.conan.outputs.cached != 'true'
-        run: docker push ${{ env.CONAN_IMAGE }}:latest
-
-      - name: Pull previous image (for ccache seed)
-        run: docker pull ${{ env.IMAGE }}:latest || true
-
       - name: Build xahaud image
+        if: steps.check.outputs.exists != 'true'
         run: |
           docker build \
-            --build-arg PREV_IMAGE=${{ env.IMAGE }}:latest \
             --build-arg BUILD_JOBS=4 \
             -t ${{ env.IMAGE }}:latest \
             -t ${{ env.IMAGE }}:${{ github.sha }} \
@@ -61,6 +60,7 @@ jobs:
             docker/
 
       - name: Push
+        if: steps.check.outputs.exists != 'true'
         run: |
           docker push ${{ env.IMAGE }}:latest
           docker push ${{ env.IMAGE }}:${{ github.sha }}
