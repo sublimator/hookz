@@ -5,6 +5,7 @@ on:
 
 env:
   IMAGE: ghcr.io/sublimator/hookz-xahaud
+  CONAN_IMAGE: ghcr.io/sublimator/hookz-conan-deps
 
 jobs:
   build:
@@ -23,15 +24,31 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Pull previous image (for ccache seed)
-        run: docker pull ${{ env.IMAGE }}:latest || true
+      - name: Pull conan-deps (skip build if exists)
+        id: conan
+        run: |
+          if docker pull ${{ env.CONAN_IMAGE }}:latest; then
+            docker tag ${{ env.CONAN_IMAGE }}:latest hookz-conan-deps:latest
+            echo "cached=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "cached=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build conan-deps base
+        if: steps.conan.outputs.cached != 'true'
         run: |
           docker build \
-            -t hookz-conan-deps \
+            -t hookz-conan-deps:latest \
+            -t ${{ env.CONAN_IMAGE }}:latest \
             -f docker/Dockerfile.conan-deps \
             docker/
+
+      - name: Push conan-deps
+        if: steps.conan.outputs.cached != 'true'
+        run: docker push ${{ env.CONAN_IMAGE }}:latest
+
+      - name: Pull previous image (for ccache seed)
+        run: docker pull ${{ env.IMAGE }}:latest || true
 
       - name: Build xahaud image
         run: |
