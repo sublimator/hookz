@@ -703,6 +703,85 @@ class TestCurrencySlotOverflow:
         assert updated_info == b"\xFF" * 32
 
 
+class TestPrematureActionBug:
+    """Regression tests for the premature-actioning bug.
+
+    The bug: post_info[4]=1 was written to state BEFORE validation checks
+    (W/B/E/O/C). If validation fails, the post is permanently marked as
+    actioned without the balance transfer. Future votes return 'D' and the
+    tip can never be retried.
+    """
+
+    def test_insufficient_balance_not_permanently_actioned(self, hook, rt):
+        """After 'B' (insufficient balance), a retry with funds should succeed."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+        amt = float_to_xfl(100.0)
+
+        # Seed sender with insufficient balance
+        seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(10.0))
+
+        opinion = make_opinion(amount_xfl=amt, from_user_id=99, to_user_id=42)
+
+        # First attempt: reaches threshold but fails validation (B)
+        r1 = action_opinion(rt, hook, opinion)
+        assert r1.accepted
+        assert b"B" in r1.return_msg
+
+        # Now fund the sender properly
+        seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(500.0))
+
+        # Second attempt: same opinion, new vote should NOT get 'D'
+        # With the fix, post is not marked actioned, so a new vote works
+        rt.otxn_account = MEMBER_2
+        rt.set_param(0, opinion)
+        r2 = rt.run(hook)
+        assert r2.accepted
+        # Should be 'A' (actioned) or 'S' (submitted), NOT 'D' (already done)
+        assert b"D" not in r2.return_msg
+
+    def test_zero_amount_not_permanently_actioned(self, hook, rt):
+        """After 'W' (bad amount), post should not be stuck as actioned."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+        seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(100.0))
+
+        # Zero amount opinion
+        opinion = make_opinion(amount_xfl=0, from_user_id=99, to_user_id=42)
+
+        # First attempt: W (bad amount)
+        r1 = action_opinion(rt, hook, opinion)
+        assert r1.accepted
+        assert b"W" in r1.return_msg
+
+        # The opinion should NOT be marked as actioned in state
+        opinion_key = opinion[:10]
+        post_val = rt.state_db.get(opinion_key)
+        if post_val is not None and len(post_val) >= 5:
+            assert post_val[4] == 0, "post_info[4] should be 0 (not actioned) after failed validation"
+
+    def test_currency_overflow_not_permanently_actioned(self, hook, rt):
+        """After 'C' (currency slots full), post should not be stuck."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+        amt = float_to_xfl(10.0)
+        seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(1000.0))
+
+        # Fill all 256 currency slots for receiver
+        to_info_key = b"U" + bytes([1]) + b"\x00" * 11 + struct.pack("<Q", 42)
+        rt.state_db[to_info_key] = b"\xFF" * 32
+
+        opinion = make_opinion(amount_xfl=amt, to_user_id=42, from_user_id=99)
+
+        # First attempt: C (currency slots full)
+        r1 = action_opinion(rt, hook, opinion)
+        assert r1.accepted
+        assert b"C" in r1.return_msg
+
+        # The opinion should NOT be marked as actioned
+        opinion_key = opinion[:10]
+        post_val = rt.state_db.get(opinion_key)
+        if post_val is not None and len(post_val) >= 5:
+            assert post_val[4] == 0, "post_info[4] should be 0 after 'C' failure"
+
+
 class TestFloatSanityChecks:
     """Defensive checks in tip.c for pathological float_sum results."""
 

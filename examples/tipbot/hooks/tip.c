@@ -356,14 +356,15 @@ int64_t bytes_written =
         TRACEVAR(threshold);
         TRACEVAR(post_info[4]);
 
-        // update postinfo
-        state_set(post_info, 37, opinion, 10);
-        // TODO: BUG — post_info[4]=1 is written to state HERE, but validation
-        // (W/B/E/O/C checks below) hasn't run yet. If validation fails, the post
-        // is permanently marked as actioned without the balance transfer happening.
-        // Future votes return 'D' (already actioned) so the tip can never be retried.
-        // FIX: move validation checks BEFORE setting post_info[4]=1, or defer the
-        // state_set until after validation passes.
+        // Update postinfo with votes but WITHOUT the actioned flag yet.
+        // The actioned flag is only persisted after all validation passes
+        // (see state_set after balance updates below).
+        {
+            uint8_t post_info_save = post_info[4];
+            post_info[4] = 0;
+            state_set(post_info, 37, opinion, 10);
+            post_info[4] = post_info_save;
+        }
 
         // only continue past this point if we're actioning the tip
         if (!post_info[4])
@@ -468,8 +469,6 @@ int64_t bytes_written =
         }
 
         // sanity check amount
-        // TODO: BUG — this check runs AFTER post is marked actioned (line 354/360).
-        // A zero/negative amount opinion that reaches threshold is permanently stuck.
         if (float_compare(AMTXFL, 0, COMPARE_LESS | COMPARE_EQUAL) == 1)
         {
             *donemsg_upto = 'W';
@@ -535,7 +534,6 @@ int64_t bytes_written =
         TRACEXFL(AMTXFL);
 
         // check if the balance can even cover the xfer
-        // TODO: BUG — same issue: post already marked actioned, balance check too late.
         if (float_compare(from_bal, AMTXFL, COMPARE_LESS) == 1)
         {
             // cannot action the tip, the from balance is too small
@@ -545,7 +543,6 @@ int64_t bytes_written =
 
         // subtract the from balance
         int64_t final_from_bal = float_sum(from_bal, float_negate(AMTXFL));
-        // TODO: BUG — post already marked actioned.
         if (final_from_bal < 0 || float_compare(final_from_bal, from_bal, COMPARE_GREATER | COMPARE_EQUAL) == 1)
         {
             // not a sane result, skip / internal error
@@ -563,7 +560,6 @@ int64_t bytes_written =
 
         int64_t final_to_bal = float_sum(to_bal, AMTXFL);
 
-        // TODO: BUG — post already marked actioned.
         if (final_to_bal <= 0 || float_compare(final_to_bal, to_bal, COMPARE_LESS) == 1)
         {
             // internal error / overflow / insane result
@@ -595,7 +591,6 @@ int64_t bytes_written =
             else
             {
                 // user can't accept new currencies, already maxed out at 256
-                // TODO: BUG — post already marked actioned.
                 *donemsg_upto = 'C';
                 continue;
             }
@@ -618,6 +613,9 @@ int64_t bytes_written =
 
             to_bal_buf[8] = to_idx;
         }
+
+        // All validation passed — NOW mark the post as actioned
+        state_set(post_info, 37, opinion, 10);
 
         // update from balance
         if (final_from_bal == 0)
