@@ -7,6 +7,7 @@ import pytest
 from hookz.runtime import HookRuntime, Hook
 from hookz.xfl import float_to_xfl, xfl_to_float
 from hookz.handlers.float import float_sum as _builtin_float_sum
+from hookz.handlers.state import state as _builtin_state
 from hookz import hookapi
 from helpers import (
     seed_members, seed_balance, make_opinion, balance_key, action_opinion,
@@ -81,6 +82,30 @@ class TestBootstrap:
         assert result.return_code > 0
         # No emitted txns for non-member
         assert len(rt.emitted_txns) == 0
+
+
+class TestBootstrapEdgeCases:
+    def test_truncated_members_bitfield_bootstraps_members(self, hook, rt):
+        """A short SM read is treated as missing state and triggers bootstrap."""
+        sm_key = b"SM" + b"\x00" * 30
+
+        def dirty_state(write_ptr, write_len, kread_ptr, kread_len):
+            key = rt._read_memory(kread_ptr, kread_len)
+            if key == sm_key:
+                rt._write_memory(write_ptr, b"\x01")
+                return 1
+            return _builtin_state(rt, write_ptr, write_len, kread_ptr, kread_len)
+
+        rt.handlers["state"] = dirty_state
+
+        result = rt.run(hook)
+        assert result.accepted
+        assert b"not a member" in result.return_msg.lower()
+
+        bitfield = rt.state_db[sm_key]
+        assert bitfield[0] == 0x07
+        m_entries = {k: v for k, v in rt.state_db.items() if k[:1] == b"M"}
+        assert len(m_entries) >= 3
 
 
 class TestMemberVote:
@@ -426,6 +451,27 @@ class TestHookGovernance:
         # Verify state_set calls were made for the H entry
         state_set_calls = [c for c in result.call_log if c.name == "state_set"]
         assert len(state_set_calls) >= 1
+
+    def test_hook_governance_rejects_out_of_range_slot(self, hook, rt):
+        """Hook governance positions >= 10 are rejected before vote state is recorded."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+
+        op = bytearray(85)
+        op[0] = 255
+        op[1] = 10  # top.c only supports slots 0..9
+        op[2:34] = b"\xAA" * 32
+        op[34:66] = b"\xBB" * 32
+
+        rt.set_param(0, bytes(op))
+        result = rt.run(hook)
+        assert result.accepted
+
+        msg = result.return_msg
+        results_part = msg[msg.index(b"Results:") + 8:]
+        assert results_part[1:2] == b"P"
+
+        assert b"H" + bytes([10]) not in rt.state_db
+        assert not any(k[:1] == b"O" for k in rt.state_db)
 
 
 class TestGC:

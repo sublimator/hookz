@@ -71,6 +71,7 @@ uint8_t otxn_acc[21] = { 'M' };
         e  = Internal error 2
         W  = Invalid opinion (amt <= 0)
         C  = Can't slot new currency in destination user (too many currencies > 256)
+        P  = Invalid hook governance position
        ' ' = No opinion in this slot
 */
 uint8_t donemsg[] = "Tip: 00 Opinions processed. Results:                 ";
@@ -164,8 +165,14 @@ int64_t hook(uint32_t r)
     if (tt[0] != 0 || tt[1] != ttINVOKE)
         DONE("Tip: Passing non-invoke.");
 
-    uint8_t members_bitfield[32];
-    state(SBUF(members_bitfield), SBUF(members_bitfield_key));
+    uint8_t members_bitfield[32] = {};
+    if (state(SBUF(members_bitfield), SBUF(members_bitfield_key)) != 32)
+    {
+        *((uint64_t*)(members_bitfield +  0)) = 0;
+        *((uint64_t*)(members_bitfield +  8)) = 0;
+        *((uint64_t*)(members_bitfield + 16)) = 0;
+        *((uint64_t*)(members_bitfield + 24)) = 0;
+    }
 
     // the members bit field is a 256 bit field where the left most bit (msb) indicates if the seat for member 255
     // is occupied and the right most bit (lsb) indicates if the seat for member 0 is occupied. we count the set
@@ -258,6 +265,14 @@ int64_t hook(uint32_t r)
         TRACEVAR(r);
         if (r != 85 || !SNID)
             break;
+
+        // top.c only drains governance entries at hook slots 0..9.
+        // Reject out-of-range hook governance before recording votes or post state.
+        if (SNID == 255 && opinion[2] >= 10U)
+        {
+            *donemsg_upto = 'P';
+            continue;
+        }
         
 
         // get some information about the post... the ledger it first appeared in

@@ -8,6 +8,7 @@ import pytest
 from hookz.runtime import HookRuntime
 from hookz.xfl import float_to_xfl, xfl_to_float
 from hookz.handlers.emit import emit as _builtin_emit
+from hookz.handlers.state import state as _builtin_state
 from helpers import seed_xah_balance, balance_key_account, make_xah_amount
 from hookz import hookapi
 from hookz.xrpl.txn_parser import parse_object
@@ -211,6 +212,41 @@ class TestDeposit:
         result = rt.run(hook)
         assert result.rejected
         assert b"social network tip account" in result.return_msg
+
+    def test_deposit_ignores_truncated_balance_and_user_info_state(self, hook, rt):
+        """Short reads for the balance/user-info keys are treated as empty state."""
+        _setup_deposit(rt, snid=1, user_id=42, xah=True)
+        deposit_param = rt.params[b"DEPOSIT"]
+
+        key_material = bytearray(60)
+        key_material[:20] = deposit_param[:20]
+        h = hashlib.sha512(bytes(key_material)).digest()[:32]
+        bal_key = b"B" + h[1:]
+        ui_key = b"U" + deposit_param
+
+        def dirty_state(write_ptr, write_len, kread_ptr, kread_len):
+            key = rt._read_memory(kread_ptr, kread_len)
+            if key == bal_key:
+                rt._write_memory(write_ptr, b"\xFF" * min(write_len, 9))
+                return 1
+            if key == ui_key:
+                rt._write_memory(write_ptr, b"\xFF" * min(write_len, 32))
+                return 1
+            return _builtin_state(rt, write_ptr, write_len, kread_ptr, kread_len)
+
+        rt.handlers["state"] = dirty_state
+
+        result = rt.run(hook)
+        assert result.accepted
+        assert b"Credited" in result.return_msg
+
+        bal_xfl = struct.unpack_from("<Q", rt.state_db[bal_key], 0)[0]
+        assert xfl_to_float(bal_xfl) == pytest.approx(100.0, rel=1e-10)
+        assert rt.state_db[bal_key][8] == 0
+
+        ui_val = rt.state_db[ui_key]
+        assert ui_val == bytes([0x01]) + b"\x00" * 31
+        assert rt.state_db[ui_key + b"\x00"] == b"\x00" * 40
 
 
 class TestWithdrawal:

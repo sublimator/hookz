@@ -865,6 +865,69 @@ public:
         BEAST_EXPECT(popcount(bitfield) == 1);
     }
 
+    void
+    testTipTruncatedMembersBitfieldBootstraps(FeatureBitset features)
+    {
+        testcase("Tip: truncated members bitfield bootstraps initial members");
+        using namespace jtx;
+
+        auto env = makeEnv(features);
+
+        auto const& alice = env.account("alice");
+        auto const& bob = env.account("bob");
+        auto const& helper = env.account("helper");
+        env.fund(XRP(10000), alice);
+        env.fund(XRP(10000), bob);
+        env.fund(XRP(10000), helper);
+        env.close();
+
+        installStateSetter(env, alice);
+
+        std::array<std::uint8_t, 32> membersKey{};
+        membersKey[0] = 'S';
+        membersKey[1] = 'M';
+        std::array<std::uint8_t, 1> truncatedMembers{0x01};
+        setState(
+            env,
+            helper,
+            alice,
+            membersKey.data(),
+            membersKey.size(),
+            truncatedMembers.data(),
+            truncatedMembers.size());
+
+        installTipHookZeroNS(env, alice);
+
+        env(invoke::invoke(bob), invoke::dest(alice),
+            M("Truncated members bitfield invoke"),
+            fee(XRP(1)),
+            ter(tesSUCCESS));
+
+        auto const ret = firstHookReturnString(env.meta());
+        BEAST_EXPECT(
+            ret.find("not a member of the tipbot oracle game") !=
+            std::string::npos);
+        env.close();
+
+        auto const membersBitfield =
+            env.le(keylet::hookState(alice.id(), rawStateKey({'S', 'M'}), beast::zero));
+        BEAST_REQUIRE(membersBitfield);
+        auto const& bitfield = membersBitfield->getFieldVL(sfHookStateData);
+        BEAST_REQUIRE(bitfield.size() == 32);
+        BEAST_EXPECT(popcount(bitfield) == 3);
+        BEAST_EXPECT(bitfield[0] == 0x07);
+
+        auto const seat0 =
+            env.le(keylet::hookState(alice.id(), memberReverseKey(0), beast::zero));
+        auto const seat1 =
+            env.le(keylet::hookState(alice.id(), memberReverseKey(1), beast::zero));
+        auto const seat2 =
+            env.le(keylet::hookState(alice.id(), memberReverseKey(2), beast::zero));
+        BEAST_REQUIRE(seat0);
+        BEAST_REQUIRE(seat1);
+        BEAST_REQUIRE(seat2);
+    }
+
     // ---- Top Hook (Deposit/Withdraw) Tests ----
 
     void
@@ -3138,6 +3201,54 @@ public:
     }
 
     void
+    testTipHookGovernanceRejectsOutOfRangeSlot(FeatureBitset features)
+    {
+        testcase("Tip: SNID 255 hook governance rejects slot >= 10");
+        using namespace jtx;
+
+        auto env = makeEnv(features);
+
+        auto const& alice = env.account("alice");
+        auto const& m0 = env.account("member0");
+        auto const& m1 = env.account("member1");
+        auto const& helper = env.account("helper");
+        env.fund(XRP(100000), alice);
+        env.fund(XRP(100000), m0);
+        env.fund(XRP(100000), m1);
+        env.fund(XRP(100000), helper);
+        env.close();
+
+        installStateSetter(env, alice);
+        seedMembersBitfield(env, helper, alice, 2);
+        seedMember(env, helper, alice, m0.id(), 0);
+        seedMember(env, helper, alice, m1.id(), 1);
+        installTipHookZeroNS(env, alice);
+
+        std::array<std::uint8_t, 85> hookOpinion{};
+        hookOpinion[0] = 255;
+        hookOpinion[1] = 10;  // top.c only drains positions 0..9
+        std::memset(hookOpinion.data() + 2, 0xAA, 32);
+        std::memset(hookOpinion.data() + 34, 0xBB, 32);
+
+        submitOpinion(env, m0, alice, 0, hookOpinion, tesSUCCESS);
+        auto const ret = firstHookReturnString(env.meta());
+        if (ret.find("Results: P") == std::string::npos)
+            log << "invalid hook slot return: " << ret;
+        BEAST_EXPECT(ret.find("Results: P") != std::string::npos);
+        env.close();
+
+        auto const hState = env.le(keylet::hookState(
+            alice.id(), apiStateKey({'H', 10}), uint256{beast::zero}));
+        BEAST_EXPECT(!hState);
+
+        auto const postState = env.le(keylet::hookState(
+            alice.id(),
+            apiStateKey({'O', 255, 10, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA, 0xAA}),
+            uint256{beast::zero}));
+        BEAST_EXPECT(!postState);
+    }
+
+    void
     testTipMultipleOpinionsPerInvoke(FeatureBitset features)
     {
         testcase("Tip: multiple opinions in single invoke processed");
@@ -4648,6 +4759,7 @@ public:
         RUN(testTipPassesNonInvoke);
         RUN(testTipInitialMembers);
         RUN(testTipNonMemberRejected);
+        RUN(testTipTruncatedMembersBitfieldBootstraps);
 
         // Top hook tests
         RUN(testTopHookInstall);
@@ -4690,6 +4802,7 @@ public:
         RUN(testTipToRAddress);
         RUN(testTipAlreadyActionedReturnsD);
         RUN(testTipHookGovernanceWritesHState);
+        RUN(testTipHookGovernanceRejectsOutOfRangeSlot);
         RUN(testTipMultipleOpinionsPerInvoke);
 
         // E2E and advanced tests

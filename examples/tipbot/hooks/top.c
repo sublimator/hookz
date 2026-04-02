@@ -269,18 +269,26 @@ int64_t hook(uint32_t r)
         util_sha512h(SBUF(to_key_hash), to_key + 1, 60);
 
         to_key_hash[0] = 'B';
-        uint8_t to_bal_buf[9];
+        uint8_t to_bal_buf[9] = {};
 
-        state(SBUF(to_bal_buf), SBUF(to_key_hash));
+        if (state(SBUF(to_bal_buf), SBUF(to_key_hash)) != 9)
+        {
+            *((uint64_t*)to_bal_buf) = 0;
+            to_bal_buf[8] = 0;
+        }
 
         int64_t to_bal = *((uint64_t*)(to_bal_buf));
         uint8_t to_idx = *((uint8_t*)(to_bal_buf + 8U));
 
-        uint8_t to_user_info[32];
+        uint8_t to_user_info[32] = {};
 
         // to prevent attacks, the first deposit to a new user must be xah and must be at least 10 xah
         if (state(SBUF(to_user_info), to_key, 21) != 32)
         {
+            *((uint64_t*)(to_user_info +  0)) = 0;
+            *((uint64_t*)(to_user_info +  8)) = 0;
+            *((uint64_t*)(to_user_info + 16)) = 0;
+            *((uint64_t*)(to_user_info + 24)) = 0;
             if (!is_xah || float_compare(amt, 6107881094714392576ULL /* 10.0 */, COMPARE_LESS) == 1)
                 NOPE("Top: First deposits must be in XAH and must be at least 10 XAH.");
         }
