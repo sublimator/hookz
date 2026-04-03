@@ -2770,7 +2770,7 @@ public:
     void
     testTipInvalidAmountGetsW(FeatureBitset features)
     {
-        testcase("Tip: opinion with amount <= 0 gets W result (accepted)");
+        testcase("Tip: invalid amount closes the opinion with W");
         using namespace jtx;
 
         auto env = makeEnv(features);
@@ -2778,17 +2778,20 @@ public:
         auto const& alice = env.account("alice");
         auto const& m0 = env.account("member0");
         auto const& m1 = env.account("member1");
+        auto const& m2 = env.account("member2");
         auto const& helper = env.account("helper");
         env.fund(XRP(100000), alice);
         env.fund(XRP(100000), m0);
         env.fund(XRP(100000), m1);
+        env.fund(XRP(100000), m2);
         env.fund(XRP(100000), helper);
         env.close();
 
         installStateSetter(env, alice);
-        seedMembersBitfield(env, helper, alice, 2);
+        seedMembersBitfield(env, helper, alice, 3);
         seedMember(env, helper, alice, m0.id(), 0);
         seedMember(env, helper, alice, m1.id(), 1);
+        seedMember(env, helper, alice, m2.id(), 2);
 
         installTipHookZeroNS(env, alice);
 
@@ -2799,16 +2802,30 @@ public:
 
         auto opinion = buildTipOpinion(1, 7001, toUser.data(), 99, 0);
 
-        // Both vote - should reach threshold but get 'W' (invalid amount)
+        // Both votes reach threshold, but the one shot resolves as 'W'.
         submitOpinion(env, m0, alice, 0, opinion, tesSUCCESS);
+        env.close();
         submitOpinion(env, m1, alice, 0, opinion, tesSUCCESS);
-        // Hook accepts (doesn't reject) but the tip isn't actioned
+        auto const secondRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(secondRet.find("Results: W") != std::string::npos);
+        env.close();
+
+        auto const postState = env.le(keylet::hookState(
+            alice.id(), postInfoKey(1, 7001), uint256{beast::zero}));
+        BEAST_REQUIRE(postState);
+        auto const& postData = postState->getFieldVL(sfHookStateData);
+        BEAST_REQUIRE(postData.size() == 37);
+        BEAST_EXPECT(postData[4] == 1);
+
+        submitOpinion(env, m2, alice, 0, opinion, tesSUCCESS);
+        auto const lateRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(lateRet.find("Results: D") != std::string::npos);
     }
 
     void
     testTipInsufficientBalanceGetsB(FeatureBitset features)
     {
-        testcase("Tip: tip actioned but from-balance too low gets B");
+        testcase("Tip: insufficient balance closes the opinion with B");
         using namespace jtx;
 
         auto env = makeEnv(features);
@@ -2816,17 +2833,20 @@ public:
         auto const& alice = env.account("alice");
         auto const& m0 = env.account("member0");
         auto const& m1 = env.account("member1");
+        auto const& m2 = env.account("member2");
         auto const& helper = env.account("helper");
         env.fund(XRP(100000), alice);
         env.fund(XRP(100000), m0);
         env.fund(XRP(100000), m1);
+        env.fund(XRP(100000), m2);
         env.fund(XRP(100000), helper);
         env.close();
 
         installStateSetter(env, alice);
-        seedMembersBitfield(env, helper, alice, 2);
+        seedMembersBitfield(env, helper, alice, 3);
         seedMember(env, helper, alice, m0.id(), 0);
         seedMember(env, helper, alice, m1.id(), 1);
+        seedMember(env, helper, alice, m2.id(), 2);
 
         // Seed a very small balance for user 99: 1 XAH (XFL = 6089866696204910592)
         std::array<std::uint8_t, 60> fromKeyInput{};
@@ -2857,9 +2877,20 @@ public:
         auto opinion = buildTipOpinion(
             1, 8001, toUser.data(), 99, xflWhole(100));  // 100 XAH
 
-        // Both vote - reaches threshold, tries to action but balance too low → 'B'
+        // Both votes reach threshold, but the one shot resolves as 'B'.
         submitOpinion(env, m0, alice, 0, opinion, tesSUCCESS);
+        env.close();
         submitOpinion(env, m1, alice, 0, opinion, tesSUCCESS);
+        auto const secondRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(secondRet.find("Results: B") != std::string::npos);
+        env.close();
+
+        auto const postState = env.le(keylet::hookState(
+            alice.id(), postInfoKey(1, 8001), uint256{beast::zero}));
+        BEAST_REQUIRE(postState);
+        auto const& postData = postState->getFieldVL(sfHookStateData);
+        BEAST_REQUIRE(postData.size() == 37);
+        BEAST_EXPECT(postData[4] == 1);
 
         // The to-user should NOT have received a balance
         std::array<std::uint8_t, 60> toKeyInput{};
@@ -2876,6 +2907,105 @@ public:
             uint256::fromVoid(toBalKey.data()),
             uint256{beast::zero}));
         BEAST_EXPECT(!toBalState);
+
+        submitOpinion(env, m2, alice, 0, opinion, tesSUCCESS);
+        auto const lateRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(lateRet.find("Results: D") != std::string::npos);
+    }
+
+    void
+    testTipCurrencySlotOverflowGetsCAndClosesOpinion(FeatureBitset features)
+    {
+        testcase("Tip: currency-slot overflow closes the opinion with C");
+        using namespace jtx;
+
+        auto env = makeEnv(features);
+
+        auto const& alice = env.account("alice");
+        auto const& m0 = env.account("member0");
+        auto const& m1 = env.account("member1");
+        auto const& m2 = env.account("member2");
+        auto const& helper = env.account("helper");
+        env.fund(XRP(100000), alice);
+        env.fund(XRP(100000), m0);
+        env.fund(XRP(100000), m1);
+        env.fund(XRP(100000), m2);
+        env.fund(XRP(100000), helper);
+        env.close();
+
+        installStateSetter(env, alice);
+        seedMembersBitfield(env, helper, alice, 3);
+        seedMember(env, helper, alice, m0.id(), 0);
+        seedMember(env, helper, alice, m1.id(), 1);
+        seedMember(env, helper, alice, m2.id(), 2);
+
+        std::array<std::uint8_t, 20> toUser{};
+        std::uint64_t toUserId = 42;
+        std::memcpy(toUser.data() + 12, &toUserId, 8);
+
+        std::array<std::uint8_t, 20> toUserStateTarget{};
+        toUserStateTarget[0] = 1;
+        std::memcpy(toUserStateTarget.data() + 12, &toUserId, 8);
+
+        std::array<std::uint8_t, 32> fullUserInfo{};
+        fullUserInfo.fill(0xFF);
+        setState(env, helper, alice,
+            socialUserInfoKey(toUserStateTarget).data(), 32,
+            fullUserInfo.data(), fullUserInfo.size());
+
+        std::array<std::uint8_t, 60> fromKeyInput{};
+        fromKeyInput[0] = 1;
+        std::uint64_t fromUserId = 99;
+        std::memcpy(fromKeyInput.data() + 12, &fromUserId, 8);
+
+        auto fromHash = sha512Half(Slice(fromKeyInput.data(), fromKeyInput.size()));
+        std::array<std::uint8_t, 32> fromBalKey;
+        std::memcpy(fromBalKey.data(), fromHash.data(), 32);
+        fromBalKey[0] = 'B';
+
+        std::array<std::uint8_t, 9> fromBalVal{};
+        auto const xfl1000 = xflWhole(1000);
+        std::memcpy(fromBalVal.data(), &xfl1000, 8);
+        fromBalVal[8] = 0;
+        setState(env, helper, alice,
+                 fromBalKey.data(), fromBalKey.size(),
+                 fromBalVal.data(), fromBalVal.size());
+
+        installTipHookZeroNS(env, alice);
+
+        auto opinion = buildTipOpinion(
+            1, 8101, toUser.data(), 99, xflWhole(10));
+
+        submitOpinion(env, m0, alice, 0, opinion, tesSUCCESS);
+        env.close();
+        submitOpinion(env, m1, alice, 0, opinion, tesSUCCESS);
+        auto const secondRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(secondRet.find("Results: C") != std::string::npos);
+        env.close();
+
+        auto const postState = env.le(keylet::hookState(
+            alice.id(), postInfoKey(1, 8101), uint256{beast::zero}));
+        BEAST_REQUIRE(postState);
+        auto const& postData = postState->getFieldVL(sfHookStateData);
+        BEAST_REQUIRE(postData.size() == 37);
+        BEAST_EXPECT(postData[4] == 1);
+
+        std::array<std::uint8_t, 60> toKeyInput{};
+        toKeyInput[0] = 1;
+        std::memcpy(toKeyInput.data() + 12, &toUserId, 8);
+
+        auto toHash = sha512Half(Slice(toKeyInput.data(), toKeyInput.size()));
+        std::array<std::uint8_t, 32> toBalKey;
+        std::memcpy(toBalKey.data(), toHash.data(), 32);
+        toBalKey[0] = 'B';
+
+        auto const toBalState = env.le(keylet::hookState(
+            alice.id(), uint256::fromVoid(toBalKey.data()), uint256{beast::zero}));
+        BEAST_EXPECT(!toBalState);
+
+        submitOpinion(env, m2, alice, 0, opinion, tesSUCCESS);
+        auto const lateRet = firstHookReturnString(env.meta());
+        BEAST_EXPECT(lateRet.find("Results: D") != std::string::npos);
     }
 
     // ---- GC and Cleanup Tests ----
@@ -4793,6 +4923,7 @@ public:
         RUN(testTipMemberReplacementPreservesUniqueSeatInvariant);
         RUN(testTipInvalidAmountGetsW);
         RUN(testTipInsufficientBalanceGetsB);
+        RUN(testTipCurrencySlotOverflowGetsCAndClosesOpinion);
 
         // GC and cleanup tests
         RUN(testTipGCDeletesStaleEntries);

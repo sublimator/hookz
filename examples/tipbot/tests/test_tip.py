@@ -412,6 +412,35 @@ class TestMemberGovernance:
         # Bitfield value should be exactly 0x03 in first byte (seats 0+1)
         assert bf[0] == 0x03
 
+    def test_late_vote_on_actioned_member_governance_returns_D(self, hook, rt):
+        """Once member governance applies, later distinct voters should get 'D'."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+        new_member = b"\x05" + b"\x00" * 19
+        opinion = self._make_member_opinion(seat=3, account=new_member)
+
+        rt.otxn_account = MEMBER_0
+        rt.set_param(0, opinion)
+        rt.run(hook)
+
+        rt.otxn_account = MEMBER_1
+        rt.set_param(0, opinion)
+        second = rt.run(hook)
+        assert second.accepted
+        assert b"A" in second.return_msg
+
+        post_key = b"O" + opinion[:9]
+        post_val = rt.state_db.get(post_key)
+        assert post_val is not None
+        assert post_val[4] == 1
+
+        snapshot = dict(rt.state_db)
+        rt.otxn_account = MEMBER_2
+        rt.set_param(0, opinion)
+        third = rt.run(hook)
+        assert third.accepted
+        assert b"D" in third.return_msg
+        assert rt.state_db == snapshot
+
 
 class TestHookGovernance:
     """SNID 255 — hook governance voting."""
@@ -472,6 +501,40 @@ class TestHookGovernance:
 
         assert b"H" + bytes([10]) not in rt.state_db
         assert not any(k[:1] == b"O" for k in rt.state_db)
+
+    def test_late_vote_on_actioned_hook_governance_returns_D(self, hook, rt):
+        """Once hook governance applies, later distinct voters should get 'D'."""
+        seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
+
+        opinion = bytearray(85)
+        opinion[0] = 255
+        opinion[1] = 0
+        opinion[2:34] = b"\xAA" * 32
+        opinion[34:66] = b"\xBB" * 32
+        opinion = bytes(opinion)
+
+        rt.otxn_account = MEMBER_0
+        rt.set_param(0, opinion)
+        rt.run(hook)
+
+        rt.otxn_account = MEMBER_1
+        rt.set_param(0, opinion)
+        second = rt.run(hook)
+        assert second.accepted
+        assert b"A" in second.return_msg
+
+        post_key = b"O" + opinion[:9]
+        post_val = rt.state_db.get(post_key)
+        assert post_val is not None
+        assert post_val[4] == 1
+
+        snapshot = dict(rt.state_db)
+        rt.otxn_account = MEMBER_2
+        rt.set_param(0, opinion)
+        third = rt.run(hook)
+        assert third.accepted
+        assert b"D" in third.return_msg
+        assert rt.state_db == snapshot
 
 
 class TestGC:
@@ -749,17 +812,11 @@ class TestCurrencySlotOverflow:
         assert updated_info == b"\xFF" * 32
 
 
-class TestPrematureActionBug:
-    """Regression tests for the premature-actioning bug.
+class TestFinalizedOpinions:
+    """Once quorum is reached, the opinion is closed even on B/W/C outcomes."""
 
-    The bug: post_info[4]=1 was written to state BEFORE validation checks
-    (W/B/E/O/C). If validation fails, the post is permanently marked as
-    actioned without the balance transfer. Future votes return 'D' and the
-    tip can never be retried.
-    """
-
-    def test_insufficient_balance_not_permanently_actioned(self, hook, rt):
-        """After 'B' (insufficient balance), a retry with funds should succeed."""
+    def test_insufficient_balance_finalizes_opinion(self, hook, rt):
+        """After 'B', later votes get 'D' because the opinion is closed."""
         seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
         amt = float_to_xfl(100.0)
 
@@ -773,20 +830,22 @@ class TestPrematureActionBug:
         assert r1.accepted
         assert b"B" in r1.return_msg
 
-        # Now fund the sender properly
+        post_key = b"O" + opinion[:9]
+        post_val = rt.state_db.get(post_key)
+        assert post_val is not None
+        assert post_val[4] == 1
+
+        # Even if the sender is later funded, the original opinion stays closed.
         seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(500.0))
 
-        # Second attempt: same opinion, new vote should NOT get 'D'
-        # With the fix, post is not marked actioned, so a new vote works
         rt.otxn_account = MEMBER_2
         rt.set_param(0, opinion)
         r2 = rt.run(hook)
         assert r2.accepted
-        # Should be 'A' (actioned) or 'S' (submitted), NOT 'D' (already done)
-        assert b"D" not in r2.return_msg
+        assert b"D" in r2.return_msg
 
-    def test_zero_amount_not_permanently_actioned(self, hook, rt):
-        """After 'W' (bad amount), post should not be stuck as actioned."""
+    def test_zero_amount_finalizes_opinion(self, hook, rt):
+        """After 'W', the opinion is closed and marked actioned/finalized."""
         seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
         seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(100.0))
 
@@ -798,14 +857,13 @@ class TestPrematureActionBug:
         assert r1.accepted
         assert b"W" in r1.return_msg
 
-        # The opinion should NOT be marked as actioned in state
-        opinion_key = opinion[:10]
-        post_val = rt.state_db.get(opinion_key)
-        if post_val is not None and len(post_val) >= 5:
-            assert post_val[4] == 0, "post_info[4] should be 0 (not actioned) after failed validation"
+        post_key = b"O" + opinion[:9]
+        post_val = rt.state_db.get(post_key)
+        assert post_val is not None
+        assert post_val[4] == 1
 
-    def test_currency_overflow_not_permanently_actioned(self, hook, rt):
-        """After 'C' (currency slots full), post should not be stuck."""
+    def test_currency_overflow_finalizes_opinion(self, hook, rt):
+        """After 'C', the opinion is closed and marked actioned/finalized."""
         seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
         amt = float_to_xfl(10.0)
         seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(1000.0))
@@ -821,11 +879,10 @@ class TestPrematureActionBug:
         assert r1.accepted
         assert b"C" in r1.return_msg
 
-        # The opinion should NOT be marked as actioned
-        opinion_key = opinion[:10]
-        post_val = rt.state_db.get(opinion_key)
-        if post_val is not None and len(post_val) >= 5:
-            assert post_val[4] == 0, "post_info[4] should be 0 after 'C' failure"
+        post_key = b"O" + opinion[:9]
+        post_val = rt.state_db.get(post_key)
+        assert post_val is not None
+        assert post_val[4] == 1
 
 
 class TestFloatSanityChecks:

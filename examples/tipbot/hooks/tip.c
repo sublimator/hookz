@@ -275,15 +275,15 @@ int64_t hook(uint32_t r)
         }
         
 
-        // get some information about the post... the ledger it first appeared in
-        // whether any xfer on it has been actioned, and who voted
+        // get some information about the post: the ledger it first appeared in,
+        // whether voting on it is finalized, and who already voted
         uint8_t post_info[37] = {};
         /*
             key: netid-postid (u8.u64)
             value: 37 bytes comprisning--
             byte : type : desc
             0-3  : u32  : ledger seq first appearing in
-            4-4  : u8   : 1=actioned, 0=not yet actioned
+            4-4  : u8   : 1=finalized/closed, 0=still open
             5-36 : b256 : bit field of member ids who have voted with msb being member 255
         */
 
@@ -304,7 +304,7 @@ int64_t hook(uint32_t r)
 
         if (post_info[4])
         {
-            // tip already actioned
+            // this opinion is already finalized, later voters just get 'D'
             *donemsg_upto = 'D';
             continue;
         }
@@ -364,23 +364,18 @@ int64_t bytes_written =
             ++*cleanup_upper;
         }
 
-        // check if the threshold is met (>50% of members)
+        // reaching quorum finalizes the opinion. The per-opinion result
+        // string still tells callers whether that one shot resolved as
+        // A/B/W/C/E/O in this transaction's hook execution metadata.
         if (votes[4] >= threshold)
             post_info[4] = 1;
 
         TRACEVAR(threshold);
         TRACEVAR(post_info[4]);
 
-        // Update postinfo with votes but WITHOUT the actioned flag yet.
-        // The actioned flag is only persisted after all validation passes
-        // (see state_set after balance updates below).
-        {
-            uint8_t post_info_save = post_info[4];
-            post_info[4] = 0;
-            state_set(post_info, 37, opinion, 10);
-            post_info[4] = post_info_save;
-        }
-
+        // update postinfo
+        state_set(post_info, 37, opinion, 10);
+           
         // only continue past this point if we're actioning the tip
         if (!post_info[4])
             continue;
@@ -628,9 +623,6 @@ int64_t bytes_written =
 
             to_bal_buf[8] = to_idx;
         }
-
-        // All validation passed — NOW mark the post as actioned
-        state_set(post_info, 37, opinion, 10);
 
         // update from balance
         if (final_from_bal == 0)
