@@ -1,6 +1,8 @@
 """Centralized config — reads hookz.toml with env var overrides.
 
 Any [paths] key is overridable by HOOKZ_<KEY> env var (uppercased).
+`paths.xahaud` also accepts HOOKZ_XAHAUD_ROOT for callers that already use
+that spelling.
 Any value can reference other paths via ${name} substitution.
 
 Config resolution order (later wins):
@@ -20,6 +22,7 @@ Example hookz.toml:
     [hooks]
     tip = "${tipbot}/tip.c"
 
+Override: HOOKZ_XAHAUD=/path/to/xahaud hookz build hook.c
 Override: HOOKZ_WASI_SDK=/opt/wasi-sdk hookz build hook.c
 """
 
@@ -242,6 +245,19 @@ def _build_config(toml_data: dict, base: Path,
     coverage_cfg = toml_data.get("coverage", {})
     hooks_cfg = toml_data.get("hooks", {})
 
+    path_env_aliases = {
+        "xahaud": ("HOOKZ_XAHAUD", "HOOKZ_XAHAUD_ROOT"),
+        "hook_headers": ("HOOKZ_HOOK_HEADERS",),
+        "wasi_sdk": ("HOOKZ_WASI_SDK",),
+    }
+    for key, env_keys in path_env_aliases.items():
+        if key not in paths_cfg:
+            for env_key in env_keys:
+                if env_key in os.environ:
+                    paths_cfg[key] = os.environ[env_key]
+                    sources[f"paths.{key}"] = f"env {env_key}"
+                    break
+
     # Default hook_headers to ${xahaud}/hook if xahaud is set
     if "xahaud" in paths_cfg and "hook_headers" not in paths_cfg:
         paths_cfg["hook_headers"] = "${xahaud}/hook"
@@ -252,11 +268,13 @@ def _build_config(toml_data: dict, base: Path,
     resolved: dict[str, str] = {}
     for _pass in range(3):
         for key, raw in paths_cfg.items():
-            env_key = f"HOOKZ_{key.upper()}"
-            env_val = os.environ.get(env_key)
-            if env_val is not None:
-                raw = env_val
-                sources[f"paths.{key}"] = f"env {env_key}"
+            env_keys = path_env_aliases.get(key, (f"HOOKZ_{key.upper()}",))
+            for env_key in env_keys:
+                env_val = os.environ.get(env_key)
+                if env_val is not None:
+                    raw = env_val
+                    sources[f"paths.{key}"] = f"env {env_key}"
+                    break
             resolved[key] = str(_resolve_path(raw, base, resolved))
 
     paths = {k: Path(v) for k, v in resolved.items()}
