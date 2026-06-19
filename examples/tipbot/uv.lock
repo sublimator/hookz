@@ -101,22 +101,22 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
-    { name = "click", specifier = ">=8.3.1" },
+    { name = "click", specifier = ">=8.3" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
-    { name = "rich", specifier = ">=13" },
+    { name = "rich", specifier = ">=14" },
     { name = "tree-sitter", specifier = ">=0.24" },
-    { name = "tree-sitter-c", specifier = ">=0.23" },
+    { name = "tree-sitter-c", specifier = ">=0.24" },
     { name = "tree-sitter-cpp", specifier = ">=0.23" },
     { name = "wasm-tob", specifier = ">=1.0.1" },
-    { name = "wasmtime", specifier = ">=29" },
+    { name = "wasmtime", specifier = ">=42" },
     { name = "xrpl-py", specifier = ">=4" },
 ]
 provides-extras = ["dev"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "componentize-py", specifier = ">=0.21.0" },
-    { name = "pillow", specifier = ">=12.1.1" },
+    { name = "componentize-py", specifier = ">=0.24.0" },
+    { name = "pillow", specifier = ">=12.2.0" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "wasm-tob", specifier = ">=1.0.1" },
 ]

@@ -277,7 +277,8 @@ class TestOptimizeGuardSafety:
     """Verify optimize_hook produces guard-safe output across hooks."""
 
     @pytest.fixture(scope="class")
-    def hooks(self) -> dict[str, bytes]:
+    @classmethod
+    def hooks(cls) -> dict[str, bytes]:
         """Compile all testable hooks."""
         result = {}
         for name, path in [
@@ -379,7 +380,8 @@ class TestCleanerMultipleHooks:
     """Test cleaner on all hooks — the real integration test."""
 
     @pytest.fixture(scope="class")
-    def hooks(self) -> dict[str, bytes]:
+    @classmethod
+    def hooks(cls) -> dict[str, bytes]:
         result = {}
         for name, path in [
             ("balance_gate", "hooks/misc/balance_gate.c"),
