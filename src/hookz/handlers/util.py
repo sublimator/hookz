@@ -57,22 +57,26 @@ def util_keylet(
         else:
             kl = L.hook_keylet(accid)
 
-    # --- Account + uint32 sequence: OFFER, CHECK, ESCROW, NFT_OFFER, TICKET ---
+    # --- Account + UInt32or256: OFFER, CHECK, ESCROW, NFT_OFFER ---
     elif kt in (hookapi.KEYLET_OFFER, hookapi.KEYLET_CHECK,
-                hookapi.KEYLET_ESCROW, hookapi.KEYLET_NFT_OFFER,
-                hookapi.KEYLET_TICKET):
+                hookapi.KEYLET_ESCROW, hookapi.KEYLET_NFT_OFFER):
         if b != 20:
             return hookapi.INVALID_ARGUMENT
         if e or f:
             return hookapi.INVALID_ARGUMENT
         accid = rt._read_memory(a, b)
-        seq = (c << 32) + d  # packed as two uint32s
+        # d is the discriminator: 0 → c is a uint32 seq, 32 → read 32 bytes at offset c
+        if d == 0:
+            seq: int | bytes = c
+        elif d == 32:
+            seq = rt._read_memory(c, 32)
+        else:
+            return hookapi.INVALID_ARGUMENT
         fn = {
             hookapi.KEYLET_OFFER: L.offer_keylet,
             hookapi.KEYLET_CHECK: L.check_keylet,
             hookapi.KEYLET_ESCROW: L.escrow_keylet,
             hookapi.KEYLET_NFT_OFFER: L.nft_offer_keylet,
-            hookapi.KEYLET_TICKET: L.ticket_keylet,
         }[kt]
         kl = fn(accid, seq)
 
@@ -91,7 +95,13 @@ def util_keylet(
             return hookapi.INVALID_ARGUMENT
         src = rt._read_memory(a, 20)
         dst = rt._read_memory(c, 20)
-        seq = (e << 32) + f
+        # f is the discriminator: 0 → e is a uint32 seq, 32 → read 32 bytes at offset e
+        if f == 0:
+            seq = e
+        elif f == 32:
+            seq = rt._read_memory(e, 32)
+        else:
+            return hookapi.INVALID_ARGUMENT
         kl = L.paychan_keylet(src, dst, seq)
 
     # --- Two accounts: DEPOSIT_PREAUTH ---
@@ -142,7 +152,9 @@ def util_keylet(
 
     # --- Global singletons: SKIP, AMENDMENTS, FEES, NEGATIVE_UNL ---
     elif kt == hookapi.KEYLET_SKIP:
-        kl = L.skip_keylet()
+        if c or d or e or f or b > 1:
+            return hookapi.INVALID_ARGUMENT
+        kl = L.skip_keylet(a) if b == 1 else L.skip_keylet()
     elif kt == hookapi.KEYLET_AMENDMENTS:
         kl = L.amendments_keylet()
     elif kt == hookapi.KEYLET_FEES:

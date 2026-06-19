@@ -106,7 +106,7 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
                     _set_slot_data(rt, new_slot, parent_data[pay_off:pay_off + pay_len])
                 return new_slot
     except Exception:
-        return hookapi.PARSE_ERROR
+        return hookapi.NOT_AN_OBJECT
 
     return hookapi.DOESNT_EXIST
 
@@ -208,9 +208,10 @@ def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
         if write_len != 0:
             return hookapi.INVALID_ARGUMENT
         return _data_as_int64(data)
-    to_write = data[:write_len]
-    rt._write_memory(write_ptr, to_write)
-    return len(to_write)
+    if len(data) > write_len:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, data)
+    return len(data)
 
 
 # ---------------------------------------------------------------------------
@@ -268,11 +269,19 @@ def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int
     data = rt._read_memory(read_ptr, read_len)
     ledger = getattr(rt, "ledger", {})
 
-    if data in ledger:
-        _set_slot_data(rt, slot_no, ledger[data])
-        return slot_no
+    if data not in ledger:
+        return hookapi.DOESNT_EXIST
 
-    return hookapi.DOESNT_EXIST
+    if slot_no == 0:
+        for candidate in range(1, 256):
+            if f"slot_data:{candidate}" not in rt._slot_overrides:
+                slot_no = candidate
+                break
+        else:
+            return hookapi.NO_FREE_SLOTS
+
+    _set_slot_data(rt, slot_no, ledger[data])
+    return slot_no
 
 
 # ---------------------------------------------------------------------------

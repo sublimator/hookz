@@ -54,9 +54,10 @@ def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
     val = rt.params.get(key)
     if val is None:
         return hookapi.DOESNT_EXIST
-    to_write = val[:write_len]
-    rt._write_memory(write_ptr, to_write)
-    return len(to_write)
+    if len(val) > write_len:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, val)
+    return len(val)
 
 
 def hook_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread_len: int) -> int:

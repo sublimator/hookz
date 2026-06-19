@@ -166,19 +166,22 @@ def hook_keylet(account: str | bytes) -> bytes:
 
 # --- Account + sequence ---
 
-def offer_keylet(account: str | bytes, sequence: int) -> bytes:
+def offer_keylet(account: str | bytes, sequence: int | bytes) -> bytes:
     """keylet::offer(id, seq) → {ltOFFER, indexHash(OFFER, id, seq)}"""
-    return _make_keylet(LT.OFFER, _index_hash(NS.OFFER, _accid_bytes(account), _uint32_bytes(sequence)))
+    seq_bytes = sequence if isinstance(sequence, bytes) else _uint32_bytes(sequence)
+    return _make_keylet(LT.OFFER, _index_hash(NS.OFFER, _accid_bytes(account), seq_bytes))
 
 
-def check_keylet(account: str | bytes, sequence: int) -> bytes:
+def check_keylet(account: str | bytes, sequence: int | bytes) -> bytes:
     """keylet::check(id, seq) → {ltCHECK, indexHash(CHECK, id, seq)}"""
-    return _make_keylet(LT.CHECK, _index_hash(NS.CHECK, _accid_bytes(account), _uint32_bytes(sequence)))
+    seq_bytes = sequence if isinstance(sequence, bytes) else _uint32_bytes(sequence)
+    return _make_keylet(LT.CHECK, _index_hash(NS.CHECK, _accid_bytes(account), seq_bytes))
 
 
-def escrow_keylet(account: str | bytes, sequence: int) -> bytes:
+def escrow_keylet(account: str | bytes, sequence: int | bytes) -> bytes:
     """keylet::escrow(id, seq) → {ltESCROW, indexHash(ESCROW, id, seq)}"""
-    return _make_keylet(LT.ESCROW, _index_hash(NS.ESCROW, _accid_bytes(account), _uint32_bytes(sequence)))
+    seq_bytes = sequence if isinstance(sequence, bytes) else _uint32_bytes(sequence)
+    return _make_keylet(LT.ESCROW, _index_hash(NS.ESCROW, _accid_bytes(account), seq_bytes))
 
 
 def ticket_keylet(account: str | bytes, sequence: int) -> bytes:
@@ -186,9 +189,10 @@ def ticket_keylet(account: str | bytes, sequence: int) -> bytes:
     return _make_keylet(LT.TICKET, _index_hash(NS.TICKET, _accid_bytes(account), _uint32_bytes(sequence)))
 
 
-def nft_offer_keylet(account: str | bytes, sequence: int) -> bytes:
+def nft_offer_keylet(account: str | bytes, sequence: int | bytes) -> bytes:
     """keylet::nftoffer(id, seq) → {ltNFTOKEN_OFFER, indexHash(NFTOKEN_OFFER, id, seq)}"""
-    return _make_keylet(LT.NFTOKEN_OFFER, _index_hash(NS.NFTOKEN_OFFER, _accid_bytes(account), _uint32_bytes(sequence)))
+    seq_bytes = sequence if isinstance(sequence, bytes) else _uint32_bytes(sequence)
+    return _make_keylet(LT.NFTOKEN_OFFER, _index_hash(NS.NFTOKEN_OFFER, _accid_bytes(account), seq_bytes))
 
 
 # --- Trust line (two accounts + currency) ---
@@ -203,9 +207,10 @@ def trust_line_keylet(account1: str | bytes, account2: str | bytes, currency: st
 
 # --- Payment channel (src + dst + sequence) ---
 
-def paychan_keylet(src: str | bytes, dst: str | bytes, sequence: int) -> bytes:
+def paychan_keylet(src: str | bytes, dst: str | bytes, sequence: int | bytes) -> bytes:
     """keylet::payChan(src, dst, seq)"""
-    return _make_keylet(LT.PAYCHAN, _index_hash(NS.PAYMENT_CHANNEL, _accid_bytes(src), _accid_bytes(dst), _uint32_bytes(sequence)))
+    seq_bytes = sequence if isinstance(sequence, bytes) else _uint32_bytes(sequence)
+    return _make_keylet(LT.PAYCHAN, _index_hash(NS.PAYMENT_CHANNEL, _accid_bytes(src), _accid_bytes(dst), seq_bytes))
 
 
 # --- Two accounts ---
@@ -251,9 +256,15 @@ def hook_state_dir_keylet(account: str | bytes, namespace: bytes) -> bytes:
 
 # --- Global singletons ---
 
-def skip_keylet() -> bytes:
-    """keylet::skip() → {ltLEDGER_HASHES, indexHash(SKIP_LIST)}"""
-    return _make_keylet(LT.LEDGER_HASHES, _index_hash(NS.SKIP_LIST))
+def skip_keylet(ledger_seq: int | None = None) -> bytes:
+    """keylet::skip() or keylet::skip(ledger) → {ltLEDGER_HASHES, ...}
+
+    Without args: indexHash(SKIP_LIST).
+    With ledger_seq: indexHash(SKIP_LIST, uint32(ledger_seq >> 16)).
+    """
+    if ledger_seq is None:
+        return _make_keylet(LT.LEDGER_HASHES, _index_hash(NS.SKIP_LIST))
+    return _make_keylet(LT.LEDGER_HASHES, _index_hash(NS.SKIP_LIST, _uint32_bytes((ledger_seq & 0xFFFFFFFF) >> 16)))
 
 
 def amendments_keylet() -> bytes:

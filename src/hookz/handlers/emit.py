@@ -112,10 +112,14 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
 
 
 def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
+    if not getattr(rt, '_etxn_reserved', False):
+        return hookapi.PREREQUISITE_NOT_MET
+    if len(rt.emitted_txns) >= rt._etxn_count:
+        return hookapi.TOO_MANY_EMITTED_TXN
     if hash_len < 32:
         return hookapi.TOO_SMALL
     txn_bytes = rt._read_memory(txn_ptr, txn_len)
     rt.emitted_txns.append(txn_bytes)
-    h = hashlib.sha512(txn_bytes).digest()[:32]
+    h = hashlib.sha512(b'\x54\x58\x4e\x00' + txn_bytes).digest()[:32]
     rt._write_memory(hash_ptr, h[:hash_len])
     return 32

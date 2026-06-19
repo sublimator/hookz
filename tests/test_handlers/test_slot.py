@@ -213,12 +213,12 @@ class TestSlot:
         assert result == len(data)
         assert rt._read_memory(100, len(data)) == data
 
-    def test_truncates_to_write_len(self, rt):
+    def test_too_small_when_data_exceeds_write_len(self, rt):
+        """When data > write_len and write_ptr != 0, C++ returns TOO_SMALL."""
         data = b"\xAB" * 32
         rt._slot_overrides["slot_data:1"] = data
         result = slot(rt, 100, 8, 1)
-        assert result == 8
-        assert rt._read_memory(100, 8) == data[:8]
+        assert result == hookapi.TOO_SMALL
 
     def test_empty_slot_returns_zero(self, rt):
         """Explicitly empty slot returns 0 via data_as_int64."""

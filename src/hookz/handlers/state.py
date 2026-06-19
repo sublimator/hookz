@@ -18,15 +18,21 @@ def state(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread
     val = rt.state_db.get(key)
     if val is None:
         return hookapi.DOESNT_EXIST
-    to_write = val[:write_len]
-    rt._write_memory(write_ptr, to_write)
-    return len(to_write)
+    if write_ptr == 0:
+        from hookz.handlers.slot import _data_as_int64
+        return _data_as_int64(val)
+    if len(val) > write_len:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, val)
+    return len(val)
 
 
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
     if kread_len < 1:
         return hookapi.TOO_SMALL
     if kread_len > 32:
+        return hookapi.TOO_BIG
+    if read_len > 256:
         return hookapi.TOO_BIG
     key = rt._read_memory(kread_ptr, kread_len)
     if read_ptr == 0 and read_len == 0:
@@ -61,9 +67,15 @@ def state_foreign(
         return hookapi.TOO_SMALL
     if kread_len > 32:
         return hookapi.TOO_BIG
-    if ns_len != 0 and ns_len != 32:
+    is_foreign = aread_ptr != 0
+    if not is_foreign and aread_len != 0:
         return hookapi.INVALID_ARGUMENT
-    if aread_len != 0 and aread_len != 20:
+    if is_foreign and aread_len != 20:
+        return hookapi.INVALID_ARGUMENT
+
+    if not is_foreign and ns_len == 0:
+        pass  # local account uses default namespace
+    elif ns_len != 32:
         return hookapi.INVALID_ARGUMENT
 
     key = rt._read_memory(kread_ptr, kread_len)
@@ -74,9 +86,13 @@ def state_foreign(
     val = db.get((account, ns, key))
     if val is None:
         return hookapi.DOESNT_EXIST
-    to_write = val[:write_len]
-    rt._write_memory(write_ptr, to_write)
-    return len(to_write)
+    if write_ptr == 0:
+        from hookz.handlers.slot import _data_as_int64
+        return _data_as_int64(val)
+    if len(val) > write_len:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, val)
+    return len(val)
 
 
 def state_foreign_set(
@@ -98,6 +114,10 @@ def state_foreign_set(
         return hookapi.INVALID_ARGUMENT
     if aread_len != 0 and aread_len != 20:
         return hookapi.INVALID_ARGUMENT
+    if ns_ptr == 0 and ns_len == 0 and not (aread_ptr == 0 and aread_len == 0):
+        return hookapi.INVALID_ARGUMENT
+    if read_len > 256:
+        return hookapi.TOO_BIG
 
     key = rt._read_memory(kread_ptr, kread_len)
     ns = rt._read_memory(ns_ptr, ns_len) if ns_len else b"\x00" * 32

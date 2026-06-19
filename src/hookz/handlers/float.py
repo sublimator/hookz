@@ -39,6 +39,10 @@ def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
 
 
 def float_sum(rt: HookRuntime, a: int, b: int) -> int:
+    if a == 0:
+        return b
+    if b == 0:
+        return a
     return _float_to_xfl(_xfl_to_float(a) + _xfl_to_float(b))
 
 
@@ -49,21 +53,33 @@ def float_negate(rt: HookRuntime, a: int) -> int:
 
 
 def float_int(rt: HookRuntime, xfl: int, decimal: int, absolute: int) -> int:
+    if xfl == 0:
+        return 0
+    mantissa = _xfl_mantissa(xfl)
+    exponent = _xfl_exponent(xfl)
+    neg = ((xfl >> 62) & 1) == 0
     if decimal > 15:
         return hookapi.INVALID_ARGUMENT
-    f = _xfl_to_float(xfl)
-    if not absolute and f < 0:
+    if neg and not absolute:
         return hookapi.CANT_RETURN_NEGATIVE
-    if absolute:
-        f = abs(f)
-    return int(f * (10 ** decimal))
+    shift = -(exponent + decimal)
+    if shift > 15:
+        return 0
+    if shift < 0:
+        return hookapi.TOO_BIG
+    if shift > 0:
+        mantissa //= (10 ** shift)
+    return mantissa
 
 
 def float_set(rt: HookRuntime, exp: int, mantissa: int) -> int:
     if mantissa == 0:
         return 0
     f = mantissa * (10.0 ** exp)
-    return _float_to_xfl(f)
+    result = _float_to_xfl(f)
+    if result == 0:
+        return hookapi.INVALID_FLOAT
+    return result
 
 
 def float_multiply(rt: HookRuntime, a: int, b: int) -> int:
@@ -150,10 +166,12 @@ def float_sto(rt: HookRuntime, write_ptr: int, write_len: int,
             drops = 0
         else:
             shift = -exponent
+            if shift > 15:
+                return hookapi.XFL_OVERFLOW
+            if shift < 0:
+                return hookapi.XFL_OVERFLOW
             if shift > 0:
                 drops = mantissa // (10 ** shift)
-            elif shift < 0:
-                drops = mantissa * (10 ** (-shift))
             else:
                 drops = mantissa
         amt_bytes[0] = (0b01000000 if not neg else 0b00000000) + ((drops >> 56) & 0b00111111)
@@ -218,10 +236,10 @@ def float_log(rt: HookRuntime, a: int) -> int:
 
 def float_root(rt: HookRuntime, a: int, n: int) -> int:
     """Nth root of XFL, returned as XFL."""
-    if n < 2:
-        return hookapi.INVALID_ARGUMENT
     if a == 0:
         return 0
+    if n < 2:
+        return hookapi.INVALID_ARGUMENT
     if ((a >> 62) & 1) == 0:
         return hookapi.COMPLEX_NOT_SUPPORTED
     f = _xfl_to_float(a)

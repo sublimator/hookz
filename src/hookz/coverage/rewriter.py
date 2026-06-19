@@ -318,7 +318,7 @@ _I32_CONST = 0x41  # sleb128
 _I64_CONST = 0x42  # sleb128
 _F32_CONST = 0x43  # 4 bytes
 _F64_CONST = 0x44  # 8 bytes
-_MEMORY_OPS = set(range(0x28, 0x3F + 1))  # loads/stores — uleb128 align + uleb128 offset
+_MEMORY_OPS = set(range(0x28, 0x3F))  # loads/stores — uleb128 align + uleb128 offset
 _MEMORY_SIZE = 0x3F
 _MEMORY_GROW = 0x40
 _BR_TABLE = 0x0E  # uleb128 count + uleb128[] + uleb128 default
@@ -451,13 +451,20 @@ def _rewrite_function_body(
         elif opcode == 0xFC:  # misc prefix (saturating truncation, etc.)
             sub_opcode, i = _decode_uleb128(code, i)
             new_code.extend(_encode_uleb128(sub_opcode))
-            # memory.init, data.drop, memory.copy, memory.fill, table ops
-            if sub_opcode <= 7:  # memory/data ops
+            if sub_opcode <= 7:
+                pass  # saturating truncation — no operands
+            elif sub_opcode == 8:  # memory.init
                 idx, i = _decode_uleb128(code, i)
                 new_code.extend(_encode_uleb128(idx))
-                if sub_opcode in (8, 10):  # memory.init, memory.copy
-                    new_code.append(code[i])
-                    i += 1
+                new_code.append(code[i]); i += 1  # memory index byte
+            elif sub_opcode == 9:  # data.drop
+                idx, i = _decode_uleb128(code, i)
+                new_code.extend(_encode_uleb128(idx))
+            elif sub_opcode == 10:  # memory.copy
+                new_code.append(code[i]); i += 1  # src memory
+                new_code.append(code[i]); i += 1  # dst memory
+            elif sub_opcode == 11:  # memory.fill
+                new_code.append(code[i]); i += 1  # memory index
             elif sub_opcode >= 12:  # table ops
                 idx, i = _decode_uleb128(code, i)
                 new_code.extend(_encode_uleb128(idx))

@@ -31,29 +31,28 @@ class TestState:
         val = b"\x00\x00\x00\x64"
         rt.state_db[key] = val
         rt._write_memory(100, key)
-        result = state(rt, 0, 128, 100, len(key))
+        result = state(rt, 200, 128, 100, len(key))
         assert result == len(val)
-        assert rt._read_memory(0, len(val)) == val
+        assert rt._read_memory(200, len(val)) == val
 
     def test_missing_key(self, rt):
         rt._write_memory(100, b"nokey")
-        assert state(rt, 0, 128, 100, 5) == hookapi.DOESNT_EXIST
+        assert state(rt, 200, 128, 100, 5) == hookapi.DOESNT_EXIST
 
-    def test_truncates_to_write_len(self, rt):
+    def test_too_small_when_value_exceeds_write_len(self, rt):
         rt.state_db[b"k"] = b"longvalue"
         rt._write_memory(100, b"k")
-        result = state(rt, 0, 4, 100, 1)
-        assert result == 4
-        assert rt._read_memory(0, 4) == b"long"
+        result = state(rt, 200, 4, 100, 1)
+        assert result == hookapi.TOO_SMALL
 
     def test_binary_key_and_value(self, rt):
         key = b"\x00\x01\x02\x03"
         val = b"\xFF\xFE\xFD"
         rt.state_db[key] = val
         rt._write_memory(100, key)
-        result = state(rt, 0, 128, 100, len(key))
+        result = state(rt, 200, 128, 100, len(key))
         assert result == len(val)
-        assert rt._read_memory(0, len(val)) == val
+        assert rt._read_memory(200, len(val)) == val
 
     def test_key_at_ptr_zero(self, rt):
         """Key stored at memory address 0 should work."""
@@ -67,14 +66,21 @@ class TestState:
     def test_empty_value(self, rt):
         rt.state_db[b"k"] = b""
         rt._write_memory(100, b"k")
-        result = state(rt, 0, 128, 100, 1)
+        result = state(rt, 200, 128, 100, 1)
         assert result == 0
 
+    def test_write_ptr_zero_returns_int64(self, rt):
+        """write_ptr=0 returns the value as big-endian int64."""
+        rt.state_db[b"k"] = b"\x00\x00\x00\x64"
+        rt._write_memory(100, b"k")
+        result = state(rt, 0, 0, 100, 1)
+        assert result == 100  # 0x64 == 100
+
     def test_kread_len_too_small(self, rt):
-        assert state(rt, 0, 128, 100, 0) == hookapi.TOO_SMALL
+        assert state(rt, 200, 128, 100, 0) == hookapi.TOO_SMALL
 
     def test_kread_len_too_big(self, rt):
-        assert state(rt, 0, 128, 100, 33) == hookapi.TOO_BIG
+        assert state(rt, 200, 128, 100, 33) == hookapi.TOO_BIG
 
 
 class TestStateSet:
@@ -153,15 +159,15 @@ class TestStateForeign:
         rt._write_memory(100, key)
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 128, 100, len(key), 200, 32, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, len(key), 200, 32, 300, 20)
         assert result == len(val)
-        assert rt._read_memory(0, len(val)) == val
+        assert rt._read_memory(400, len(val)) == val
 
     def test_missing_key_returns_doesnt_exist(self, rt):
         rt._write_memory(100, b"nokey")
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 128, 100, 5, 200, 32, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, 5, 200, 32, 300, 20)
         assert result == hookapi.DOESNT_EXIST
 
     def test_different_accounts_isolated(self, rt):
@@ -170,48 +176,44 @@ class TestStateForeign:
         rt._write_memory(100, key)
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_B)
-        result = state_foreign(rt, 0, 128, 100, len(key), 200, 32, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, len(key), 200, 32, 300, 20)
         assert result == hookapi.DOESNT_EXIST
 
     def test_kread_len_too_small(self, rt):
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 128, 100, 0, 200, 32, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, 0, 200, 32, 300, 20)
         assert result == hookapi.TOO_SMALL
 
     def test_kread_len_too_big(self, rt):
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 128, 100, 33, 200, 32, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, 33, 200, 32, 300, 20)
         assert result == hookapi.TOO_BIG
 
     def test_invalid_ns_len(self, rt):
-        result = state_foreign(rt, 0, 128, 100, 5, 200, 16, 300, 20)
+        result = state_foreign(rt, 400, 128, 100, 5, 200, 16, 300, 20)
         assert result == hookapi.INVALID_ARGUMENT
 
     def test_invalid_aread_len(self, rt):
-        result = state_foreign(rt, 0, 128, 100, 5, 200, 32, 300, 10)
+        result = state_foreign(rt, 400, 128, 100, 5, 200, 32, 300, 10)
         assert result == hookapi.INVALID_ARGUMENT
 
-    def test_zero_ns_len_defaults(self, rt):
-        """ns_len=0 should use zero namespace."""
-        key = b"k"
-        default_ns = b"\x00" * 32
-        rt._foreign_state_db = {(ACCOUNT_A, default_ns, key): b"val"}
-        rt._write_memory(100, key)
+    def test_foreign_ns_len_zero_returns_invalid(self, rt):
+        """Foreign read with ns_len=0 should return INVALID_ARGUMENT."""
+        rt._write_memory(100, b"k")
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 128, 100, len(key), 200, 0, 300, 20)
-        assert result == 3
+        result = state_foreign(rt, 400, 128, 100, 1, 200, 0, 300, 20)
+        assert result == hookapi.INVALID_ARGUMENT
 
-    def test_write_len_truncates(self, rt):
+    def test_too_small_when_value_exceeds_write_len(self, rt):
         key = b"k"
         rt._foreign_state_db = {(ACCOUNT_A, NAMESPACE, key): b"longvalue"}
         rt._write_memory(100, key)
         rt._write_memory(200, NAMESPACE)
         rt._write_memory(300, ACCOUNT_A)
-        result = state_foreign(rt, 0, 4, 100, len(key), 200, 32, 300, 20)
-        assert result == 4
-        assert rt._read_memory(0, 4) == b"long"
+        result = state_foreign(rt, 400, 4, 100, len(key), 200, 32, 300, 20)
+        assert result == hookapi.TOO_SMALL
 
 
 class TestStateForeignSet:

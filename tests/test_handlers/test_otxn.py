@@ -91,13 +91,12 @@ class TestOtxnParam:
         result = otxn_param(rt, 0, 128, 200, 5)
         assert result == hookapi.DOESNT_EXIST
 
-    def test_truncates_to_write_len(self, rt):
+    def test_too_small_when_value_exceeds_write_len(self, rt):
         key = b"k"
         rt.params[key] = b"longvalue_here"
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 4, 200, 1)
-        assert result == 4
-        assert rt._read_memory(0, 4) == b"long"
+        assert result == hookapi.TOO_SMALL
 
     def test_empty_value(self, rt):
         key = b"flag"

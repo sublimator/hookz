@@ -227,26 +227,44 @@ class TestEtxnFeeBase:
 class TestEmit:
     """emit: record an emitted transaction and write its hash."""
 
+    def test_prerequisite_not_met(self, rt):
+        """Must call etxn_reserve first."""
+        blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
+        rt._write_memory(100, blob)
+        assert emit(rt, 0, 32, 100, len(blob)) == hookapi.PREREQUISITE_NOT_MET
+
+    def test_too_many_emitted_txn(self, rt):
+        """Exceeding reserved count -> TOO_MANY_EMITTED_TXN."""
+        etxn_reserve(rt, 1)
+        blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
+        rt._write_memory(100, blob)
+        assert emit(rt, 0, 32, 100, len(blob)) == 32
+        assert emit(rt, 0, 32, 100, len(blob)) == hookapi.TOO_MANY_EMITTED_TXN
+
     def test_returns_32(self, rt):
+        etxn_reserve(rt, 1)
         blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
         rt._write_memory(100, blob)
         result = emit(rt, 0, 32, 100, len(blob))
         assert result == 32
 
     def test_writes_sha512h_hash(self, rt):
+        etxn_reserve(rt, 1)
         blob = b"\x12\x00\x00\x22\x00\x00\x00\x01"
         rt._write_memory(100, blob)
         emit(rt, 0, 32, 100, len(blob))
-        expected = hashlib.sha512(blob).digest()[:32]
+        expected = hashlib.sha512(b'\x54\x58\x4e\x00' + blob).digest()[:32]
         assert rt._read_memory(0, 32) == expected
 
     def test_too_small(self, rt):
         """hash_len < 32 -> TOO_SMALL."""
+        etxn_reserve(rt, 1)
         blob = b"\x00" * 10
         rt._write_memory(100, blob)
         assert emit(rt, 0, 31, 100, len(blob)) == hookapi.TOO_SMALL
 
     def test_records_emitted_txn(self, rt):
+        etxn_reserve(rt, 1)
         blob = b"\xAB\xCD\xEF"
         rt._write_memory(100, blob)
         emit(rt, 0, 32, 100, len(blob))
@@ -255,6 +273,7 @@ class TestEmit:
 
     def test_multiple_emits(self, rt):
         """Each emit appends to emitted_txns."""
+        etxn_reserve(rt, 5)
         for i in range(5):
             blob = bytes([i]) * 10
             rt._write_memory(100, blob)
@@ -263,6 +282,7 @@ class TestEmit:
         assert rt.emitted_txns[2] == bytes([2]) * 10
 
     def test_different_blobs_different_hashes(self, rt):
+        etxn_reserve(rt, 2)
         blob1 = b"\x01" * 10
         blob2 = b"\x02" * 10
         rt._write_memory(100, blob1)
