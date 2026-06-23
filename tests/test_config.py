@@ -22,6 +22,7 @@ def test_xahaud_root_env_alias_injects_path_without_toml(tmp_path, monkeypatch):
     (xahaud / "hook").mkdir(parents=True)
 
     monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("HOOKZ_XAHAUD", raising=False)
     monkeypatch.setenv("HOOKZ_XAHAUD_ROOT", str(xahaud))
 
     config = load_config()
