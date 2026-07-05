@@ -1,29 +1,33 @@
 """WASM binary rewriter — inject on_source_line(line, col) callbacks.
 
-Parses the WASM binary, reads DWARF .debug_line to get bytecode→source mapping,
-then injects a host function call at every new source location.
+Reads DWARF .debug_line to get bytecode→source mapping, then injects a host
+function call at every new source location.
 
-WASM's structured control flow means inserting instructions never breaks branches
-(they use nesting depth, not byte offsets). We only need to:
+WASM's structured control flow means inserting instructions never breaks
+branches (they use nesting depth, not byte offsets). We only need to:
 1. Add __on_source_line as a new import (and its type if needed)
 2. Shift all existing call/ref.func function indices by 1
 3. Insert i32.const line; i32.const col; call $idx at each DWARF line boundary
-4. Update section and function body sizes
 
-TODO: Refactor the section parsing below to use hookz.wasm.types/decode/encode
-instead of hand-walking the binary. The hookz.wasm package already provides it.
-Dependency direction: hookz.coverage → hookz.wasm.
+Section structure is handled by hookz.wasm (decode/encode); this module only
+rewrites instruction bytes within function bodies.
 """
 
 from __future__ import annotations
 
 import subprocess
 import tempfile
-from pathlib import Path
 from dataclasses import dataclass
 from pathlib import Path
 
+from hookz.wasm.decode import (
+    code_section_content_offset,
+    decode_code_bodies_raw,
+    decode_module,
+)
+from hookz.wasm.encode import encode_module
 from hookz.wasm.leb128 import read_signed, read_unsigned, write_signed, write_unsigned
+from hookz.wasm.types import ExportKind, FuncType, Import, ValType
 
 
 # ---- DWARF source locations ----
@@ -107,148 +111,7 @@ def parse_dwarf_locations(wasm_path_or_bytes: str | bytes) -> list[SourceLoc]:
     return locs
 
 
-# ---- WASM section parsing ----
-
-@dataclass
-class WasmSection:
-    id: int
-    data: bytes
-
-
-def _parse_sections(data: bytes) -> tuple[bytes, list[WasmSection]]:
-    """Parse WASM binary into header + sections."""
-    header = data[:8]  # magic + version
-    sections: list[WasmSection] = []
-    offset = 8
-    while offset < len(data):
-        section_id = data[offset]
-        offset += 1
-        size, offset = read_unsigned(data, offset)
-        section_data = data[offset:offset + size]
-        sections.append(WasmSection(id=section_id, data=section_data))
-        offset += size
-    return header, sections
-
-
-def _rebuild_wasm(header: bytes, sections: list[WasmSection]) -> bytes:
-    """Reassemble WASM binary from header + sections."""
-    out = bytearray(header)
-    for s in sections:
-        out.append(s.id)
-        out.extend(write_unsigned(len(s.data)))
-        out.extend(s.data)
-    return bytes(out)
-
-
-# ---- Type section manipulation ----
-
-def _find_or_add_void_ii_type(sections: list[WasmSection]) -> int:
-    """Find or add type (i32, i32) -> () in the type section. Returns type index."""
-    # Target: functype 0x60, params [0x7F, 0x7F], results []
-    target_type = bytes([0x60, 0x02, 0x7F, 0x7F, 0x00])
-
-    for s in sections:
-        if s.id == 1:  # Type section
-            data = s.data
-            count, pos = read_unsigned(data, 0)
-            idx = 0
-            for _ in range(count):
-                start = pos
-                if data[pos] != 0x60:
-                    break
-                pos += 1
-                param_count, pos = read_unsigned(data, pos)
-                pos += param_count
-                result_count, pos = read_unsigned(data, pos)
-                pos += result_count
-                entry = data[start:pos]
-                if entry == target_type:
-                    return idx
-                idx += 1
-
-            # Not found — append it
-            new_data = bytearray()
-            new_data.extend(write_unsigned(count + 1))
-            new_data.extend(data[len(write_unsigned(count)):])
-            new_data.extend(target_type)
-            s.data = bytes(new_data)
-            return count
-
-    raise RuntimeError("No type section found")
-
-
-# ---- Import section manipulation ----
-
-def _count_func_imports(sections: list[WasmSection]) -> int:
-    """Count function imports in the import section."""
-    for s in sections:
-        if s.id == 2:
-            data = s.data
-            count, pos = read_unsigned(data, 0)
-            func_count = 0
-            for _ in range(count):
-                # module name
-                mod_len, pos = read_unsigned(data, pos)
-                pos += mod_len
-                # field name
-                field_len, pos = read_unsigned(data, pos)
-                pos += field_len
-                # import kind
-                kind = data[pos]
-                pos += 1
-                if kind == 0x00:  # func
-                    _, pos = read_unsigned(data, pos)
-                    func_count += 1
-                elif kind == 0x01:  # table
-                    pos += 1  # reftype
-                    _, pos = read_unsigned(data, pos)  # flags
-                    _, pos = read_unsigned(data, pos)  # initial
-                    # TODO: handle max
-                elif kind == 0x02:  # memory
-                    _, pos = read_unsigned(data, pos)
-                    _, pos = read_unsigned(data, pos)
-                elif kind == 0x03:  # global
-                    pos += 1  # valtype
-                    pos += 1  # mutability
-            return func_count
-    return 0
-
-
-def _add_func_import(sections: list[WasmSection], module: str, name: str, type_idx: int) -> int:
-    """Add a function import at the START of imports. Returns index 0.
-
-    All existing function indices shift by 1.
-    """
-    for s in sections:
-        if s.id == 2:
-            data = s.data
-            count, pos = read_unsigned(data, 0)
-            rest = data[pos:]  # everything after the count
-
-            # Build the new import entry
-            entry = bytearray()
-            mod_bytes = module.encode()
-            entry.extend(write_unsigned(len(mod_bytes)))
-            entry.extend(mod_bytes)
-            name_bytes = name.encode()
-            entry.extend(write_unsigned(len(name_bytes)))
-            entry.extend(name_bytes)
-            entry.append(0x00)  # func import
-            entry.extend(write_unsigned(type_idx))
-
-            # Prepend before existing imports
-            new_data = bytearray()
-            new_data.extend(write_unsigned(count + 1))
-            new_data.extend(entry)
-            new_data.extend(rest)
-            s.data = bytes(new_data)
-
-            return 0  # our import is now function index 0
-
-    raise RuntimeError("No import section found")
-
-
-# ---- Code section instrumentation ----
+# ---- Code instrumentation ----
 
 # WASM opcodes that take a function index as immediate
 _CALL = 0x10
@@ -271,49 +134,25 @@ _MEMORY_GROW = 0x40
 _BR_TABLE = 0x0E  # uleb128 count + uleb128[] + uleb128 default
 
 
-def _rewrite_function_body(
-    body: bytes,
-    body_offset_in_section: int,
+def _rewrite_code(
+    code: bytes,
     callback_idx: int,
-    locs: list[SourceLoc],
+    locs_at: dict[int, SourceLoc],
     func_idx_shift: int,
 ) -> bytes:
-    """Rewrite a single function body: shift call indices and insert callbacks.
+    """Rewrite instruction bytes: shift call indices and insert callbacks.
 
-    body_offset_in_section: offset of this function body within the code
-    section content (i.e. relative to code section content start, which
-    is the same base that DWARF addresses use).
+    locs_at maps code-local byte offsets (0 = first instruction) to the
+    source location that begins there.
     """
-    # Parse locals
-    pos = 0
-    local_decl_count, pos = read_unsigned(body, pos)
-    for _ in range(local_decl_count):
-        _, pos = read_unsigned(body, pos)  # count
-        pos += 1  # valtype
-
-    locals_prefix = body[:pos]
-    code = body[pos:]
-
-    # DWARF addresses are relative to code section content start.
-    # The first instruction of this function's code is at:
-    #   dwarf_addr = body_offset_in_section + len(locals_prefix)
-    code_dwarf_start = body_offset_in_section + len(locals_prefix)
-
-    addr_to_loc: dict[int, SourceLoc] = {}
-    for loc in locs:
-        code_offset = loc.address - code_dwarf_start
-        if 0 <= code_offset < len(code):
-            addr_to_loc[code_offset] = loc
-
-    # Walk through instructions, building new code
     new_code = bytearray()
     last_line_col: tuple[int, int] | None = None
     i = 0
 
     while i < len(code):
         # Check if this offset has a DWARF entry (new source location)
-        if i in addr_to_loc:
-            loc = addr_to_loc[i]
+        if i in locs_at:
+            loc = locs_at[i]
             lc = (loc.line, loc.col)
             if lc != last_line_col:
                 # Insert: i32.const line; i32.const col; call callback_idx
@@ -421,88 +260,7 @@ def _rewrite_function_body(
 
         # All other opcodes (arithmetic, comparison, drop, select, etc.) have no immediates
 
-    return locals_prefix + bytes(new_code)
-
-
-def _instrument_code_section(
-    sections: list[WasmSection],
-    callback_idx: int,
-    locs: list[SourceLoc],
-    func_idx_shift: int,
-    code_section_file_offset: int = 0,
-) -> None:
-    """Rewrite all function bodies in the code section."""
-    for s in sections:
-        if s.id != 10:
-            continue
-
-        data = s.data
-        pos = 0
-        func_count, pos = read_unsigned(data, pos)
-
-        new_bodies = bytearray()
-        new_bodies.extend(write_unsigned(func_count))
-
-        for _ in range(func_count):
-            body_size, pos = read_unsigned(data, pos)
-            body = data[pos:pos + body_size]
-
-            # Offset of this body within the code section content
-            body_offset_in_section = pos
-
-            new_body = _rewrite_function_body(
-                body, body_offset_in_section, callback_idx, locs, func_idx_shift,
-            )
-
-            new_bodies.extend(write_unsigned(len(new_body)))
-            new_bodies.extend(new_body)
-            pos += body_size
-
-        s.data = bytes(new_bodies)
-
-
-def _shift_exports(sections: list[WasmSection], shift: int) -> None:
-    """Shift function indices in the export section."""
-    for s in sections:
-        if s.id != 7:
-            continue
-        data = s.data
-        pos = 0
-        count, pos = read_unsigned(data, 0)
-
-        new_data = bytearray(write_unsigned(count))
-        for _ in range(count):
-            name_len, pos = read_unsigned(data, pos)
-            name = data[pos:pos + name_len]
-            pos += name_len
-            kind = data[pos]
-            pos += 1
-            idx, pos = read_unsigned(data, pos)
-
-            new_data.extend(write_unsigned(name_len))
-            new_data.extend(name)
-            new_data.append(kind)
-            if kind == 0x00:  # func export
-                new_data.extend(write_unsigned(idx + shift))
-            else:
-                new_data.extend(write_unsigned(idx))
-
-        s.data = bytes(new_data)
-
-
-def _shift_function_section(sections: list[WasmSection]) -> None:
-    """No shift needed — function section maps to type indices, not func indices."""
-    pass
-
-
-def _shift_elements(sections: list[WasmSection], shift: int) -> None:
-    """Shift function indices in element sections (table init)."""
-    for s in sections:
-        if s.id != 9:
-            continue
-        # Element section rewriting is complex — skip for PoC
-        # Hook WASM typically doesn't use tables heavily
-        pass
+    return bytes(new_code)
 
 
 # ---- Public API ----
@@ -544,44 +302,43 @@ def instrument_wasm(
             seen.add(key)
             unique_locs.append(loc)
 
-    # Calculate the code section content offset in the ORIGINAL binary
-    # DWARF addresses are relative to this. Must be computed before any modifications.
-    code_section_file_offset = 0
-    offset = 8  # magic + version
-    orig_data = wasm_bytes
-    while offset < len(orig_data):
-        section_id = orig_data[offset]
-        offset += 1
-        size, offset = read_unsigned(orig_data, offset)
-        if section_id == 10:  # Code section
-            code_section_file_offset = offset
+    # DWARF addresses are relative to the code section content start.
+    # Compute each function's instruction range in that address space
+    # from the ORIGINAL binary, before any modifications.
+    content_offset = code_section_content_offset(wasm_bytes)
+    body_ranges = decode_code_bodies_raw(wasm_bytes)
+
+    mod = decode_module(wasm_bytes)
+
+    # Find or add type (i32, i32) -> ()
+    target = FuncType(params=(ValType.I32, ValType.I32), results=())
+    for idx, ft in enumerate(mod.types):
+        if ft.params == target.params and ft.results == target.results:
+            type_idx = idx
             break
-        offset += size
+    else:
+        mod.types.append(target)
+        type_idx = len(mod.types) - 1
 
-    # Parse WASM into mutable sections
-    header, sections = _parse_sections(wasm_bytes)
-
-    # Add type for (i32, i32) -> ()
-    type_idx = _find_or_add_void_ii_type(sections)
-
-    # Add import — this shifts all function indices by 1
-    callback_idx = _add_func_import(sections, import_module, import_name, type_idx)
+    # Prepend the callback import — all existing function indices shift by 1
+    mod.imports.insert(0, Import(module=import_module, name=import_name, type_idx=type_idx))
+    callback_idx = 0
     func_idx_shift = 1
 
-    # Shift exports
-    _shift_exports(sections, func_idx_shift)
+    for exp in mod.exports:
+        if exp.kind == ExportKind.FUNC:
+            exp.index += func_idx_shift
 
-    # Shift element section
-    _shift_elements(sections, func_idx_shift)
+    # Element sections pass through as raw bytes, indices unshifted —
+    # hook WASM doesn't reference functions from tables.
 
-    # DWARF addresses are relative to the code section content start (after
-    # the section ID + size bytes). Pass the file offset of the code section
-    # content so the instrumenter can compute the right offsets.
-    _instrument_code_section(
-        sections, callback_idx, unique_locs, func_idx_shift,
-        code_section_file_offset,
-    )
+    for body, (abs_start, _abs_end) in zip(mod.code, body_ranges):
+        rel_start = abs_start - content_offset
+        locs_at: dict[int, SourceLoc] = {}
+        for loc in unique_locs:
+            off = loc.address - rel_start
+            if 0 <= off < len(body.code):
+                locs_at[off] = loc
+        body.code = _rewrite_code(body.code, callback_idx, locs_at, func_idx_shift)
 
-    # Reassemble
-    result = _rebuild_wasm(header, sections)
-    return result, unique_locs
+    return encode_module(mod), unique_locs

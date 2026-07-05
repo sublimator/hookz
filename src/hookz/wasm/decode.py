@@ -128,6 +128,22 @@ def decode_module(wasm: bytes) -> Module:
     return mod
 
 
+def code_section_content_offset(wasm: bytes) -> int:
+    """File offset of the code section's content (after section id + size).
+
+    DWARF line-table addresses in WASM binaries are relative to this point.
+    """
+    i = 8  # skip header
+    while i < len(wasm):
+        section_type = wasm[i]
+        i += 1
+        section_length, i = read_unsigned(wasm, i)
+        if section_type == SectionId.CODE:
+            return i
+        i += section_length
+    raise DecodeError("No code section found")
+
+
 def decode_code_bodies_raw(wasm: bytes) -> list[tuple[int, int]]:
     """Find raw byte offsets of code bodies in the WASM binary.
 

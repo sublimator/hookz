@@ -381,9 +381,3 @@ tests/
     hooks/misc/             custom hooks (balance_gate, treasury)
     hooks/XahauHooks101/    community hook examples (submodule)
 ```
-
-### Known debts
-
-- `coverage/rewriter.py` shares the LEB128 codec (`wasm/leb128.py`) now, but still
-  hand-walks WASM section structure instead of reusing `hookz.wasm`'s decode/encode
-  (it carries a TODO for this).
