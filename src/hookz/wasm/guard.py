@@ -164,7 +164,11 @@ def _walk_code(
             if block_type in BLOCK_TYPE_BYTES:
                 i += 1
             else:
-                _, i = read_signed(wasm, i)
+                try:
+                    _, i = read_signed(wasm, i)
+                except LEB128Error:
+                    errors.append(f"Truncated block type at {i}")
+                    break
 
             iteration_bound = current.iteration_bound if current.parent else 1
             loop_guard_id = 0
@@ -471,6 +475,9 @@ def validate_guards_module(
     if mod.custom_sections:
         raise GuardError("Hook contains custom sections (use cleaner to strip)")
 
+    if mod.other_imports:
+        raise GuardError("Non-function import detected")
+
     guard_idx = mod.guard_func_idx
     if guard_idx is None:
         raise GuardError("Hook did not import _g")
@@ -507,10 +514,13 @@ def validate_guards_module(
     cbak_tree = None
 
     for j, (body_start, body_end) in enumerate(code_bodies):
-        tree = _check_guard_strict(
-            wasm, j, body_start, body_end,
-            guard_idx, last_import_idx, rules_version,
-        )
+        try:
+            tree = _check_guard_strict(
+                wasm, j, body_start, body_end,
+                guard_idx, last_import_idx, rules_version,
+            )
+        except LEB128Error as e:
+            raise GuardError(f"Malformed LEB128 in code section {j}: {e}") from e
         wce = tree.wce
         if wce >= MAX_WCE:
             raise GuardError(f"WCE {wce} exceeds limit {MAX_WCE} in code section {j}")
@@ -584,7 +594,11 @@ def analyze_wce_module(
     cbak_tree = None
 
     for j, (body_start, body_end) in enumerate(code_bodies):
-        tree, errors = _walk_code(wasm, j, body_start, body_end, guard_idx)
+        try:
+            tree, errors = _walk_code(wasm, j, body_start, body_end, guard_idx)
+        except (GuardError, LEB128Error, IndexError) as e:
+            all_errors.append(f"Failed to analyze code section {j}: {e}")
+            continue
         all_errors.extend(errors)
         wce = tree.wce
         if j == hook_code_idx:

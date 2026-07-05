@@ -22,6 +22,8 @@ def read_unsigned(buf: bytes, offset: int) -> tuple[int, int]:
         val |= (b & 0x7F) << shift
         i += 1
         if not (b & 0x80):
+            if val >> 64:
+                raise LEB128Error("LEB128 overflow")
             return val, i
         shift += 7
         if shift >= 64:
@@ -41,6 +43,8 @@ def read_signed(buf: bytes, offset: int) -> tuple[int, int]:
         if not (b & 0x80):
             if shift < 64 and (b & 0x40):
                 val |= ~0 << (shift + 7)
+            if not (-(1 << 63) <= val < (1 << 63)):
+                raise LEB128Error("LEB128 overflow")
             return val, i
         shift += 7
         if shift >= 64:

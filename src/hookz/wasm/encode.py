@@ -54,15 +54,17 @@ def _encode_type_section(types: list[FuncType]) -> bytes:
     return _encode_section(SectionId.TYPE, bytes(payload))
 
 
-def _encode_import_section(imports: list[Import]) -> bytes:
-    """Encode the import section (function imports only)."""
+def _encode_import_section(imports: list[Import], other_imports: list[bytes]) -> bytes:
+    """Encode the import section: function imports, then raw non-function entries."""
     payload = bytearray()
-    payload.extend(write_unsigned(len(imports)))
+    payload.extend(write_unsigned(len(imports) + len(other_imports)))
     for imp in imports:
         payload.extend(_encode_string(imp.module))
         payload.extend(_encode_string(imp.name))
         payload.append(0x00)  # function import kind
         payload.extend(write_unsigned(imp.type_idx))
+    for raw in other_imports:
+        payload.extend(raw)
     return _encode_section(SectionId.IMPORT, bytes(payload))
 
 
@@ -129,8 +131,8 @@ def encode_module(mod: Module) -> bytes:
         out.extend(_encode_type_section(mod.types))
 
     # 2. Import section
-    if mod.imports:
-        out.extend(_encode_import_section(mod.imports))
+    if mod.imports or mod.other_imports:
+        out.extend(_encode_import_section(mod.imports, mod.other_imports))
 
     # 3. Function section
     if mod.functions:
@@ -157,6 +159,10 @@ def encode_module(mod: Module) -> bytes:
     # 9. Element section(s)
     for sec in mod.elements:
         out.extend(_encode_raw_section(sec))
+
+    # 9.5 Data count section — must precede code per spec
+    if mod.data_count is not None:
+        out.extend(_encode_section(SectionId.DATA_COUNT, bytes(write_unsigned(mod.data_count))))
 
     # 10. Code section
     if mod.code:

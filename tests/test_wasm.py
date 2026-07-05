@@ -415,3 +415,143 @@ class TestCleanerMultipleHooks:
             # Report but don't hard-fail yet — guard rewriting may need tuning
             msg = "; ".join(f"{n}: {e}" for n, e in failures.items())
             pytest.skip(f"Hooks that failed clean+guard: {msg}")
+
+
+# ---------------------------------------------------------------------------
+# Regression tests — adversarial review findings (2026-07-05)
+# ---------------------------------------------------------------------------
+
+# Minimal hand-crafted modules. Section format: id, payload-len, payload.
+_HEADER = b"\x00\x61\x73\x6d\x01\x00\x00\x00"
+
+# type ()->(), imports: env.memory (kind 2) + env._g (func, type 0)
+_NONFUNC_IMPORT_WASM = _HEADER + bytes([
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,                    # type section
+    0x02, 0x19, 0x02,                                      # import section, 2 entries
+    0x03, 0x65, 0x6E, 0x76,                                #   "env"
+    0x06, 0x6D, 0x65, 0x6D, 0x6F, 0x72, 0x79,              #   "memory"
+    0x02, 0x00, 0x01,                                      #   kind=memory, limits min=1
+    0x03, 0x65, 0x6E, 0x76,                                #   "env"
+    0x02, 0x5F, 0x67,                                      #   "_g"
+    0x00, 0x00,                                            #   kind=func, type 0
+])
+
+# type ()->(), 1 func, memory, DATA_COUNT=1, empty body, 1 passive data segment
+_DATA_COUNT_WASM = _HEADER + bytes([
+    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,        # type section
+    0x03, 0x02, 0x01, 0x00,                    # function section
+    0x05, 0x03, 0x01, 0x00, 0x01,              # memory section
+    0x0C, 0x01, 0x01,                          # data count = 1
+    0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B,        # code: one empty body
+    0x0B, 0x03, 0x01, 0x01, 0x00,              # data: one passive empty segment
+])
+
+# type (i32)->i64, 1 func exported as "hook", body: block with truncated blocktype
+_TRUNCATED_BLOCKTYPE_WASM = _HEADER + bytes([
+    0x01, 0x06, 0x01, 0x60, 0x01, 0x7F, 0x01, 0x7E,        # type section
+    0x03, 0x02, 0x01, 0x00,                                # function section
+    0x07, 0x08, 0x01, 0x04, 0x68, 0x6F, 0x6F, 0x6B, 0x00, 0x00,  # export "hook"
+    0x0A, 0x05, 0x01, 0x03, 0x00, 0x02, 0x80,              # code: block, truncated sleb
+])
+
+
+class TestLeb128Limits:
+    def test_unsigned_terminal_overflow_raises(self):
+        from hookz.wasm.leb128 import read_unsigned, LEB128Error
+        with pytest.raises(LEB128Error, match="overflow"):
+            read_unsigned(b"\xff" * 9 + b"\x02", 0)
+
+    def test_unsigned_max_u64_accepted(self):
+        from hookz.wasm.leb128 import read_unsigned
+        val, off = read_unsigned(b"\xff" * 9 + b"\x01", 0)
+        assert val == (1 << 64) - 1
+        assert off == 10
+
+    def test_signed_terminal_overflow_raises(self):
+        from hookz.wasm.leb128 import read_signed, LEB128Error
+        with pytest.raises(LEB128Error, match="overflow"):
+            read_signed(b"\xff" * 9 + b"\x02", 0)
+
+    def test_signed_ten_byte_minus_one_accepted(self):
+        from hookz.wasm.leb128 import read_signed
+        val, off = read_signed(b"\xff" * 9 + b"\x7f", 0)
+        assert val == -1
+        assert off == 10
+
+    def test_decode_wraps_leb128_error_as_decode_error(self):
+        # code section whose func count is an overflowing varint
+        wasm = _HEADER + bytes([0x0A, 0x0A]) + b"\xff" * 9 + b"\x02"
+        with pytest.raises(DecodeError):
+            decode_code_bodies_raw(wasm)
+
+
+class TestNonFunctionImports:
+    def test_round_trip_preserves_non_function_imports(self):
+        mod = decode_module(_NONFUNC_IMPORT_WASM)
+        assert len(mod.imports) == 1
+        assert mod.imports[0].name == "_g"
+        assert len(mod.other_imports) == 1
+
+        out = encode_module(mod)
+        mod2 = decode_module(out)
+        assert len(mod2.imports) == 1
+        assert len(mod2.other_imports) == 1
+        assert mod2.other_imports[0] == mod.other_imports[0]
+
+    def test_validate_guards_rejects_non_function_import(self):
+        with pytest.raises(GuardError, match="Non-function import"):
+            validate_guards(_NONFUNC_IMPORT_WASM, import_whitelist={"_g"})
+
+
+class TestDataCountSection:
+    def test_original_is_valid(self):
+        import wasmtime
+        wasmtime.Module(wasmtime.Engine(), _DATA_COUNT_WASM)
+
+    def test_round_trip_stays_valid(self):
+        import wasmtime
+        out = encode_module(decode_module(_DATA_COUNT_WASM))
+        wasmtime.Module(wasmtime.Engine(), out)  # raises if section order invalid
+
+    def test_data_count_value_preserved(self):
+        out = encode_module(decode_module(_DATA_COUNT_WASM))
+        assert decode_module(out).data_count == 1
+
+
+class TestElementShift:
+    def test_flag0_funcidx_vector_shifted(self):
+        from hookz.wasm.elements import shift_element_func_indices
+        # 1 segment, flags 0: expr(i32.const 0, end), vec [3, 4]
+        sec = bytes([0x01, 0x00, 0x41, 0x00, 0x0B, 0x02, 0x03, 0x04])
+        out = shift_element_func_indices(sec, 1)
+        assert out == bytes([0x01, 0x00, 0x41, 0x00, 0x0B, 0x02, 0x04, 0x05])
+
+    def test_expr_segment_ref_func_shifted(self):
+        from hookz.wasm.elements import shift_element_func_indices
+        # 1 segment, flags 5: reftype funcref, vec of 1 expr (ref.func 7, end)
+        sec = bytes([0x01, 0x05, 0x70, 0x01, 0xD2, 0x07, 0x0B])
+        out = shift_element_func_indices(sec, 1)
+        assert out == bytes([0x01, 0x05, 0x70, 0x01, 0xD2, 0x08, 0x0B])
+
+    def test_unsupported_expr_opcode_raises(self):
+        from hookz.wasm.elements import shift_element_func_indices, ElementRewriteError
+        # flags 0 with a call opcode (0x10) inside the offset expr
+        sec = bytes([0x01, 0x00, 0x10, 0x00, 0x0B, 0x00])
+        with pytest.raises(ElementRewriteError):
+            shift_element_func_indices(sec, 1)
+
+
+class TestGuardMalformedInput:
+    def test_analyze_wce_contains_truncated_block_type(self):
+        from hookz.wasm.guard import analyze_wce
+        result = analyze_wce(_TRUNCATED_BLOCKTYPE_WASM)  # must not raise
+        assert any("Truncated" in e or "code section" in e for e in result.errors)
+
+    def test_validate_guards_raises_guard_error_not_leb128(self):
+        from hookz.wasm.leb128 import LEB128Error
+        try:
+            validate_guards(_TRUNCATED_BLOCKTYPE_WASM, import_whitelist={"_g"})
+        except GuardError:
+            pass  # expected — the public contract
+        except LEB128Error:
+            pytest.fail("LEB128Error leaked through validate_guards")

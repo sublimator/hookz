@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import wasm_tob
 
-from .leb128 import read_unsigned
+from .leb128 import LEB128Error, read_unsigned
 from .types import (
     WASM_HEADER,
     SectionId,
@@ -48,7 +48,29 @@ def decode_module(wasm: bytes) -> Module:
 
     mod = Module()
 
-    for fragment in wasm_tob.decode_module(wasm):
+    # Sections we pass through as raw bytes are extracted ourselves. The
+    # DATA_COUNT, DATA, and ELEMENT sections are also stripped from the copy
+    # handed to wasm-tob — it predates bulk memory and the newer element
+    # encodings, and crashes on them.
+    raw_dc = _extract_raw_section(wasm, SectionId.DATA_COUNT)
+    if raw_dc is not None:
+        mod.data_count, _ = read_unsigned(raw_dc.data, 0)
+
+    for sec_id, target in (
+        (SectionId.TABLE, mod.tables),
+        (SectionId.MEMORY, mod.memories),
+        (SectionId.GLOBAL, mod.globals),
+        (SectionId.ELEMENT, mod.elements),
+        (SectionId.DATA, mod.data),
+    ):
+        raw = _extract_raw_section(wasm, sec_id)
+        if raw is not None:
+            target.append(raw)
+
+    wasm_for_tob = _strip_sections(
+        wasm, {SectionId.DATA_COUNT, SectionId.DATA, SectionId.ELEMENT})
+
+    for fragment in wasm_tob.decode_module(wasm_for_tob):
         sec_data = fragment.data
         if not hasattr(sec_data, 'id'):
             continue  # skip module header
@@ -70,14 +92,7 @@ def decode_module(wasm: bytes) -> Module:
                 mod.types.append(FuncType(params=params, results=results))
 
         elif sec_id == SectionId.IMPORT:
-            for entry in sec_data.payload.entries:
-                module = bytes(entry.module_str).decode()
-                name = bytes(entry.field_str).decode()
-                if entry.kind == 0:  # function import
-                    # FunctionImportEntryData has a .type field (VarUInt32)
-                    type_idx = entry.type.type
-                    mod.imports.append(Import(module=module, name=name, type_idx=type_idx))
-                # Skip non-function imports for now (table, memory, global)
+            mod.imports, mod.other_imports = _decode_imports_raw(wasm)
 
         elif sec_id == SectionId.FUNCTION:
             mod.functions = list(sec_data.payload.types)
@@ -105,27 +120,65 @@ def decode_module(wasm: bytes) -> Module:
                 ))
 
         elif sec_id in (SectionId.TABLE, SectionId.MEMORY, SectionId.GLOBAL,
-                        SectionId.START, SectionId.ELEMENT, SectionId.DATA,
-                        SectionId.DATA_COUNT):
-            # Store as raw section — we'll copy these through unchanged
-            raw = _extract_raw_section(wasm, sec_id)
-            if raw is not None:
-                if sec_id == SectionId.TABLE:
-                    mod.tables.append(raw)
-                elif sec_id == SectionId.MEMORY:
-                    mod.memories.append(raw)
-                elif sec_id == SectionId.GLOBAL:
-                    mod.globals.append(raw)
-                elif sec_id == SectionId.ELEMENT:
-                    mod.elements.append(raw)
-                elif sec_id == SectionId.DATA:
-                    mod.data.append(raw)
-                elif sec_id == SectionId.DATA_COUNT:
-                    mod.data.append(raw)  # treat as raw data
-                elif sec_id == SectionId.START:
-                    pass  # TODO: parse start section
+                        SectionId.START, SectionId.ELEMENT, SectionId.DATA):
+            pass  # raw passthrough sections — extracted above the loop
 
     return mod
+
+
+def _skip_limits(data: bytes, pos: int) -> int:
+    """Skip a limits encoding (flags + min [+ max])."""
+    flags = data[pos]
+    pos += 1
+    _, pos = read_unsigned(data, pos)  # min
+    if flags & 0x01:
+        _, pos = read_unsigned(data, pos)  # max
+    return pos
+
+
+def _decode_imports_raw(wasm: bytes) -> tuple[list[Import], list[bytes]]:
+    """Walk the raw import section.
+
+    Returns (function imports parsed, non-function import entries as raw
+    bytes). Raw entries are preserved so encode can re-emit them — function
+    index math elsewhere counts only function imports.
+    """
+    section = _extract_raw_section(wasm, SectionId.IMPORT)
+    if section is None:
+        return [], []
+    data = section.data
+    imports: list[Import] = []
+    other: list[bytes] = []
+    try:
+        count, pos = read_unsigned(data, 0)
+        for _ in range(count):
+            start = pos
+            mod_len, pos = read_unsigned(data, pos)
+            module = data[pos:pos + mod_len].decode(errors="replace")
+            pos += mod_len
+            name_len, pos = read_unsigned(data, pos)
+            name = data[pos:pos + name_len].decode(errors="replace")
+            pos += name_len
+            kind = data[pos]
+            pos += 1
+            if kind == 0x00:  # function
+                type_idx, pos = read_unsigned(data, pos)
+                imports.append(Import(module=module, name=name, type_idx=type_idx))
+            elif kind == 0x01:  # table: reftype + limits
+                pos += 1
+                pos = _skip_limits(data, pos)
+                other.append(data[start:pos])
+            elif kind == 0x02:  # memory: limits
+                pos = _skip_limits(data, pos)
+                other.append(data[start:pos])
+            elif kind == 0x03:  # global: valtype + mutability
+                pos += 2
+                other.append(data[start:pos])
+            else:
+                raise DecodeError(f"Unknown import kind {kind}")
+    except (LEB128Error, IndexError) as e:
+        raise DecodeError(f"Malformed import section: {e}") from e
+    return imports, other
 
 
 def code_section_content_offset(wasm: bytes) -> int:
@@ -134,13 +187,16 @@ def code_section_content_offset(wasm: bytes) -> int:
     DWARF line-table addresses in WASM binaries are relative to this point.
     """
     i = 8  # skip header
-    while i < len(wasm):
-        section_type = wasm[i]
-        i += 1
-        section_length, i = read_unsigned(wasm, i)
-        if section_type == SectionId.CODE:
-            return i
-        i += section_length
+    try:
+        while i < len(wasm):
+            section_type = wasm[i]
+            i += 1
+            section_length, i = read_unsigned(wasm, i)
+            if section_type == SectionId.CODE:
+                return i
+            i += section_length
+    except LEB128Error as e:
+        raise DecodeError(f"Malformed section header: {e}") from e
     raise DecodeError("No code section found")
 
 
@@ -154,30 +210,33 @@ def decode_code_bodies_raw(wasm: bytes) -> list[tuple[int, int]]:
     raw bytes rather than parsed structures.
     """
     i = 8  # skip header
-    while i < len(wasm):
-        section_type = wasm[i]
-        i += 1
-        section_length, i = read_unsigned(wasm, i)
-        next_section = i + section_length
+    try:
+        while i < len(wasm):
+            section_type = wasm[i]
+            i += 1
+            section_length, i = read_unsigned(wasm, i)
+            next_section = i + section_length
 
-        if section_type == SectionId.CODE:
-            func_count, i = read_unsigned(wasm, i)
-            bodies = []
-            for _ in range(func_count):
-                code_size, i = read_unsigned(wasm, i)
-                code_end = i + code_size
+            if section_type == SectionId.CODE:
+                func_count, i = read_unsigned(wasm, i)
+                bodies = []
+                for _ in range(func_count):
+                    code_size, i = read_unsigned(wasm, i)
+                    code_end = i + code_size
 
-                # Skip locals
-                local_count, i = read_unsigned(wasm, i)
-                for _ in range(local_count):
-                    _, i = read_unsigned(wasm, i)  # count
-                    i += 1  # type
+                    # Skip locals
+                    local_count, i = read_unsigned(wasm, i)
+                    for _ in range(local_count):
+                        _, i = read_unsigned(wasm, i)  # count
+                        i += 1  # type
 
-                bodies.append((i, code_end))
-                i = code_end
-            return bodies
+                    bodies.append((i, code_end))
+                    i = code_end
+                return bodies
 
-        i = next_section
+            i = next_section
+    except LEB128Error as e:
+        raise DecodeError(f"LEB128 overflow/truncated: {e}") from e
 
     raise DecodeError("No code section found")
 
@@ -194,6 +253,25 @@ def _fix_valtype(v: int) -> int:
     """
     mapping = {-1: 0x7F, -2: 0x7E, -3: 0x7D, -4: 0x7C, -5: 0x7B}
     return mapping.get(v, v)
+
+
+def _strip_sections(wasm: bytes, target_ids: set[int]) -> bytes:
+    """Return a copy of the binary with all sections in target_ids removed."""
+    out = bytearray(wasm[:8])
+    i = 8
+    try:
+        while i < len(wasm):
+            start = i
+            sec_id = wasm[i]
+            i += 1
+            sec_len, i = read_unsigned(wasm, i)
+            end = i + sec_len
+            if sec_id not in target_ids:
+                out.extend(wasm[start:end])
+            i = end
+    except LEB128Error as e:
+        raise DecodeError(f"Malformed section header: {e}") from e
+    return bytes(out)
 
 
 def _extract_raw_section(wasm: bytes, target_id: int) -> RawSection | None:

@@ -85,7 +85,7 @@ def _binaryen_hint() -> str:
     return "install binaryen: https://github.com/WebAssembly/binaryen/releases"
 
 
-def _check_environment(rep: _Report) -> tuple[bool, list[str] | None]:
+def _check_environment(rep: _Report, cfg, cfg_error: Exception | None) -> tuple[bool, list[str] | None]:
     """Check tools. Returns (wasi_ok, dwarfdump_cmd_or_None)."""
     import sys
 
@@ -107,10 +107,12 @@ def _check_environment(rep: _Report) -> tuple[bool, list[str] | None]:
         rep.fail("wasmtime", str(e), hint="uv sync  (wasmtime is a core dependency)")
 
     # wasi-sdk (via resolved config, includes auto-detection)
+    from hookz.config import _global_config_path
+
     wasi_ok = False
-    try:
-        from hookz.config import load_config, _global_config_path
-        cfg = load_config()
+    if cfg_error is not None:
+        rep.fail("wasi-sdk", f"config error: {cfg_error}")
+    else:
         clang = cfg.wasi_sdk / "bin" / "clang"
         if clang.exists():
             ver = _first_line([str(clang), "--version"]) or ""
@@ -125,8 +127,6 @@ def _check_environment(rep: _Report) -> tuple[bool, list[str] | None]:
                 hint=f"mise install wasi-sdk, or set wasi_sdk in hookz.toml / "
                      f"{_short(str(_global_config_path()))} / HOOKZ_WASI_SDK",
             )
-    except Exception as e:
-        rep.fail("wasi-sdk", f"config error: {e}")
 
     # llvm-dwarfdump (coverage instrumentation)
     dwarfdump: list[str] | None = None
@@ -160,10 +160,10 @@ def _check_environment(rep: _Report) -> tuple[bool, list[str] | None]:
     return wasi_ok, dwarfdump
 
 
-def _check_config(rep: _Report) -> None:
+def _check_config(rep: _Report, cfg, cfg_error: Exception | None) -> None:
     rep.section("Config")
 
-    from hookz.config import load_config, _find_toml, _global_config_path
+    from hookz.config import _find_toml, _global_config_path
 
     global_path = _global_config_path()
     if global_path.exists():
@@ -180,10 +180,8 @@ def _check_config(rep: _Report) -> None:
     else:
         rep.info("hookz.toml", "not found (walked up from CWD — fine for hookz build)")
 
-    try:
-        cfg = load_config()
-    except Exception as e:
-        rep.fail("config parse", str(e))
+    if cfg_error is not None:
+        rep.fail("config parse", str(cfg_error))
         return
 
     # hook headers (vendored fallback is fine)
@@ -217,10 +215,12 @@ def _check_config(rep: _Report) -> None:
     if overrides:
         rep.info("env overrides", ", ".join(overrides))
 
-    # build cache
+    # build cache — probe the nearest existing ancestor (dir may not exist yet)
     from hookz.build_test_hooks import CompilationCache
     cache_dir = CompilationCache.DEFAULT_CACHE_DIR
-    probe = cache_dir if cache_dir.exists() else cache_dir.parent
+    probe = cache_dir
+    while not probe.exists() and probe != probe.parent:
+        probe = probe.parent
     if os.access(probe, os.W_OK):
         rep.ok("build cache", _short(str(cache_dir)))
     else:
@@ -234,12 +234,13 @@ def _smoke_test(rep: _Report, dwarfdump_ok: bool) -> None:
     from hookz.compiler import compile_hook
     from hookz.runtime import HookRuntime
 
-    tmp = tempfile.NamedTemporaryFile(suffix=".c", delete=False, mode="w")
-    tmp.write(_SMOKE_HOOK)
-    tmp.close()
-    src_path = Path(tmp.name)
-
+    src_path: Path | None = None
     try:
+        tmp = tempfile.NamedTemporaryFile(suffix=".c", delete=False, mode="w")
+        tmp.write(_SMOKE_HOOK)
+        tmp.close()
+        src_path = Path(tmp.name)
+
         t0 = time.monotonic()
         wasm = compile_hook(src_path)
         compile_ms = (time.monotonic() - t0) * 1000
@@ -261,15 +262,22 @@ def _smoke_test(rep: _Report, dwarfdump_ok: bool) -> None:
     except Exception as e:
         rep.fail("smoke test", str(e))
     finally:
-        src_path.unlink(missing_ok=True)
+        if src_path is not None:
+            src_path.unlink(missing_ok=True)
 
 
 def run_doctor(console, smoke: bool = True) -> int:
     """Run all checks. Returns process exit code (0 = healthy)."""
     rep = _Report(console)
 
-    wasi_ok, dwarfdump = _check_environment(rep)
-    _check_config(rep)
+    try:
+        from hookz.config import load_config
+        cfg, cfg_error = load_config(), None
+    except Exception as e:
+        cfg, cfg_error = None, e
+
+    wasi_ok, dwarfdump = _check_environment(rep, cfg, cfg_error)
+    _check_config(rep, cfg, cfg_error)
 
     if smoke and wasi_ok:
         _smoke_test(rep, dwarfdump_ok=dwarfdump is not None)

@@ -25,9 +25,10 @@ from hookz.wasm.decode import (
     decode_code_bodies_raw,
     decode_module,
 )
+from hookz.wasm.elements import shift_element_func_indices
 from hookz.wasm.encode import encode_module
 from hookz.wasm.leb128 import read_signed, read_unsigned, write_signed, write_unsigned
-from hookz.wasm.types import ExportKind, FuncType, Import, ValType
+from hookz.wasm.types import ExportKind, FuncType, Import, RawSection, ValType
 
 
 # ---- DWARF source locations ----
@@ -329,8 +330,12 @@ def instrument_wasm(
         if exp.kind == ExportKind.FUNC:
             exp.index += func_idx_shift
 
-    # Element sections pass through as raw bytes, indices unshifted —
-    # hook WASM doesn't reference functions from tables.
+    # Element sections hold function indices (table initializers) which
+    # must shift along with everything else.
+    mod.elements = [
+        RawSection(id=sec.id, data=shift_element_func_indices(sec.data, func_idx_shift))
+        for sec in mod.elements
+    ]
 
     for body, (abs_start, _abs_end) in zip(mod.code, body_ranges):
         rel_start = abs_start - content_offset

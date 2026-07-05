@@ -134,6 +134,10 @@ class Module:
     """
     types: list[FuncType] = field(default_factory=list)
     imports: list[Import] = field(default_factory=list)
+    # Non-function imports (table/memory/global) as raw entry bytes,
+    # re-emitted after function imports. Function index math (import_count,
+    # func_type_idx) intentionally counts only function imports.
+    other_imports: list[bytes] = field(default_factory=list)
     functions: list[int] = field(default_factory=list)  # type indices
     tables: list[RawSection] = field(default_factory=list)
     memories: list[RawSection] = field(default_factory=list)
