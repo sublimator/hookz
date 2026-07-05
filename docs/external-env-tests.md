@@ -23,6 +23,54 @@ At build time, CMake:
 
 Your tests and hooks live in your repo. xahaud is just the engine.
 
+## What you get
+
+Beyond the CMake mechanism, the branch adds test-writing quality of life:
+
+- **~10s iteration** — xahaud compiles once; edits to your tests or hooks
+  recompile only those files and re-link.
+- **`TestEnv`** (wraps `Env`) — named accounts: `env.account("alice")`
+  auto-creates, funds, and reuses accounts by name.
+- **Readable logs** — a log transform rewrites r-addresses to
+  `Account("alice")` in all output (including the test suite journal), and
+  `env.setPrefix("phase name")` prepends `[phase name]` to every line.
+- **`TESTENV_LOGGING`** — per-partition log levels at runtime, no recompile:
+  `TESTENV_LOGGING="HooksTrace=trace,View=debug"`.
+- **`HooksTrace` journal** — hook `trace()`/`trace_num`/`trace_float` output
+  gets a dedicated partition, so you can crank it to trace level without
+  drowning in unrelated `View` output.
+- **Hook coverage** — with `HOOKS_COVERAGE`, hooks are instrumented with
+  `__on_source_line` and xahaud records line:col hits per hook — see
+  [Coverage pipeline](#coverage-pipeline).
+
+## Branch status & vendored patch
+
+The canonical branch is [`external-env-tests` on Xahau/xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests).
+The Docker image fetches it from GitHub at image build time, so images are
+only as fresh as the branch. `origin/dev` was merged into the branch on
+2026-07-05, so it carries dev plus the env-tests changes and nothing else.
+
+The full change is small — 12 files, +502/−36, and about a hundred lines of
+it is the CMake mechanism; the rest is optional coverage and logging
+support. It's vendored in this repo as
+[`patches/xahaud-external-env-tests.patch`](../patches/xahaud-external-env-tests.patch),
+generated as the branch's diff against `origin/dev`, so it applies cleanly
+to a current `dev` checkout:
+
+```bash
+git checkout dev
+git apply /path/to/hookz/patches/xahaud-external-env-tests.patch
+```
+
+Keep the branch fresh by merging dev into it periodically — conflicts, if
+any, concentrate in `applyHook.h`/`.cpp` (the trace/coverage code) — then
+regenerate the patch and push (the Docker build pulls the branch, not your
+local checkout):
+
+```bash
+git diff origin/dev external-env-tests > patches/xahaud-external-env-tests.patch
+```
+
 ## What the external-env-tests branch changes
 
 ### CMake: external test support
