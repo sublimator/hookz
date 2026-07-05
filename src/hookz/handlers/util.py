@@ -306,7 +306,7 @@ def util_verify(
         return hookapi.TOO_SMALL
 
     # Allow test-level override via rt.handlers
-    override = getattr(rt, "handlers", {}).get("util_verify")
+    override = rt.handlers.get("util_verify")
     if override is not None:
         data = rt._read_memory(dread_ptr, dread_len)
         sig = rt._read_memory(sread_ptr, sread_len)

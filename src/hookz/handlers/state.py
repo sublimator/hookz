@@ -43,13 +43,6 @@ def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kre
     return read_len
 
 
-def _get_foreign_state_db(rt: HookRuntime) -> dict[tuple[bytes, bytes, bytes], bytes]:
-    """Get or create the foreign state database on rt."""
-    if not hasattr(rt, "_foreign_state_db"):
-        rt._foreign_state_db = {}
-    return rt._foreign_state_db
-
-
 def state_foreign(
     rt: HookRuntime,
     write_ptr: int, write_len: int,
@@ -82,7 +75,7 @@ def state_foreign(
     ns = rt._read_memory(ns_ptr, ns_len) if ns_len else b"\x00" * 32
     account = rt._read_memory(aread_ptr, aread_len) if aread_len else rt.hook_account
 
-    db = _get_foreign_state_db(rt)
+    db = rt._foreign_state_db
     val = db.get((account, ns, key))
     if val is None:
         return hookapi.DOESNT_EXIST
@@ -123,7 +116,7 @@ def state_foreign_set(
     ns = rt._read_memory(ns_ptr, ns_len) if ns_len else b"\x00" * 32
     account = rt._read_memory(aread_ptr, aread_len) if aread_len else rt.hook_account
 
-    db = _get_foreign_state_db(rt)
+    db = rt._foreign_state_db
     composite_key = (account, ns, key)
 
     if read_ptr == 0 and read_len == 0:

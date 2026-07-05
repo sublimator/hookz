@@ -267,7 +267,7 @@ def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int
         return hookapi.INVALID_ARGUMENT
 
     data = rt._read_memory(read_ptr, read_len)
-    ledger = getattr(rt, "ledger", {})
+    ledger = rt.ledger
 
     if data not in ledger:
         return hookapi.DOESNT_EXIST

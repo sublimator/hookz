@@ -49,14 +49,14 @@ def rollback(rt: HookRuntime, msg_ptr: int, msg_len: int, code: int) -> int:
 
 
 def _line(rt: HookRuntime) -> int | None:
-    return getattr(rt, "_current_line", None)
+    return rt._current_line
 
 
 def _loc(rt: HookRuntime) -> str:
     """Format location as clickable 'label:line' (OSC 8 hyperlink in supported terminals)."""
-    label = getattr(rt, "_label", None)
-    line = getattr(rt, "_current_line", None)
-    source = getattr(rt, "_source_path", None)
+    label = rt._label
+    line = rt._current_line
+    source = rt._source_path
     if not line:
         return "?"
     text = f"{label}:{line}" if label else f"L{line}"
@@ -128,11 +128,10 @@ def __on_source_line(rt: HookRuntime, line: int, col: int) -> None:
 
     _init_stepper()
     if _step_delay and _step_delay > 0:
-        prev = getattr(rt, "_step_prev_line", None)
+        prev = rt._step_prev_line
         if line != prev:
             rt._step_prev_line = line
-            source = getattr(rt, "_source_path", None)
-            label = getattr(rt, "_label", "?")
+            source = rt._source_path
             loc = _loc(rt)
             import sys
             sys.stderr.write(f"  [step] {loc}\n")

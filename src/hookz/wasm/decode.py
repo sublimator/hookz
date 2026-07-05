@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import wasm_tob
 
+from .leb128 import read_unsigned
 from .types import (
     WASM_HEADER,
     SectionId,
@@ -140,20 +141,20 @@ def decode_code_bodies_raw(wasm: bytes) -> list[tuple[int, int]]:
     while i < len(wasm):
         section_type = wasm[i]
         i += 1
-        section_length, i = _leb128(wasm, i)
+        section_length, i = read_unsigned(wasm, i)
         next_section = i + section_length
 
         if section_type == SectionId.CODE:
-            func_count, i = _leb128(wasm, i)
+            func_count, i = read_unsigned(wasm, i)
             bodies = []
             for _ in range(func_count):
-                code_size, i = _leb128(wasm, i)
+                code_size, i = read_unsigned(wasm, i)
                 code_end = i + code_size
 
                 # Skip locals
-                local_count, i = _leb128(wasm, i)
+                local_count, i = read_unsigned(wasm, i)
                 for _ in range(local_count):
-                    _, i = _leb128(wasm, i)  # count
+                    _, i = read_unsigned(wasm, i)  # count
                     i += 1  # type
 
                 bodies.append((i, code_end))
@@ -185,25 +186,8 @@ def _extract_raw_section(wasm: bytes, target_id: int) -> RawSection | None:
     while i < len(wasm):
         sec_id = wasm[i]
         i += 1
-        sec_len, i = _leb128(wasm, i)
+        sec_len, i = read_unsigned(wasm, i)
         if sec_id == target_id:
             return RawSection(id=SectionId(sec_id), data=wasm[i:i + sec_len])
         i += sec_len
     return None
-
-
-def _leb128(buf: bytes, offset: int) -> tuple[int, int]:
-    """Parse unsigned LEB128. Returns (value, new_offset)."""
-    val = 0
-    shift = 0
-    i = offset
-    while i < len(buf):
-        b = buf[i]
-        val |= (b & 0x7F) << shift
-        i += 1
-        if not (b & 0x80):
-            return val, i
-        shift += 7
-        if shift >= 64:
-            raise DecodeError("LEB128 overflow")
-    raise DecodeError("LEB128 truncated")

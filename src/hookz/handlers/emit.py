@@ -17,7 +17,7 @@ def etxn_reserve(rt: HookRuntime, count: int) -> int:
         return hookapi.TOO_SMALL
     if count > 255:
         return hookapi.TOO_BIG
-    if getattr(rt, '_etxn_reserved', False):
+    if rt._etxn_reserved:
         return hookapi.ALREADY_SET
     rt._etxn_reserved = True
     rt._etxn_count = count
@@ -26,7 +26,7 @@ def etxn_reserve(rt: HookRuntime, count: int) -> int:
 
 def etxn_details(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     """Build EmitDetails exactly as xahaud does — raw serialized bytes (116 bytes)."""
-    if not getattr(rt, '_etxn_reserved', False):
+    if not rt._etxn_reserved:
         return hookapi.PREREQUISITE_NOT_MET
     if write_len < 116:
         return hookapi.TOO_SMALL
@@ -74,7 +74,7 @@ def etxn_nonce(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     if write_len < 32:
         return hookapi.TOO_SMALL
 
-    counter = getattr(rt, "_emit_nonce_counter", 0)
+    counter = rt._emit_nonce_counter
     if counter >= 256:
         return hookapi.TOO_MANY_NONCES
 
@@ -112,7 +112,7 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
 
 
 def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
-    if not getattr(rt, '_etxn_reserved', False):
+    if not rt._etxn_reserved:
         return hookapi.PREREQUISITE_NOT_MET
     if len(rt.emitted_txns) >= rt._etxn_count:
         return hookapi.TOO_MANY_EMITTED_TXN

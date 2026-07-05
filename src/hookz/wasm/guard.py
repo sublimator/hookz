@@ -25,6 +25,7 @@ from wasm_tob import (
 
 from .types import Module, ValType
 from .decode import decode_module, decode_code_bodies_raw
+from .leb128 import LEB128Error, read_signed, read_unsigned
 
 log = logging.getLogger("hookz.guard")
 
@@ -107,44 +108,6 @@ class GuardResult:
 
 
 # ---------------------------------------------------------------------------
-# LEB128
-# ---------------------------------------------------------------------------
-
-def _leb128(buf: bytes, offset: int) -> tuple[int, int]:
-    val = 0
-    shift = 0
-    i = offset
-    while i < len(buf):
-        b = buf[i]
-        val |= (b & 0x7F) << shift
-        i += 1
-        if not (b & 0x80):
-            return val, i
-        shift += 7
-        if shift >= 64:
-            raise GuardError("LEB128 overflow")
-    raise GuardError("LEB128 truncated")
-
-
-def _signed_leb128(buf: bytes, offset: int) -> tuple[int, int]:
-    val = 0
-    shift = 0
-    i = offset
-    while i < len(buf):
-        b = buf[i]
-        val |= (b & 0x7F) << shift
-        i += 1
-        if not (b & 0x80):
-            if shift < 64 and (b & 0x40):
-                val |= ~0 << (shift + 7)
-            return val, i
-        shift += 7
-        if shift >= 64:
-            raise GuardError("LEB128 overflow")
-    raise GuardError("Signed LEB128 truncated")
-
-
-# ---------------------------------------------------------------------------
 # WCE computation
 # ---------------------------------------------------------------------------
 
@@ -201,7 +164,7 @@ def _walk_code(
             if block_type in BLOCK_TYPE_BYTES:
                 i += 1
             else:
-                _, i = _signed_leb128(wasm, i)
+                _, i = read_signed(wasm, i)
 
             iteration_bound = current.iteration_bound if current.parent else 1
             loop_guard_id = 0
@@ -213,13 +176,13 @@ def _walk_code(
                     saved_i = i
                     if i < len(wasm) and wasm[i] == OP_I32_CONST:
                         i += 1
-                        loop_guard_id, i = _signed_leb128(wasm, i)
+                        loop_guard_id, i = read_signed(wasm, i)
                         if i < len(wasm) and wasm[i] == OP_I32_CONST:
                             i += 1
-                            iteration_bound, i = _leb128(wasm, i)
+                            iteration_bound, i = read_unsigned(wasm, i)
                             if i < len(wasm) and wasm[i] == OP_CALL:
                                 i += 1
-                                call_idx, i = _leb128(wasm, i)
+                                call_idx, i = read_unsigned(wasm, i)
                                 if call_idx == guard_func_idx and iteration_bound > 0:
                                     canonical = True
                                 else:
@@ -235,7 +198,7 @@ def _walk_code(
                     else:
                         errors.append(f"Loop at {saved_i}: missing first i32.const")
                         i = saved_i
-                except (GuardError, IndexError):
+                except (GuardError, LEB128Error, IndexError):
                     errors.append(f"Loop at {saved_i}: parse error")
                     i = saved_i
 
@@ -262,7 +225,7 @@ def _walk_code(
         # All remaining instructions — just advance past operands
         try:
             i = _skip_operands(wasm, instr, i)
-        except (GuardError, IndexError):
+        except (GuardError, LEB128Error, IndexError):
             errors.append(f"Failed to skip instruction 0x{instr:02X} at {i}")
             break
 
@@ -272,60 +235,60 @@ def _walk_code(
 def _skip_operands(wasm: bytes, instr: int, i: int) -> int:
     """Advance past an instruction's operands."""
     if instr in (OP_BR, OP_BR_IF):
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr == OP_BR_TABLE:
-        vc, i = _leb128(wasm, i)
+        vc, i = read_unsigned(wasm, i)
         for _ in range(vc):
-            _, i = _leb128(wasm, i)
-        _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr == OP_RETURN:
         return i
     if instr == OP_CALL:
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr == OP_CALL_INDIRECT:
-        _, i = _leb128(wasm, i)
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if OP_REF_NULL <= instr <= OP_REF_FUNC:
         if instr == OP_REF_NULL:
             i += 1
         elif instr == OP_REF_FUNC:
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
         return i
     if instr in (OP_DROP, OP_SELECT):
         return i
     if instr == OP_SELECT_T:
-        vc, i = _leb128(wasm, i)
+        vc, i = read_unsigned(wasm, i)
         i += vc
         return i
     if OP_GET_LOCAL <= instr <= OP_SET_GLOBAL:
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr in (OP_TABLE_GET, OP_TABLE_SET):
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr == OP_PREFIX_FC:
-        fc, i = _leb128(wasm, i)
+        fc, i = read_unsigned(wasm, i)
         if 12 <= fc <= 17:
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
             if fc in (12, 14):
-                _, i = _leb128(wasm, i)
+                _, i = read_unsigned(wasm, i)
         elif fc == 8:
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
             i += 1
         elif fc == 9:
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
         elif fc == 10:
             i += 2
         elif fc == 11:
             i += 1
         return i
     if MEMOP_FIRST <= instr <= MEMOP_LAST:
-        _, i = _leb128(wasm, i)
-        _, i = _leb128(wasm, i)
+        _, i = read_unsigned(wasm, i)
+        _, i = read_unsigned(wasm, i)
         return i
     if instr == OP_CURRENT_MEMORY:
         i += 1
@@ -334,7 +297,7 @@ def _skip_operands(wasm: bytes, instr: int, i: int) -> int:
         i += 1
         return i
     if instr in (OP_I32_CONST, OP_I64_CONST):
-        _, i = _signed_leb128(wasm, i)
+        _, i = read_signed(wasm, i)
         return i
     if instr == OP_F32_CONST:
         return i + 4
@@ -343,13 +306,13 @@ def _skip_operands(wasm: bytes, instr: int, i: int) -> int:
     if NUMOP_FIRST <= instr <= NUMOP_LAST:
         return i
     if instr == OP_PREFIX_FD:
-        v, i = _leb128(wasm, i)
+        v, i = read_unsigned(wasm, i)
         if v <= 11:
-            _, i = _leb128(wasm, i)
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
+            _, i = read_unsigned(wasm, i)
         elif 84 <= v <= 91:
-            _, i = _leb128(wasm, i)
-            _, i = _leb128(wasm, i)
+            _, i = read_unsigned(wasm, i)
+            _, i = read_unsigned(wasm, i)
             i += 1
         elif 21 <= v <= 34:
             i += 1
@@ -416,22 +379,22 @@ def _validate_calls(
             if bt in BLOCK_TYPE_BYTES:
                 i += 1
             else:
-                _, i = _signed_leb128(wasm, i)
+                _, i = read_signed(wasm, i)
             if instr == OP_LOOP:
                 # Skip the guard pattern (already validated by _check_loops)
                 if i < len(wasm) and wasm[i] == OP_I32_CONST:
                     i += 1
-                    _, i = _signed_leb128(wasm, i)
+                    _, i = read_signed(wasm, i)
                     if i < len(wasm) and wasm[i] == OP_I32_CONST:
                         i += 1
-                        _, i = _leb128(wasm, i)
+                        _, i = read_unsigned(wasm, i)
                         if i < len(wasm) and wasm[i] == OP_CALL:
                             i += 1
-                            _, i = _leb128(wasm, i)
+                            _, i = read_unsigned(wasm, i)
             continue
 
         if instr == OP_CALL:
-            callee, i = _leb128(wasm, i)
+            callee, i = read_unsigned(wasm, i)
             if callee > last_import_idx:
                 raise GuardError(
                     f"Call to function {callee} outside imports (last={last_import_idx})",
@@ -449,21 +412,21 @@ def _validate_calls(
             raise GuardError("memory.grow disallowed", codesec, i)
 
         if instr == OP_PREFIX_FC:
-            fc, i = _leb128(wasm, i)
+            fc, i = read_unsigned(wasm, i)
             if fc == 10 and (rules_version & GUARD_RULE_FIX_20250131):
                 raise GuardError("memory.copy not allowed", codesec, i)
             if fc == 11 and (rules_version & GUARD_RULE_FIX_20250131):
                 raise GuardError("memory.fill not allowed", codesec, i)
             # Skip remaining 0xFC operands
             if 12 <= fc <= 17:
-                _, i = _leb128(wasm, i)
+                _, i = read_unsigned(wasm, i)
                 if fc in (12, 14):
-                    _, i = _leb128(wasm, i)
+                    _, i = read_unsigned(wasm, i)
             elif fc == 8:
-                _, i = _leb128(wasm, i)
+                _, i = read_unsigned(wasm, i)
                 i += 1
             elif fc == 9:
-                _, i = _leb128(wasm, i)
+                _, i = read_unsigned(wasm, i)
             elif fc == 10:
                 i += 2
             elif fc == 11:
@@ -472,7 +435,7 @@ def _validate_calls(
 
         try:
             i = _skip_operands(wasm, instr, i)
-        except (GuardError, IndexError):
+        except (GuardError, LEB128Error, IndexError):
             break
 
 

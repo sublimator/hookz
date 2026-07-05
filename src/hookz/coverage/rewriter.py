@@ -10,9 +10,9 @@ WASM's structured control flow means inserting instructions never breaks branche
 3. Insert i32.const line; i32.const col; call $idx at each DWARF line boundary
 4. Update section and function body sizes
 
-TODO: Refactor to use hookz.wasm.types/decode/encode instead of the
-inline LEB128/section parsing code below. The hookz.wasm package now
-provides all of this. Dependency direction: hookz.coverage → hookz.wasm.
+TODO: Refactor the section parsing below to use hookz.wasm.types/decode/encode
+instead of hand-walking the binary. The hookz.wasm package already provides it.
+Dependency direction: hookz.coverage → hookz.wasm.
 """
 
 from __future__ import annotations
@@ -23,60 +23,7 @@ from pathlib import Path
 from dataclasses import dataclass
 from pathlib import Path
 
-
-# ---- LEB128 encoding/decoding ----
-
-def _decode_uleb128(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        if (byte & 0x80) == 0:
-            break
-        shift += 7
-    return result, offset
-
-
-def _encode_uleb128(value: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if value:
-            byte |= 0x80
-        out.append(byte)
-        if not value:
-            break
-    return bytes(out)
-
-
-def _decode_sleb128(data: bytes, offset: int) -> tuple[int, int]:
-    result = 0
-    shift = 0
-    while True:
-        byte = data[offset]
-        offset += 1
-        result |= (byte & 0x7F) << shift
-        shift += 7
-        if (byte & 0x80) == 0:
-            if shift < 64 and (byte & 0x40):
-                result |= -(1 << shift)
-            break
-    return result, offset
-
-
-def _encode_sleb128(value: int) -> bytes:
-    out = bytearray()
-    while True:
-        byte = value & 0x7F
-        value >>= 7
-        if (value == 0 and (byte & 0x40) == 0) or (value == -1 and (byte & 0x40)):
-            out.append(byte)
-            break
-        out.append(byte | 0x80)
-    return bytes(out)
+from hookz.wasm.leb128 import read_signed, read_unsigned, write_signed, write_unsigned
 
 
 # ---- DWARF source locations ----
@@ -176,7 +123,7 @@ def _parse_sections(data: bytes) -> tuple[bytes, list[WasmSection]]:
     while offset < len(data):
         section_id = data[offset]
         offset += 1
-        size, offset = _decode_uleb128(data, offset)
+        size, offset = read_unsigned(data, offset)
         section_data = data[offset:offset + size]
         sections.append(WasmSection(id=section_id, data=section_data))
         offset += size
@@ -188,7 +135,7 @@ def _rebuild_wasm(header: bytes, sections: list[WasmSection]) -> bytes:
     out = bytearray(header)
     for s in sections:
         out.append(s.id)
-        out.extend(_encode_uleb128(len(s.data)))
+        out.extend(write_unsigned(len(s.data)))
         out.extend(s.data)
     return bytes(out)
 
@@ -203,16 +150,16 @@ def _find_or_add_void_ii_type(sections: list[WasmSection]) -> int:
     for s in sections:
         if s.id == 1:  # Type section
             data = s.data
-            count, pos = _decode_uleb128(data, 0)
+            count, pos = read_unsigned(data, 0)
             idx = 0
             for _ in range(count):
                 start = pos
                 if data[pos] != 0x60:
                     break
                 pos += 1
-                param_count, pos = _decode_uleb128(data, pos)
+                param_count, pos = read_unsigned(data, pos)
                 pos += param_count
-                result_count, pos = _decode_uleb128(data, pos)
+                result_count, pos = read_unsigned(data, pos)
                 pos += result_count
                 entry = data[start:pos]
                 if entry == target_type:
@@ -221,8 +168,8 @@ def _find_or_add_void_ii_type(sections: list[WasmSection]) -> int:
 
             # Not found — append it
             new_data = bytearray()
-            new_data.extend(_encode_uleb128(count + 1))
-            new_data.extend(data[len(_encode_uleb128(count)):])
+            new_data.extend(write_unsigned(count + 1))
+            new_data.extend(data[len(write_unsigned(count)):])
             new_data.extend(target_type)
             s.data = bytes(new_data)
             return count
@@ -237,29 +184,29 @@ def _count_func_imports(sections: list[WasmSection]) -> int:
     for s in sections:
         if s.id == 2:
             data = s.data
-            count, pos = _decode_uleb128(data, 0)
+            count, pos = read_unsigned(data, 0)
             func_count = 0
             for _ in range(count):
                 # module name
-                mod_len, pos = _decode_uleb128(data, pos)
+                mod_len, pos = read_unsigned(data, pos)
                 pos += mod_len
                 # field name
-                field_len, pos = _decode_uleb128(data, pos)
+                field_len, pos = read_unsigned(data, pos)
                 pos += field_len
                 # import kind
                 kind = data[pos]
                 pos += 1
                 if kind == 0x00:  # func
-                    _, pos = _decode_uleb128(data, pos)
+                    _, pos = read_unsigned(data, pos)
                     func_count += 1
                 elif kind == 0x01:  # table
                     pos += 1  # reftype
-                    _, pos = _decode_uleb128(data, pos)  # flags
-                    _, pos = _decode_uleb128(data, pos)  # initial
+                    _, pos = read_unsigned(data, pos)  # flags
+                    _, pos = read_unsigned(data, pos)  # initial
                     # TODO: handle max
                 elif kind == 0x02:  # memory
-                    _, pos = _decode_uleb128(data, pos)
-                    _, pos = _decode_uleb128(data, pos)
+                    _, pos = read_unsigned(data, pos)
+                    _, pos = read_unsigned(data, pos)
                 elif kind == 0x03:  # global
                     pos += 1  # valtype
                     pos += 1  # mutability
@@ -275,23 +222,23 @@ def _add_func_import(sections: list[WasmSection], module: str, name: str, type_i
     for s in sections:
         if s.id == 2:
             data = s.data
-            count, pos = _decode_uleb128(data, 0)
+            count, pos = read_unsigned(data, 0)
             rest = data[pos:]  # everything after the count
 
             # Build the new import entry
             entry = bytearray()
             mod_bytes = module.encode()
-            entry.extend(_encode_uleb128(len(mod_bytes)))
+            entry.extend(write_unsigned(len(mod_bytes)))
             entry.extend(mod_bytes)
             name_bytes = name.encode()
-            entry.extend(_encode_uleb128(len(name_bytes)))
+            entry.extend(write_unsigned(len(name_bytes)))
             entry.extend(name_bytes)
             entry.append(0x00)  # func import
-            entry.extend(_encode_uleb128(type_idx))
+            entry.extend(write_unsigned(type_idx))
 
             # Prepend before existing imports
             new_data = bytearray()
-            new_data.extend(_encode_uleb128(count + 1))
+            new_data.extend(write_unsigned(count + 1))
             new_data.extend(entry)
             new_data.extend(rest)
             s.data = bytes(new_data)
@@ -339,9 +286,9 @@ def _rewrite_function_body(
     """
     # Parse locals
     pos = 0
-    local_decl_count, pos = _decode_uleb128(body, pos)
+    local_decl_count, pos = read_unsigned(body, pos)
     for _ in range(local_decl_count):
-        _, pos = _decode_uleb128(body, pos)  # count
+        _, pos = read_unsigned(body, pos)  # count
         pos += 1  # valtype
 
     locals_prefix = body[:pos]
@@ -371,11 +318,11 @@ def _rewrite_function_body(
             if lc != last_line_col:
                 # Insert: i32.const line; i32.const col; call callback_idx
                 new_code.append(_I32_CONST)
-                new_code.extend(_encode_sleb128(loc.line))
+                new_code.extend(write_signed(loc.line))
                 new_code.append(_I32_CONST)
-                new_code.extend(_encode_sleb128(loc.col))
+                new_code.extend(write_signed(loc.col))
                 new_code.append(_CALL)
-                new_code.extend(_encode_uleb128(callback_idx))
+                new_code.extend(write_unsigned(callback_idx))
                 last_line_col = lc
 
         opcode = code[i]
@@ -390,45 +337,45 @@ def _rewrite_function_body(
                 new_code.append(bt)
                 i += 1
             else:
-                val, i = _decode_sleb128(code, i)
-                new_code.extend(_encode_sleb128(val))
+                val, i = read_signed(code, i)
+                new_code.extend(write_signed(val))
 
         elif opcode == _CALL or opcode == _RETURN_CALL:
-            func_idx, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(func_idx + func_idx_shift))
+            func_idx, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(func_idx + func_idx_shift))
 
         elif opcode == _REF_FUNC:
-            func_idx, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(func_idx + func_idx_shift))
+            func_idx, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(func_idx + func_idx_shift))
 
         elif opcode == _CALL_INDIRECT:
-            type_idx, i = _decode_uleb128(code, i)
-            table_idx, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(type_idx))
-            new_code.extend(_encode_uleb128(table_idx))
+            type_idx, i = read_unsigned(code, i)
+            table_idx, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(type_idx))
+            new_code.extend(write_unsigned(table_idx))
 
         elif opcode in _BR_OPS:
-            label, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(label))
+            label, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(label))
 
         elif opcode == _BR_TABLE:
-            count, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(count))
+            count, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(count))
             for _ in range(count + 1):  # count + default
-                label, i = _decode_uleb128(code, i)
-                new_code.extend(_encode_uleb128(label))
+                label, i = read_unsigned(code, i)
+                new_code.extend(write_unsigned(label))
 
         elif opcode in _LOCAL_OPS or opcode in _GLOBAL_OPS:
-            idx, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(idx))
+            idx, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(idx))
 
         elif opcode == _I32_CONST:
-            val, i = _decode_sleb128(code, i)
-            new_code.extend(_encode_sleb128(val))
+            val, i = read_signed(code, i)
+            new_code.extend(write_signed(val))
 
         elif opcode == _I64_CONST:
-            val, i = _decode_sleb128(code, i)
-            new_code.extend(_encode_sleb128(val))
+            val, i = read_signed(code, i)
+            new_code.extend(write_signed(val))
 
         elif opcode == _F32_CONST:
             new_code.extend(code[i:i + 4])
@@ -439,38 +386,38 @@ def _rewrite_function_body(
             i += 8
 
         elif opcode in _MEMORY_OPS:
-            align, i = _decode_uleb128(code, i)
-            offset, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(align))
-            new_code.extend(_encode_uleb128(offset))
+            align, i = read_unsigned(code, i)
+            offset, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(align))
+            new_code.extend(write_unsigned(offset))
 
         elif opcode in (_MEMORY_SIZE, _MEMORY_GROW):
             new_code.append(code[i])  # 0x00 memory index
             i += 1
 
         elif opcode == 0xFC:  # misc prefix (saturating truncation, etc.)
-            sub_opcode, i = _decode_uleb128(code, i)
-            new_code.extend(_encode_uleb128(sub_opcode))
+            sub_opcode, i = read_unsigned(code, i)
+            new_code.extend(write_unsigned(sub_opcode))
             if sub_opcode <= 7:
                 pass  # saturating truncation — no operands
             elif sub_opcode == 8:  # memory.init
-                idx, i = _decode_uleb128(code, i)
-                new_code.extend(_encode_uleb128(idx))
+                idx, i = read_unsigned(code, i)
+                new_code.extend(write_unsigned(idx))
                 new_code.append(code[i]); i += 1  # memory index byte
             elif sub_opcode == 9:  # data.drop
-                idx, i = _decode_uleb128(code, i)
-                new_code.extend(_encode_uleb128(idx))
+                idx, i = read_unsigned(code, i)
+                new_code.extend(write_unsigned(idx))
             elif sub_opcode == 10:  # memory.copy
                 new_code.append(code[i]); i += 1  # src memory
                 new_code.append(code[i]); i += 1  # dst memory
             elif sub_opcode == 11:  # memory.fill
                 new_code.append(code[i]); i += 1  # memory index
             elif sub_opcode >= 12:  # table ops
-                idx, i = _decode_uleb128(code, i)
-                new_code.extend(_encode_uleb128(idx))
+                idx, i = read_unsigned(code, i)
+                new_code.extend(write_unsigned(idx))
                 if sub_opcode in (12, 14):
-                    idx2, i = _decode_uleb128(code, i)
-                    new_code.extend(_encode_uleb128(idx2))
+                    idx2, i = read_unsigned(code, i)
+                    new_code.extend(write_unsigned(idx2))
 
         # All other opcodes (arithmetic, comparison, drop, select, etc.) have no immediates
 
@@ -491,13 +438,13 @@ def _instrument_code_section(
 
         data = s.data
         pos = 0
-        func_count, pos = _decode_uleb128(data, pos)
+        func_count, pos = read_unsigned(data, pos)
 
         new_bodies = bytearray()
-        new_bodies.extend(_encode_uleb128(func_count))
+        new_bodies.extend(write_unsigned(func_count))
 
         for _ in range(func_count):
-            body_size, pos = _decode_uleb128(data, pos)
+            body_size, pos = read_unsigned(data, pos)
             body = data[pos:pos + body_size]
 
             # Offset of this body within the code section content
@@ -507,7 +454,7 @@ def _instrument_code_section(
                 body, body_offset_in_section, callback_idx, locs, func_idx_shift,
             )
 
-            new_bodies.extend(_encode_uleb128(len(new_body)))
+            new_bodies.extend(write_unsigned(len(new_body)))
             new_bodies.extend(new_body)
             pos += body_size
 
@@ -521,24 +468,24 @@ def _shift_exports(sections: list[WasmSection], shift: int) -> None:
             continue
         data = s.data
         pos = 0
-        count, pos = _decode_uleb128(data, 0)
+        count, pos = read_unsigned(data, 0)
 
-        new_data = bytearray(_encode_uleb128(count))
+        new_data = bytearray(write_unsigned(count))
         for _ in range(count):
-            name_len, pos = _decode_uleb128(data, pos)
+            name_len, pos = read_unsigned(data, pos)
             name = data[pos:pos + name_len]
             pos += name_len
             kind = data[pos]
             pos += 1
-            idx, pos = _decode_uleb128(data, pos)
+            idx, pos = read_unsigned(data, pos)
 
-            new_data.extend(_encode_uleb128(name_len))
+            new_data.extend(write_unsigned(name_len))
             new_data.extend(name)
             new_data.append(kind)
             if kind == 0x00:  # func export
-                new_data.extend(_encode_uleb128(idx + shift))
+                new_data.extend(write_unsigned(idx + shift))
             else:
-                new_data.extend(_encode_uleb128(idx))
+                new_data.extend(write_unsigned(idx))
 
         s.data = bytes(new_data)
 
@@ -605,7 +552,7 @@ def instrument_wasm(
     while offset < len(orig_data):
         section_id = orig_data[offset]
         offset += 1
-        size, offset = _decode_uleb128(orig_data, offset)
+        size, offset = read_unsigned(orig_data, offset)
         if section_id == 10:  # Code section
             code_section_file_offset = offset
             break

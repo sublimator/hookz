@@ -36,7 +36,8 @@ from .types import (
     ValType,
 )
 from .decode import decode_module
-from .encode import encode_module, _encode_leb128, _encode_signed_leb128
+from .encode import encode_module
+from .leb128 import write_signed, write_unsigned
 from .visitor import Visitor, KeepDebugVisitor, Action, LoopContext, InstructionContext
 
 # Opcodes not in wasm-tob
@@ -366,11 +367,11 @@ def _rewrite_guards_in_bytecode(code: bytearray, guard_func_idx: int,
                 # Both values are encoded as signed LEB128 (i32.const is always signed)
                 guard = bytearray()
                 guard.append(OP_I32_CONST)
-                guard.extend(_encode_signed_leb128(guard_id))
+                guard.extend(write_signed(guard_id))
                 guard.append(OP_I32_CONST)
-                guard.extend(_encode_signed_leb128(maxiter))
+                guard.extend(write_signed(maxiter))
                 guard.append(OP_CALL)
-                guard.extend(_encode_leb128(guard_func_idx))
+                guard.extend(write_unsigned(guard_func_idx))
                 guard.append(OP_DROP)
 
                 dirty = between_const_and_guard > 0

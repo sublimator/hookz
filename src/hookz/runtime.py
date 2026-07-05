@@ -132,6 +132,19 @@ class HookRuntime:
         self._memory: wasmtime.Memory | None = None
         self._store: wasmtime.Store | None = None
 
+        # Per-run source context (assigned in run()).
+        self._label: str | None = None
+        self._source_path: Path | None = None
+        self._current_line: int | None = None  # last line hit under coverage
+        self._step_prev_line: int | None = None
+
+        # Handler-owned state, populated during execution.
+        self._etxn_reserved: bool = False
+        self._etxn_count: int = 0
+        self._emit_nonce_counter: int = 0
+        self._foreign_state_db: dict[tuple[bytes, bytes, bytes], bytes] = {}
+        self._param_overrides: dict[bytes, dict[bytes, bytes]] = {}
+
     def set_param(self, key: int | bytes, value: bytes) -> None:
         """Set a hook parameter for the next execution."""
         if isinstance(key, int):

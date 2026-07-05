@@ -77,7 +77,7 @@ def hook_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
     # Note: C++ only checks overrides keyed by the current hook's hash.
     # We search all hashes for convenience — tests don't need to know
     # the exact hook hash. This is an intentional divergence.
-    overrides = getattr(rt, "_param_overrides", {})
+    overrides = rt._param_overrides
     if overrides:
         for _hash, params in overrides.items():
             if key in params:
@@ -122,8 +122,6 @@ def hook_param_set(
     value = rt._read_memory(read_ptr, read_len) if read_len > 0 else b""
     hook_hash = rt._read_memory(hread_ptr, hread_len)
 
-    if not hasattr(rt, "_param_overrides"):
-        rt._param_overrides = {}
     hook_hash_key = bytes(hook_hash)
     if hook_hash_key not in rt._param_overrides:
         rt._param_overrides[hook_hash_key] = {}
