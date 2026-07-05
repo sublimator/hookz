@@ -332,6 +332,16 @@ def cli():
     """hookz — CLI for the hook testing framework."""
 
 
+@cli.command()
+@click.option("--no-smoke", is_flag=True, help="Skip the compile-and-run smoke test.")
+def doctor(no_smoke: bool):
+    """Check installation: toolchain, config, and an end-to-end smoke test."""
+    from rich.console import Console
+    from hookz.cli.doctor import run_doctor
+
+    sys.exit(run_doctor(Console(), smoke=not no_smoke))
+
+
 @cli.group()
 def config():
     """Configuration and paths."""

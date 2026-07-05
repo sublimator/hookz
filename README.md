@@ -121,6 +121,7 @@ uv run hookz test
 ## CLI
 
 ```
+hookz doctor                         Check install: toolchain, config, smoke test
 hookz test [pytest args...]          Run tests
 hookz build hook.c                   Production build (compile + optimize + clean + guard-check)
 hookz wce hook.c                     WCE budget analysis with per-loop breakdown
