@@ -427,7 +427,7 @@ _HEADER = b"\x00\x61\x73\x6d\x01\x00\x00\x00"
 # type ()->(), imports: env.memory (kind 2) + env._g (func, type 0)
 _NONFUNC_IMPORT_WASM = _HEADER + bytes([
     0x01, 0x04, 0x01, 0x60, 0x00, 0x00,                    # type section
-    0x02, 0x19, 0x02,                                      # import section, 2 entries
+    0x02, 0x18, 0x02,                                      # import section, 2 entries
     0x03, 0x65, 0x6E, 0x76,                                #   "env"
     0x06, 0x6D, 0x65, 0x6D, 0x6F, 0x72, 0x79,              #   "memory"
     0x02, 0x00, 0x01,                                      #   kind=memory, limits min=1
@@ -446,11 +446,16 @@ _DATA_COUNT_WASM = _HEADER + bytes([
     0x0B, 0x03, 0x01, 0x01, 0x00,              # data: one passive empty segment
 ])
 
-# type (i32)->i64, 1 func exported as "hook", body: block with truncated blocktype
+# types (i32)->i64 + (i32,i32)->i64, env._g import, "hook" export (func 1),
+# body: block with truncated blocktype — must reach the strict code walk
 _TRUNCATED_BLOCKTYPE_WASM = _HEADER + bytes([
-    0x01, 0x06, 0x01, 0x60, 0x01, 0x7F, 0x01, 0x7E,        # type section
+    0x01, 0x0C, 0x02,                                      # type section, 2 types
+    0x60, 0x01, 0x7F, 0x01, 0x7E,                          #   (i32) -> i64
+    0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7E,                    #   (i32, i32) -> i64
+    0x02, 0x0A, 0x01,                                      # import section, 1 entry
+    0x03, 0x65, 0x6E, 0x76, 0x02, 0x5F, 0x67, 0x00, 0x01,  #   env._g func type 1
     0x03, 0x02, 0x01, 0x00,                                # function section
-    0x07, 0x08, 0x01, 0x04, 0x68, 0x6F, 0x6F, 0x6B, 0x00, 0x00,  # export "hook"
+    0x07, 0x08, 0x01, 0x04, 0x68, 0x6F, 0x6F, 0x6B, 0x00, 0x01,  # export "hook" = func 1
     0x0A, 0x05, 0x01, 0x03, 0x00, 0x02, 0x80,              # code: block, truncated sleb
 ])
 
@@ -547,11 +552,27 @@ class TestGuardMalformedInput:
         result = analyze_wce(_TRUNCATED_BLOCKTYPE_WASM)  # must not raise
         assert any("Truncated" in e or "code section" in e for e in result.errors)
 
-    def test_validate_guards_raises_guard_error_not_leb128(self):
-        from hookz.wasm.leb128 import LEB128Error
-        try:
+    def test_validate_guards_wraps_leb128_as_guard_error(self):
+        # match pins the containment path — a different GuardError (e.g.
+        # missing _g) would mean the walk never reached the truncated bytes
+        with pytest.raises(GuardError, match="Malformed LEB128|Truncated block type"):
             validate_guards(_TRUNCATED_BLOCKTYPE_WASM, import_whitelist={"_g"})
-        except GuardError:
-            pass  # expected — the public contract
-        except LEB128Error:
-            pytest.fail("LEB128Error leaked through validate_guards")
+
+
+class TestDecodeModuleErrorContract:
+    def test_overflowing_section_length_raises_decode_error(self):
+        with pytest.raises(DecodeError):
+            decode_module(_HEADER + b"\x01" + b"\xff" * 9 + b"\x02")
+
+    def test_empty_data_count_payload_raises_decode_error(self):
+        with pytest.raises(DecodeError):
+            decode_module(_HEADER + bytes([0x0C, 0x00]))
+
+    def test_truncated_section_body_raises_decode_error(self):
+        # data section claims 10 bytes, only 1 present
+        with pytest.raises(DecodeError, match="Truncated section"):
+            decode_module(_HEADER + bytes([0x0B, 0x0A, 0x00]))
+
+    def test_data_count_trailing_bytes_raises_decode_error(self):
+        with pytest.raises(DecodeError, match="Trailing bytes"):
+            decode_module(_HEADER + bytes([0x0C, 0x02, 0x01, 0x00]))

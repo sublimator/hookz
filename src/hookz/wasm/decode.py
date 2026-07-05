@@ -54,7 +54,12 @@ def decode_module(wasm: bytes) -> Module:
     # encodings, and crashes on them.
     raw_dc = _extract_raw_section(wasm, SectionId.DATA_COUNT)
     if raw_dc is not None:
-        mod.data_count, _ = read_unsigned(raw_dc.data, 0)
+        try:
+            mod.data_count, dc_end = read_unsigned(raw_dc.data, 0)
+        except LEB128Error as e:
+            raise DecodeError(f"Malformed data count section: {e}") from e
+        if dc_end != len(raw_dc.data):
+            raise DecodeError("Trailing bytes in data count section")
 
     for sec_id, target in (
         (SectionId.TABLE, mod.tables),
@@ -266,6 +271,8 @@ def _strip_sections(wasm: bytes, target_ids: set[int]) -> bytes:
             i += 1
             sec_len, i = read_unsigned(wasm, i)
             end = i + sec_len
+            if end > len(wasm):
+                raise DecodeError(f"Truncated section {sec_id}")
             if sec_id not in target_ids:
                 out.extend(wasm[start:end])
             i = end
@@ -277,11 +284,16 @@ def _strip_sections(wasm: bytes, target_ids: set[int]) -> bytes:
 def _extract_raw_section(wasm: bytes, target_id: int) -> RawSection | None:
     """Extract the raw bytes of a section by ID."""
     i = 8
-    while i < len(wasm):
-        sec_id = wasm[i]
-        i += 1
-        sec_len, i = read_unsigned(wasm, i)
-        if sec_id == target_id:
-            return RawSection(id=SectionId(sec_id), data=wasm[i:i + sec_len])
-        i += sec_len
+    try:
+        while i < len(wasm):
+            sec_id = wasm[i]
+            i += 1
+            sec_len, i = read_unsigned(wasm, i)
+            if i + sec_len > len(wasm):
+                raise DecodeError(f"Truncated section {sec_id}")
+            if sec_id == target_id:
+                return RawSection(id=SectionId(sec_id), data=wasm[i:i + sec_len])
+            i += sec_len
+    except LEB128Error as e:
+        raise DecodeError(f"Malformed section header: {e}") from e
     return None
