@@ -1,0 +1,786 @@
+diff --git a/cmake/RippledCore.cmake b/cmake/RippledCore.cmake
+index 2d593599c..d7f0d9245 100644
+--- a/cmake/RippledCore.cmake
++++ b/cmake/RippledCore.cmake
+@@ -179,7 +179,108 @@ if(xrpld)
+     file(GLOB_RECURSE sources CONFIGURE_DEPENDS
+       "${CMAKE_CURRENT_SOURCE_DIR}/src/test/*.cpp"
+     )
++    if(HOOKS_TEST_ONLY OR DEFINED ENV{HOOKS_TEST_ONLY})
++      # Keep test infra but drop the individual *_test.cpp files
++      list(FILTER sources EXCLUDE REGEX "_test\\.cpp$")
++      message(STATUS "HOOKS_TEST_ONLY: excluded *_test.cpp from src/test/")
++    endif()
+     target_sources(rippled PRIVATE ${sources})
++
++    # Optional: include external hook test sources from another directory.
++    # Set via -DHOOKS_TEST_DIR=/path/to/tests or env HOOKS_TEST_DIR.
++    # Optionally set HOOKS_C_DIR to pass --hooks-c-dir args to the compiler
++    # (e.g. "tipbot=/path/to/hooks" — multiple values separated by ";").
++    #
++    # hookz build-test-hooks must be on PATH. It auto-compiles hooks referenced
++    # in each *_test.cpp and generates *_test_hooks.h next to the test file.
++    if(NOT HOOKS_TEST_DIR AND DEFINED ENV{HOOKS_TEST_DIR})
++      set(HOOKS_TEST_DIR $ENV{HOOKS_TEST_DIR})
++    endif()
++    if(NOT HOOKS_C_DIR AND DEFINED ENV{HOOKS_C_DIR})
++      set(HOOKS_C_DIR $ENV{HOOKS_C_DIR})
++    endif()
++    if(HOOKS_TEST_DIR AND EXISTS "${HOOKS_TEST_DIR}")
++      file(GLOB EXTERNAL_HOOK_TESTS CONFIGURE_DEPENDS
++        "${HOOKS_TEST_DIR}/*_test.cpp"
++      )
++      if(EXTERNAL_HOOK_TESTS)
++        # Build extra args for hookz build-test-hooks
++        set(_hooks_extra_args "")
++        set(_hooks_source_deps "")
++        if(HOOKS_C_DIR)
++          foreach(_dir ${HOOKS_C_DIR})
++            list(APPEND _hooks_extra_args "--hooks-c-dir" "${_dir}")
++
++            string(REGEX REPLACE "^[^=]+=" "" _hook_dir "${_dir}")
++            if(EXISTS "${_hook_dir}")
++              file(GLOB_RECURSE _hook_dir_deps CONFIGURE_DEPENDS
++                "${_hook_dir}/*.c"
++                "${_hook_dir}/*.h"
++              )
++              if(HOOKS_TEST_DIR)
++                list(FILTER _hook_dir_deps EXCLUDE REGEX "^${HOOKS_TEST_DIR}/")
++              endif()
++              list(APPEND _hooks_source_deps ${_hook_dir_deps})
++            endif()
++          endforeach()
++          list(REMOVE_DUPLICATES _hooks_source_deps)
++        endif()
++        if(HOOKS_COVERAGE OR DEFINED ENV{HOOKS_COVERAGE})
++          list(APPEND _hooks_extra_args "--hook-coverage")
++          message(STATUS "Hook coverage enabled: compiling hooks with hookz")
++        endif()
++        if(HOOKS_FORCE_RECOMPILE OR DEFINED ENV{HOOKS_FORCE_RECOMPILE})
++          list(APPEND _hooks_extra_args "--force-write" "--no-cache")
++          message(STATUS "Hook force recompile enabled (cache bypassed)")
++        endif()
++
++        # Run hookz build-test-hooks on each test file before compilation
++        foreach(_test_file ${EXTERNAL_HOOK_TESTS})
++          get_filename_component(_stem ${_test_file} NAME_WE)
++          set(_hooks_header "${HOOKS_TEST_DIR}/${_stem}_hooks.h")
++          if(HOOKS_FORCE_RECOMPILE OR DEFINED ENV{HOOKS_FORCE_RECOMPILE})
++            # Always run — no DEPENDS, no OUTPUT caching
++            add_custom_target(compile_hooks_${_stem} ALL
++              COMMAND hookz build-test-hooks "${_test_file}" ${_hooks_extra_args}
++              WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++              COMMENT "Compiling hooks for ${_stem} (forced)"
++              VERBATIM
++            )
++            list(APPEND EXTERNAL_HOOK_TARGETS compile_hooks_${_stem})
++          else()
++            add_custom_command(
++              OUTPUT "${_hooks_header}"
++              COMMAND hookz build-test-hooks "${_test_file}" ${_hooks_extra_args}
++              DEPENDS "${_test_file}" ${_hooks_source_deps}
++              WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
++              COMMENT "Compiling hooks for ${_stem}"
++              VERBATIM
++            )
++            list(APPEND EXTERNAL_HOOK_HEADERS "${_hooks_header}")
++          endif()
++        endforeach()
++
++        # Ensure headers are generated before rippled compiles
++        if(HOOKS_FORCE_RECOMPILE OR DEFINED ENV{HOOKS_FORCE_RECOMPILE})
++          foreach(_tgt ${EXTERNAL_HOOK_TARGETS})
++            add_dependencies(rippled ${_tgt})
++          endforeach()
++        else()
++          add_custom_target(compile_external_hooks DEPENDS ${EXTERNAL_HOOK_HEADERS})
++          add_dependencies(rippled compile_external_hooks)
++        endif()
++
++        target_sources(rippled PRIVATE ${EXTERNAL_HOOK_TESTS})
++        # Keep the generated hook-header include path scoped to the external
++        # test sources so changing HOOKS_TEST_DIR doesn't invalidate the
++        # compile command for the rest of rippled.
++        set_property(
++          SOURCE ${EXTERNAL_HOOK_TESTS}
++          APPEND PROPERTY INCLUDE_DIRECTORIES "${HOOKS_TEST_DIR}"
++        )
++        message(STATUS "Including external hook tests from: ${HOOKS_TEST_DIR}")
++      endif()
++    endif()
+   endif()
+ 
+   target_link_libraries(rippled
+diff --git a/include/xrpl/basics/Log.h b/include/xrpl/basics/Log.h
+index 13128bfea..5b41e0d9e 100644
+--- a/include/xrpl/basics/Log.h
++++ b/include/xrpl/basics/Log.h
+@@ -27,6 +27,7 @@
+ #include <fstream>
+ #include <map>
+ #include <memory>
++#include <functional>
+ #include <mutex>
+ #include <utility>
+ 
+@@ -165,6 +166,7 @@ private:
+     beast::severities::Severity thresh_;
+     File file_;
+     bool silent_ = false;
++    std::function<std::string(std::string const&)> transform_;
+ 
+ public:
+     Logs(beast::severities::Severity level);
+@@ -203,6 +205,33 @@ public:
+         std::string const& text,
+         bool console);
+ 
++    /** Set a transform applied to every log message before output.
++     *  Useful in tests to replace raw account IDs with human-readable names.
++     *  Pass nullptr to clear.
++     *
++     *  TODO: This is test-only infrastructure (used by TestEnv). Consider
++     *  moving to SuiteLogs or a test-specific subclass if the Logs interface
++     *  needs to stay clean for production.
++     */
++    void
++    setTransform(std::function<std::string(std::string const&)> fn)
++    {
++        std::lock_guard lock(mutex_);
++        transform_ = std::move(fn);
++    }
++
++    /** Apply the current transform to text (or return as-is if none set). */
++    std::string const&
++    applyTransform(std::string const& text) const
++    {
++        if (!transform_)
++            return text;
++        // Store in thread_local to return a const ref
++        thread_local std::string buf;
++        buf = transform_(text);
++        return buf;
++    }
++
+     std::string
+     rotate();
+ 
+diff --git a/include/xrpl/hook/Enum.h b/include/xrpl/hook/Enum.h
+index 9dbce0f33..46dd71e32 100644
+--- a/include/xrpl/hook/Enum.h
++++ b/include/xrpl/hook/Enum.h
+@@ -417,6 +417,7 @@ getImportWhitelist(Rules const& rules)
+ #define int64_t 0x7EU
+ #define int32_t 0x7FU
+ #define uint32_t 0x7FU
++#define void_t 0x00U
+ 
+ #define HOOK_WRAP_PARAMS(...) __VA_ARGS__
+ 
+@@ -428,11 +429,15 @@ getImportWhitelist(Rules const& rules)
+ 
+ #include "hook_api.macro"
+ 
++    // Coverage callback: void __on_source_line(uint32_t line, uint32_t col)
++    whitelist["__on_source_line"] = {void_t, uint32_t, uint32_t};
++
+ #undef HOOK_API_DEFINITION
+ #undef HOOK_WRAP_PARAMS
+ #undef int64_t
+ #undef int32_t
+ #undef uint32_t
++#undef void_t
+ #pragma pop_macro("HOOK_API_DEFINITION")
+ 
+     return whitelist;
+diff --git a/include/xrpl/hook/Guard.h b/include/xrpl/hook/Guard.h
+index 53d9f010f..c99618c0f 100644
+--- a/include/xrpl/hook/Guard.h
++++ b/include/xrpl/hook/Guard.h
+@@ -1383,21 +1383,52 @@ validateGuards(
+                 int result_count = parseLeb128(wasm, i, &i);
+                 CHECK_SHORT_HOOK();
+ 
+-                // this needs a reliable hook cleaner otherwise it will catch
+-                // most compilers out
+-                if (result_count != 1)
++                if (j == hook_type_idx)
+                 {
+-                    GUARDLOG(hook::log::FUNC_RETURN_COUNT)
+-                        << "Malformed transaction. "
+-                        << "Hook declares a function type that returns fewer "
+-                           "or more than one value. "
+-                        << "\n";
+-                    return {};
++                    // hook/cbak must return exactly one value (i64)
++                    if (result_count != 1)
++                    {
++                        GUARDLOG(hook::log::FUNC_RETURN_COUNT)
++                            << "Malformed transaction. "
++                            << "hook/cbak function type must return exactly "
++                               "one value. "
++                            << "\n";
++                        return {};
++                    }
++                }
++                else if (first_signature)
++                {
++                    // For whitelisted imports, check expected return count.
++                    // void_t (0x00) means 0 return values.
++                    uint8_t expected_return =
++                        (*first_signature).get()[0];
++                    int expected_result_count =
++                        (expected_return == 0x00U) ? 0 : 1;
++                    if (result_count != expected_result_count)
++                    {
++                        GUARDLOG(hook::log::FUNC_RETURN_COUNT)
++                            << "Malformed transaction. "
++                            << "Hook API: " << *first_name
++                            << " has wrong return count "
++                            << "(expected " << expected_result_count
++                            << ", got " << result_count << ")."
++                            << "\n";
++                        return {};
++                    }
++                }
++                else
++                {
++                    if (result_count != 1)
++                    {
++                        GUARDLOG(hook::log::FUNC_RETURN_COUNT)
++                            << "Malformed transaction. "
++                            << "Hook declares a function type that returns "
++                               "fewer or more than one value. "
++                            << "\n";
++                        return {};
++                    }
+                 }
+ 
+-                // this can only ever be 1 in production, but in testing it may
+-                // also be 0 or >1 so for completeness this loop is here but can
+-                // be taken out in prod
+                 for (int k = 0; k < result_count; ++k)
+                 {
+                     int result_type = parseLeb128(wasm, i, &i);
+diff --git a/include/xrpl/hook/Macro.h b/include/xrpl/hook/Macro.h
+index 45e6a8db9..643750f8b 100644
+--- a/include/xrpl/hook/Macro.h
++++ b/include/xrpl/hook/Macro.h
+@@ -157,6 +157,7 @@
+         [[maybe_unused]] ApplyContext& applyCtx = hookCtx.applyCtx;  \
+         [[maybe_unused]] auto& view = applyCtx.view();               \
+         [[maybe_unused]] auto j = applyCtx.app.journal("View");      \
++        [[maybe_unused]] auto jh = applyCtx.app.journal("HooksTrace"); \
+         [[maybe_unused]] WasmEdge_MemoryInstanceContext* memoryCtx = \
+             WasmEdge_CallingFrameGetMemoryInstance(&frameCtx, 0);    \
+         [[maybe_unused]] unsigned char* memory =                     \
+diff --git a/src/libxrpl/basics/Log.cpp b/src/libxrpl/basics/Log.cpp
+index 8e687d66f..3dbdbed63 100644
+--- a/src/libxrpl/basics/Log.cpp
++++ b/src/libxrpl/basics/Log.cpp
+@@ -196,9 +196,10 @@ Logs::write(
+     std::string const& text,
+     bool console)
+ {
+-    std::string s;
+-    format(s, text, level, partition);
+     std::lock_guard lock(mutex_);
++    std::string const& transformed = transform_ ? transform_(text) : text;
++    std::string s;
++    format(s, transformed, level, partition);
+     file_.writeln(s);
+     if (!silent_)
+         std::cerr << s << '\n';
+diff --git a/src/test/jtx/Env.h b/src/test/jtx/Env.h
+index 34056d3b0..936ea5374 100644
+--- a/src/test/jtx/Env.h
++++ b/src/test/jtx/Env.h
+@@ -106,7 +106,8 @@ public:
+         std::string const& partition,
+         beast::severities::Severity threshold) override
+     {
+-        return std::make_unique<SuiteJournalSink>(partition, threshold, suite_);
++        return std::make_unique<SuiteJournalSink>(
++            partition, threshold, suite_, this);
+     }
+ };
+ 
+diff --git a/src/test/jtx/TestEnv.h b/src/test/jtx/TestEnv.h
+new file mode 100644
+index 000000000..1c6bb305a
+--- /dev/null
++++ b/src/test/jtx/TestEnv.h
+@@ -0,0 +1,148 @@
++#ifndef TEST_JTX_TESTENV_H_INCLUDED
++#define TEST_JTX_TESTENV_H_INCLUDED
++
++#include <test/jtx/Env.h>
++#include <xrpl/basics/Log.h>
++#include <xrpl/protocol/AccountID.h>
++#include <cstdlib>
++#include <cstring>
++#include <map>
++#include <sstream>
++#include <string>
++
++namespace ripple {
++namespace test {
++namespace jtx {
++
++/**
++ * TestEnv wraps Env with:
++ *   - Named account registry: env.account("alice")
++ *   - Auto log transform: replaces r-addresses with Account(name) in log output
++ *   - Env-var driven per-partition log levels via TESTENV_LOGGING
++ *
++ * Usage:
++ *   TestEnv env{suite, features};
++ *   auto const& alice = env.account("alice");
++ *   auto const& bob = env.account("bob");
++ *   env.fund(XRP(10000), alice, bob);
++ *   // Logs now show Account(alice), Account(bob) instead of r-addresses
++ *
++ * Log levels via env var:
++ *   TESTENV_LOGGING="HooksTrace=trace,View=debug"
++ *
++ * Valid levels: trace, debug, info, warning, error, fatal
++ */
++class TestEnv : public Env
++{
++    std::map<std::string, Account> accounts_;
++    std::string prefix_;
++
++public:
++    TestEnv(beast::unit_test::suite& suite, FeatureBitset features)
++        : Env(suite, features)
++    {
++        installTransform();
++        applyLoggingEnvVar();
++    }
++
++    TestEnv(
++        beast::unit_test::suite& suite,
++        std::unique_ptr<Config> config,
++        FeatureBitset features,
++        std::unique_ptr<Logs> logs = nullptr,
++        beast::severities::Severity thresh = beast::severities::kError)
++        : Env(suite, std::move(config), features, std::move(logs), thresh)
++    {
++        installTransform();
++        applyLoggingEnvVar();
++    }
++
++    ~TestEnv()
++    {
++        app().logs().setTransform(nullptr);
++    }
++
++    /// Get or create a named account.
++    /// First call creates the Account; subsequent calls return the same one.
++    Account const&
++    account(std::string const& name)
++    {
++        auto [it, inserted] = accounts_.try_emplace(name, name);
++        return it->second;
++    }
++
++    /// Set a prefix that appears at the start of every log line.
++    /// Useful for visually separating test phases in trace output.
++    /// Pass empty string to clear.
++    void
++    setPrefix(std::string const& prefix)
++    {
++        prefix_ = prefix.empty() ? "" : "[" + prefix + "] ";
++    }
++
++private:
++    static beast::severities::Severity
++    parseSeverity(std::string const& s)
++    {
++        if (s == "trace")
++            return beast::severities::kTrace;
++        if (s == "debug")
++            return beast::severities::kDebug;
++        if (s == "info")
++            return beast::severities::kInfo;
++        if (s == "warning")
++            return beast::severities::kWarning;
++        if (s == "error")
++            return beast::severities::kError;
++        if (s == "fatal")
++            return beast::severities::kFatal;
++        return beast::severities::kError;
++    }
++
++    void
++    applyLoggingEnvVar()
++    {
++        // Parse TESTENV_LOGGING="Partition1=level,Partition2=level"
++        auto const* envVal = std::getenv("TESTENV_LOGGING");
++        if (!envVal || !envVal[0])
++            return;
++
++        std::istringstream ss(envVal);
++        std::string pair;
++        while (std::getline(ss, pair, ','))
++        {
++            auto eq = pair.find('=');
++            if (eq == std::string::npos)
++                continue;
++            auto partition = pair.substr(0, eq);
++            auto level = pair.substr(eq + 1);
++            app().logs().get(partition).threshold(parseSeverity(level));
++        }
++    }
++
++    void
++    installTransform()
++    {
++        app().logs().setTransform([this](std::string const& text) {
++            std::string out = prefix_ + text;
++            for (auto const& [name, acc] : accounts_)
++            {
++                auto raddr = toBase58(acc.id());
++                std::string::size_type pos = 0;
++                std::string replacement = "Account(" + name + ")";
++                while ((pos = out.find(raddr, pos)) != std::string::npos)
++                {
++                    out.replace(pos, raddr.size(), replacement);
++                    pos += replacement.size();
++                }
++            }
++            return out;
++        });
++    }
++};
++
++}  // namespace jtx
++}  // namespace test
++}  // namespace ripple
++
++#endif
+diff --git a/src/test/unit_test/SuiteJournal.h b/src/test/unit_test/SuiteJournal.h
+index d25164e42..92b70f31a 100644
+--- a/src/test/unit_test/SuiteJournal.h
++++ b/src/test/unit_test/SuiteJournal.h
+@@ -19,6 +19,7 @@
+ 
+ #ifndef TEST_UNIT_TEST_SUITE_JOURNAL_H
+ #define TEST_UNIT_TEST_SUITE_JOURNAL_H
++#include <xrpl/basics/Log.h>
+ #include <xrpl/beast/unit_test.h>
+ #include <xrpl/beast/utility/Journal.h>
+ #include <mutex>
+@@ -31,13 +32,18 @@ class SuiteJournalSink : public beast::Journal::Sink
+ {
+     std::string partition_;
+     beast::unit_test::suite& suite_;
++    Logs* logs_ = nullptr;
+ 
+ public:
+     SuiteJournalSink(
+         std::string const& partition,
+         beast::severities::Severity threshold,
+-        beast::unit_test::suite& suite)
+-        : Sink(threshold, false), partition_(partition + " "), suite_(suite)
++        beast::unit_test::suite& suite,
++        Logs* logs = nullptr)
++        : Sink(threshold, false)
++        , partition_(partition + " ")
++        , suite_(suite)
++        , logs_(logs)
+     {
+     }
+ 
+@@ -97,11 +103,12 @@ SuiteJournalSink::writeAlways(
+     // Only write the string if the level at least equals the threshold.
+     if (level >= threshold())
+     {
++        std::string const& output = logs_ ? logs_->applyTransform(text) : text;
+         // std::endl flushes → sync() → str()/str("") race in shared buffer →
+         // crashes
+         static std::mutex log_mutex;
+         std::lock_guard lock(log_mutex);
+-        suite_.log << s << partition_ << text << std::endl;
++        suite_.log << s << partition_ << output << std::endl;
+     }
+ }
+ 
+diff --git a/src/xrpld/app/hook/applyHook.h b/src/xrpld/app/hook/applyHook.h
+index df553d2ea..6fd3514c4 100644
+--- a/src/xrpld/app/hook/applyHook.h
++++ b/src/xrpld/app/hook/applyHook.h
+@@ -12,9 +12,11 @@
+ #include <xrpl/protocol/TER.h>
+ #include <xrpl/protocol/digest.h>
+ #include <any>
++#include <fstream>
+ #include <memory>
+ #include <optional>
+ #include <queue>
++#include <set>
+ #include <utility>
+ #include <vector>
+ #include <wasmedge/wasmedge.h>
+@@ -305,6 +307,130 @@ static WasmEdge_String hookFunctionName =
+ // see: lib/system/allocator.cpp
+ #define WasmEdge_kPageSize 65536ULL
+ 
++// --- Coverage infrastructure ---
++//
++// Global coverage accumulator keyed by hook hash. Persists across all hook
++// executions in the process. Each __on_source_line call records a (line, col)
++// pair under the executing hook's hash.
++//
++// Test API:
++//   hook::coverageReset()            — clear all accumulated data
++//   hook::coverageHits(hookHash)     — get hits for a specific hook
++//   hook::coverageLabel(hash, label) — register a human-readable label
++//   hook::coverageDump(path)         — write all data to a file
++//
++// The dump file format is:
++//   [label or hash]
++//   hits=<line:col>,<line:col>,...
++
++struct CoverageData
++{
++    std::set<uint32_t> hits{};
++};
++
++// Global accumulator — survives across HookContext lifetimes
++inline std::map<ripple::uint256, CoverageData>&
++coverageMap()
++{
++    static std::map<ripple::uint256, CoverageData> map;
++    return map;
++}
++
++// Hash → label mapping (e.g. hash → "file:tipbot/tip.c")
++inline std::map<ripple::uint256, std::string>&
++coverageLabels()
++{
++    static std::map<ripple::uint256, std::string> labels;
++    return labels;
++}
++
++inline void
++coverageReset()
++{
++    coverageMap().clear();
++    coverageLabels().clear();
++}
++
++inline void
++coverageLabel(ripple::uint256 const& hookHash, std::string const& label)
++{
++    coverageLabels()[hookHash] = label;
++}
++
++inline std::set<uint32_t> const*
++coverageHits(ripple::uint256 const& hookHash)
++{
++    auto& map = coverageMap();
++    auto it = map.find(hookHash);
++    if (it == map.end())
++        return nullptr;
++    return &it->second.hits;
++}
++
++inline bool
++coverageDump(std::string const& path)
++{
++    auto& map = coverageMap();
++    if (map.empty())
++        return false;
++
++    auto& labels = coverageLabels();
++
++    std::ofstream out(path);
++    if (!out)
++        return false;
++
++    for (auto const& [hash, data] : map)
++    {
++        auto it = labels.find(hash);
++        if (it != labels.end())
++            out << "[" << it->second << "]\n";
++        else
++            out << "[" << to_string(hash) << "]\n";
++
++        out << "hits=";
++        bool first = true;
++        for (auto key : data.hits)
++        {
++            if (!first)
++                out << ",";
++            out << (key >> 16) << ":" << (key & 0xFFFF);
++            first = false;
++        }
++        out << "\n\n";
++    }
++
++    return true;
++}
++
++// --- Coverage host callback ---
++
++inline WasmEdge_Result
++onSourceLine(
++    void* data_ptr,
++    const WasmEdge_CallingFrameContext* frameCtx,
++    const WasmEdge_Value* in,
++    WasmEdge_Value* out)
++{
++    // Called by hookz-instrumented WASM at each DWARF source location.
++    // in[0] = line number, in[1] = column number.
++    (void)out;
++    (void)frameCtx;
++    auto* hookCtx = reinterpret_cast<HookContext*>(data_ptr);
++    if (!hookCtx)
++        return WasmEdge_Result_Success;
++
++    uint32_t line = WasmEdge_ValueGetI32(in[0]);
++    uint32_t col = WasmEdge_ValueGetI32(in[1]);
++
++    // Pack (line, col) into a single uint32_t key.
++    // Limits: line < 65536, col < 65536 — more than sufficient for hooks.
++    uint32_t key = (line << 16) | (col & 0xFFFF);
++    coverageMap()[hookCtx->result.hookHash].hits.insert(key);
++
++    return WasmEdge_Result_Success;
++}
++
+ /**
+  * HookExecutor is effectively a two-part function:
+  * The first part sets up the Hook Api inside the wasm import, ready for use
+@@ -483,6 +609,22 @@ public:
+ #undef HOOK_WRAP_PARAMS
+ #pragma pop_macro("HOOK_API_DEFINITION")
+ 
++        // Coverage callback: void __on_source_line(i32 line, i32 col)
++        // Registered unconditionally — production hooks don't import it,
++        // so it's harmless. Instrumented hooks call it at each DWARF
++        // source location to record line:col coverage hits.
++        {
++            static WasmEdge_ValType paramsOSL[] = {
++                WasmEdge_ValType_I32, WasmEdge_ValType_I32};
++            static auto* ftOSL =
++                WasmEdge_FunctionTypeCreate(paramsOSL, 2, nullptr, 0);
++            auto* hfOSL = WasmEdge_FunctionInstanceCreate(
++                ftOSL, hook::onSourceLine, (void*)(&ctx), 0);
++            static auto nameOSL =
++                WasmEdge_StringCreateByCString("__on_source_line");
++            WasmEdge_ModuleInstanceAddFunction(importObj, nameOSL, hfOSL);
++        }
++
+         WasmEdge_TableInstanceContext* hostTable =
+             WasmEdge_TableInstanceCreate(tableType);
+         WasmEdge_ModuleInstanceAddTable(importObj, tableName, hostTable);
+diff --git a/src/xrpld/app/hook/detail/applyHook.cpp b/src/xrpld/app/hook/detail/applyHook.cpp
+index 14855b73c..ac664fc4c 100644
+--- a/src/xrpld/app/hook/detail/applyHook.cpp
++++ b/src/xrpld/app/hook/detail/applyHook.cpp
+@@ -1111,7 +1111,7 @@ DEFINE_HOOK_FUNCTION(
+     if (NOT_IN_BOUNDS(read_ptr, read_len, memory_length))
+         return OUT_OF_BOUNDS;
+ 
+-    if (!j.trace())
++    if (!jh.trace())
+         return 0ULL;
+ 
+     if (read_len > 128)
+@@ -1125,16 +1125,16 @@ DEFINE_HOOK_FUNCTION(
+ 
+         if (read_len > 0)
+         {
+-            j.trace() << "HookTrace[" << HC_ACC() << "]: "
+-                      << std::string_view(
+-                             (const char*)memory + read_ptr, read_len)
+-                      << ": " << number;
++            JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: "
++                             << std::string_view(
++                                    (const char*)memory + read_ptr, read_len)
++                             << ": " << number;
+ 
+             return 0ULL;
+         }
+     }
+ 
+-    j.trace() << "HookTrace[" << HC_ACC() << "]: " << number;
++    JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: " << number;
+     return 0ULL;
+     HOOK_TEARDOWN();
+ }
+@@ -1154,7 +1154,7 @@ DEFINE_HOOK_FUNCTION(
+         NOT_IN_BOUNDS(dread_ptr, dread_len, memory_length))
+         return OUT_OF_BOUNDS;
+ 
+-    if (!j.trace())
++    if (!jh.trace())
+         return 0ULL;
+ 
+     if (mread_len > 128)
+@@ -1214,8 +1214,8 @@ DEFINE_HOOK_FUNCTION(
+ 
+     if (out_len > 0)
+     {
+-        j.trace() << "HookTrace[" << HC_ACC() << "]: "
+-                  << std::string_view((const char*)output_storage, out_len);
++        JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: "
++                         << std::string_view((const char*)output_storage, out_len);
+     }
+ 
+     return 0ULL;
+@@ -3403,7 +3403,7 @@ DEFINE_HOOK_FUNCTION(
+     if (NOT_IN_BOUNDS(read_ptr, read_len, memory_length))
+         return OUT_OF_BOUNDS;
+ 
+-    if (!j.trace())
++    if (!jh.trace())
+         return 0ULL;
+ 
+     if (read_len > 128)
+@@ -3420,8 +3420,8 @@ DEFINE_HOOK_FUNCTION(
+ 
+     if (float1 == 0)
+     {
+-        j.trace() << "HookTrace[" << HC_ACC() << "]: " << messageKey
+-                  << ": Float 0*10^(0) <ZERO>";
++        JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: " << messageKey
++                         << ": Float 0*10^(0) <ZERO>";
+         return 0ULL;
+     }
+ 
+@@ -3432,14 +3432,14 @@ DEFINE_HOOK_FUNCTION(
+         man.value() > maxMantissa || exp.value() < minExponent ||
+         exp.value() > maxExponent)
+     {
+-        j.trace() << "HookTrace[" << HC_ACC() << "]: " << messageKey
+-                  << ": Float <INVALID>";
++        JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: " << messageKey
++                         << ": Float <INVALID>";
+         return 0ULL;
+     }
+ 
+-    j.trace() << "HookTrace[" << HC_ACC() << "]:" << messageKey << ": Float "
+-              << (neg ? "-" : "") << man.value() << "*10^(" << exp.value()
+-              << ")";
++    JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]:" << messageKey
++                     << ": Float " << (neg ? "-" : "") << man.value() << "*10^("
++                     << exp.value() << ")";
+     return 0ULL;
+ 
+     HOOK_TEARDOWN();
+diff --git a/src/xrpld/app/tx/detail/SetHook.cpp b/src/xrpld/app/tx/detail/SetHook.cpp
+index 53b3b6b7e..44653a1b1 100644
+--- a/src/xrpld/app/tx/detail/SetHook.cpp
++++ b/src/xrpld/app/tx/detail/SetHook.cpp
+@@ -546,7 +546,7 @@ SetHook::validateHookSetEntry(SetHookCtx& ctx, STObject const& hookSetObj)
+                 }
+ 
+                 auto result = validateGuards(
+-                    hook,  // wasm to verify
++                    hook,
+                     logger,
+                     hsacc,
+                     hook_api::getImportWhitelist(ctx.rules),
