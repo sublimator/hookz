@@ -115,6 +115,8 @@ The branch currently carries four specimen models:
   status and amount kind.
 - `StateCounter`: state transition model over transaction kind, owner status,
   existing counter state, and optional counter parameter.
+- `StateToggle`: owner-gated state mutation with payment paths that always
+  accept while preserving toggle state.
 - `Mint`: coarse emitted-transaction model over presence of `sfBlob`.
 
 The contrast is intentional. `BalanceGate` proves a decision predicate,
