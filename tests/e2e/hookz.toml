@@ -8,7 +8,7 @@ extra_cflags = ["-Ihooks/misc"]
 [hooks]
 # Genesis hooks (from Xahau/xahaud)
 govern = "hooks/genesis/govern.c"
-mint = { source = "hooks/genesis/mint.c", lean = "../../lean/Hookz/Contracts/Mint.lean" }
+mint = { source = "hooks/genesis/mint.c", lean = "hooks/genesis/mint.lean" }
 nftoken = "hooks/genesis/nftoken.c"
 reward = { source = "hooks/genesis/reward.c", lean = "../../lean/Hookz/Contracts/Reward.lean" }
 

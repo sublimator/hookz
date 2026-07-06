@@ -221,8 +221,31 @@ example :
 """
 
 
+def _mint_after_decision(
+    captures: dict[str, dict],
+    context: DevCheckContext,
+) -> str:
+    has_blob = _required_u64(captures, "has_blob") != 0
+    emitted_count = _required_u64(captures, "emitted_count")
+    accepted = _required_u64(captures, "verdict_accept") != 0
+    import_module = _import_module(context, "Hookz.Contracts.Mint")
+    model_module = "Hookz.Contracts.Mint"
+    return f"""import {import_module}
+
+open Hookz.Contracts
+
+-- generated from hookz dev checkpoint: mint.after_decision
+example :
+    {model_module}.expected {{
+      hasBlob := {_bool_literal(has_blob)}
+    }} = {{ verdict := {_verdict_literal(accepted)}, emittedCount := {emitted_count} }} := by
+  native_decide
+"""
+
+
 _ADAPTERS: dict[str, Callable[[dict[str, dict], DevCheckContext], str]] = {
     "balance_gate.after_decision": _balance_gate_after_decision,
+    "mint.after_decision": _mint_after_decision,
     "state_counter.after_increment": _state_counter_after_increment,
 }
 

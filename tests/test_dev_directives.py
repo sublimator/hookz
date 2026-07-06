@@ -27,11 +27,13 @@ from location_consts import WASI_SDK
 
 E2E_ROOT = Path(__file__).parent / "e2e"
 BALANCE_GATE_SOURCE = E2E_ROOT / "hooks" / "misc" / "balance_gate.c"
+MINT_SOURCE = E2E_ROOT / "hooks" / "genesis" / "mint.c"
 HOOKZ_TOML = E2E_ROOT / "hookz.toml"
 
 ALICE_ACCID = bytes.fromhex("b5f762798a53d543a014caf8b297cff8f2f937e8")
 BOB = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
 BOB_ACCID = bytes.fromhex("f667b0ca50cc7709a220b0561b85e53a48461fa8")
+SENDER_ACCID = bytes.fromhex("01" * 20)
 
 
 DEV_DIRECTIVE_SOURCE = r"""
@@ -91,6 +93,23 @@ int64_t hook(uint32_t reserved)
 
     return accept(0, 0, 1);
 }}
+"""
+
+BUGGY_MINT_SOURCE = r"""
+#include <stdint.h>
+extern int64_t accept(uint32_t, uint32_t, int64_t);
+
+int64_t hook(uint32_t reserved)
+{
+    /* hookz:
+    HOOKZ_LEAN4_U64("has_blob", 0);
+    HOOKZ_LEAN4_U64("emitted_count", 1);
+    HOOKZ_LEAN4_U64("verdict_accept", 1);
+    HOOKZ_LEAN4_CHECK("mint.after_decision");
+    */
+
+    return accept(0, 0, 1);
+}
 """
 
 LEGACY_LEAN4_METADATA_SOURCE = r"""
@@ -205,6 +224,22 @@ def test_buggy_balance_gate_checkpoint_is_caught_by_lean(tmp_path, monkeypatch):
     assert "balance_gate.after_decision" in str(result.error)
 
 
+@pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
+def test_buggy_mint_checkpoint_is_caught_by_lean(tmp_path, monkeypatch):
+    source = tmp_path / "buggy_mint_hook.c"
+    source.write_text(BUGGY_MINT_SOURCE)
+    config = replace(load_config(source_file=source), exports=["hook"])
+
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(tmp_path / "lean"))
+    wasm = compile_hook_dev(source, config=config)
+    rt = HookRuntime()
+    result = rt.run(wasm)
+
+    assert not result.accepted
+    assert isinstance(result.error, DevLeanError)
+    assert "mint.after_decision" in str(result.error)
+
+
 def test_renders_dev_events_to_lean_check():
     events = [
         {"kind": "u64", "name": "before_count", "value": 40},
@@ -248,6 +283,25 @@ def test_renders_hook_local_balance_gate_checkpoint():
     assert "Hookz.Contracts.BalanceGate.expected" in lean_source
     assert "senderBalanceDrops := some 50000000" in lean_source
     assert "minBalanceDrops := 10000000" in lean_source
+
+
+def test_renders_hook_local_mint_checkpoint():
+    events = [
+        {"kind": "u64", "name": "has_blob", "value": 1},
+        {"kind": "u64", "name": "emitted_count", "value": 1},
+        {"kind": "u64", "name": "verdict_accept", "value": 1},
+        {"kind": "check", "tag": "after_decision"},
+    ]
+
+    rendered = render_dev_lean_checks(events, source_path=MINT_SOURCE)
+
+    assert len(rendered) == 1
+    tag, lean_source = rendered[0]
+    assert tag == "mint.after_decision"
+    assert "import HookzDevSidecar_mint" in lean_source
+    assert "Hookz.Contracts.Mint.expected" in lean_source
+    assert "hasBlob := true" in lean_source
+    assert "emittedCount := 1" in lean_source
 
 
 def test_hook_local_checkpoint_surfaces_bad_config(tmp_path):
@@ -311,6 +365,26 @@ def _balance_gate_runtime() -> HookRuntime:
     return rt
 
 
+def _mint_runtime() -> HookRuntime:
+    rt = HookRuntime()
+    rt.hook_account = ALICE_ACCID
+    rt.otxn_account = SENDER_ACCID
+    rt.otxn_type = hookapi.ttINVOKE
+    return rt
+
+
+def _mint_blob_data() -> bytes:
+    entry = (
+        b"\xE0\x60"
+        b"\x61"
+        b"\x40\x00\x00\x00\x00\x0F\x42\x40"
+        b"\x83\x14"
+        + SENDER_ACCID
+        + b"\xE1"
+    )
+    return b"\xF0\x60" + entry + b"\xF1"
+
+
 @pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
 def test_balance_gate_dev_checkpoint_dispatches_to_lean(tmp_path, monkeypatch):
     config = load_config(toml_path=HOOKZ_TOML)
@@ -328,3 +402,29 @@ def test_balance_gate_dev_checkpoint_dispatches_to_lean(tmp_path, monkeypatch):
     assert {"kind": "check", "tag": "after_decision", "line": None} in result.dev_events
     assert list((tmp_path / "lean").glob("*balance_gate_after_decision.lean"))
     assert list((tmp_path / "lean" / "_sidecars").glob("HookzDevSidecar_balance_gate.olean"))
+
+
+@pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
+def test_mint_dev_checkpoint_dispatches_to_lean(tmp_path, monkeypatch):
+    config = load_config(toml_path=HOOKZ_TOML)
+    wasm = compile_hook_dev(MINT_SOURCE, config=config)
+    hook = Hook(wasm=wasm, label=MINT_SOURCE.name, source=MINT_SOURCE)
+
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(tmp_path / "lean"))
+
+    missing_blob_rt = _mint_runtime()
+    missing_blob = missing_blob_rt.run(hook)
+
+    assert missing_blob.rejected
+    assert {"kind": "check", "tag": "after_decision", "line": None} in missing_blob.dev_events
+
+    with_blob_rt = _mint_runtime()
+    with_blob_rt._slot_overrides[f"slot_subfield:1:{hookapi.sfBlob}"] = 2
+    with_blob_rt._slot_overrides["slot_data:2"] = _mint_blob_data()
+    with_blob = with_blob_rt.run(hook)
+
+    assert with_blob.accepted
+    assert len(with_blob_rt.emitted_txns) == 1
+    assert {"kind": "check", "tag": "after_decision", "line": None} in with_blob.dev_events
+    assert len(list((tmp_path / "lean").glob("*mint_after_decision*.lean"))) == 2
+    assert list((tmp_path / "lean" / "_sidecars").glob("HookzDevSidecar_mint.olean"))

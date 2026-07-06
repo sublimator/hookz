@@ -62,7 +62,17 @@ int64_t hook(uint32_t r)
     hook_account(txn_mint + 71, 20);
 
     otxn_slot(1);
-    ASSERT(slot_subfield(1, sfBlob, 2) == 2);
+    int64_t blob_slot = slot_subfield(1, sfBlob, 2);
+    if (blob_slot != 2)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("has_blob", 0);
+        HOOKZ_LEAN4_U64("emitted_count", 0);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
+        rollback(SBUF("MintTest: Assertion failure."),__LINE__);
+    }
 
     
     int64_t bytes = slot(txn_mint + 207, 60000 - 207, 2);
@@ -119,5 +129,11 @@ int64_t hook(uint32_t r)
         rollback(SBUF("MintTest: Emit failed."), __LINE__);
 
 
+    /* hookz:
+    HOOKZ_LEAN4_U64("has_blob", 1);
+    HOOKZ_LEAN4_U64("emitted_count", 1);
+    HOOKZ_LEAN4_U64("verdict_accept", 1);
+    HOOKZ_LEAN4_CHECK("after_decision");
+    */
     accept(SBUF("MintTest: Emitted txn successfully."), __LINE__);
 }
