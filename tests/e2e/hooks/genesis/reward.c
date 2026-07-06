@@ -1,4 +1,3 @@
-// hookz: lean4 adapter=reward model=Hookz.Contracts.Reward.expected
 #include "hookapi.h"
 #define DEFAULT_REWARD_DELAY 6199553087261802496ULL
 // 2600000

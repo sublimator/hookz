@@ -37,23 +37,11 @@ class HookzDirective:
     """A development-only C fragment found in a `hookz:` comment."""
 
     line: int
+    end_line: int
     column: int
     start_byte: int
     end_byte: int
     code: str
-
-
-@dataclass(frozen=True)
-class HookzLean4Annotation:
-    """A metadata-only Lean4 annotation found in a `hookz:` comment."""
-
-    line: int
-    column: int
-    start_byte: int
-    end_byte: int
-    adapter: str
-    model: str
-    attrs: dict[str, str]
 
 
 def _walk_comments(node):
@@ -90,27 +78,6 @@ def _block_directive(raw: str) -> str | None:
     return textwrap.dedent(code).strip()
 
 
-def _lean4_annotation(raw: str) -> dict[str, str] | None:
-    if not raw.startswith("//"):
-        return None
-    body = raw[2:].strip()
-    if not body.startswith("hookz:"):
-        return None
-    directive = body[len("hookz:"):].strip()
-    if not directive.startswith("lean4 "):
-        return None
-
-    attrs: dict[str, str] = {}
-    for token in directive[len("lean4 "):].split():
-        key, sep, value = token.partition("=")
-        if not sep:
-            continue
-        attrs[key] = value
-    if "adapter" not in attrs or "model" not in attrs:
-        return None
-    return attrs
-
-
 def extract_hookz_directives(source: str | bytes | Path) -> list[HookzDirective]:
     """Extract `hookz:` comment directives from a C source file or string."""
     if isinstance(source, Path):
@@ -133,6 +100,7 @@ def extract_hookz_directives(source: str | bytes | Path) -> list[HookzDirective]
             continue
         directives.append(HookzDirective(
             line=node.start_point[0] + 1,
+            end_line=node.end_point[0] + 1,
             column=node.start_point[1] + 1,
             start_byte=node.start_byte,
             end_byte=node.end_byte,
@@ -141,34 +109,16 @@ def extract_hookz_directives(source: str | bytes | Path) -> list[HookzDirective]
     return directives
 
 
-def extract_hookz_lean4_annotations(source: str | bytes | Path) -> list[HookzLean4Annotation]:
-    """Extract metadata-only `hookz: lean4` annotations from C comments."""
+def _line_filename(source: str | Path) -> str:
     if isinstance(source, Path):
-        source_bytes = source.read_bytes()
-    elif isinstance(source, bytes):
-        source_bytes = source
+        filename = str(source.resolve())
     else:
-        source_bytes = source.encode()
+        filename = "<hookz-dev-source>"
+    return filename.replace("\\", "\\\\").replace("\"", "\\\"")
 
-    parser = Parser(C_LANGUAGE)
-    tree = parser.parse(source_bytes)
 
-    annotations: list[HookzLean4Annotation] = []
-    for node in _walk_comments(tree.root_node):
-        raw = source_bytes[node.start_byte:node.end_byte].decode(errors="replace")
-        attrs = _lean4_annotation(raw)
-        if attrs is None:
-            continue
-        annotations.append(HookzLean4Annotation(
-            line=node.start_point[0] + 1,
-            column=node.start_point[1] + 1,
-            start_byte=node.start_byte,
-            end_byte=node.end_byte,
-            adapter=attrs["adapter"],
-            model=attrs["model"],
-            attrs=attrs,
-        ))
-    return annotations
+def _line_marker(line: int, filename: str) -> str:
+    return f'#line {line} "{filename}"'
 
 
 def render_dev_source(source: str | Path) -> str:
@@ -179,9 +129,20 @@ def render_dev_source(source: str | Path) -> str:
         return source_text
 
     source_bytes = source_text.encode()
+    filename = _line_filename(source)
     rendered = bytearray(source_bytes)
     for directive in sorted(directives, key=lambda d: d.start_byte, reverse=True):
-        replacement = f"\n{directive.code}\n".encode()
+        replacement = (
+            f"\n{_line_marker(directive.line, filename)}\n"
+            f"{directive.code}\n"
+            f"{_line_marker(directive.end_line, filename)}\n"
+        ).encode()
         rendered[directive.start_byte:directive.end_byte] = replacement
 
-    return _PRELUDE.strip() + "\n\n" + rendered.decode(errors="replace")
+    return (
+        _PRELUDE.strip()
+        + "\n\n"
+        + _line_marker(1, filename)
+        + "\n"
+        + rendered.decode(errors="replace")
+    )

@@ -1,36 +1,27 @@
-"""Lean4 contract annotations for configured hooks."""
+"""Lean4 contract bindings for configured hooks."""
 
 from __future__ import annotations
 
-import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from hookz.config import load_config
+
 
 @dataclass(frozen=True)
-class Lean4HookAnnotation:
+class Lean4HookBinding:
     hook: str
-    adapter: str
-    model: str | None
-    status: str
-    note: str | None = None
+    source: Path
+    lean: Path
 
 
-def load_lean4_annotations(toml_path: Path) -> dict[str, Lean4HookAnnotation]:
-    """Load `[lean4.<hook>]` annotations from a hookz TOML file."""
-    with open(toml_path, "rb") as f:
-        data = tomllib.load(f)
-
-    raw_annotations = data.get("lean4", {})
-    annotations: dict[str, Lean4HookAnnotation] = {}
-    for hook, raw in raw_annotations.items():
-        if not isinstance(raw, dict):
-            continue
-        annotations[hook] = Lean4HookAnnotation(
-            hook=hook,
-            adapter=str(raw.get("adapter", hook)),
-            model=raw.get("model"),
-            status=str(raw.get("status", "todo")),
-            note=raw.get("note"),
-        )
-    return annotations
+def load_lean4_bindings(toml_path: Path) -> dict[str, Lean4HookBinding]:
+    """Load hook entries that have a configured Lean root file."""
+    config = load_config(toml_path=toml_path)
+    if not config.hook_entries:
+        return {}
+    return {
+        hook: Lean4HookBinding(hook=hook, source=entry.source, lean=entry.lean)
+        for hook, entry in config.hook_entries.items()
+        if entry.lean is not None
+    }

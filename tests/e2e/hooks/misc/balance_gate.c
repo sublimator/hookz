@@ -6,7 +6,6 @@
  * The minimum balance (in drops) is read from hook parameter "MIN_BAL".
  * If not set, defaults to 10,000,000 drops (10 XAH).
  */
-// hookz: lean4 adapter=balance_gate model=Hookz.Contracts.BalanceGate.expected
 #include <stdint.h>
 #include "hookapi.h"
 

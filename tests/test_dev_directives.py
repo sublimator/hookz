@@ -6,9 +6,9 @@ import pytest
 
 from hookz.compiler import compile_hook_dev
 from hookz.config import load_config
+from hookz.coverage.rewriter import parse_dwarf_locations
 from hookz.dev_directives import (
     extract_hookz_directives,
-    extract_hookz_lean4_annotations,
     render_dev_source,
 )
 from hookz.dev_lean import DevLeanError, dispatch_dev_lean_checks, lean_available, render_dev_lean_checks
@@ -57,7 +57,7 @@ int64_t hook(uint32_t reserved)
 }
 """
 
-LEAN4_METADATA_SOURCE = r"""
+LEGACY_LEAN4_METADATA_SOURCE = r"""
 // hookz: lean4 adapter=state_counter model=Hookz.Contracts.StateCounter.expected
 int64_t hook(uint32_t reserved)
 {
@@ -72,6 +72,7 @@ def test_extracts_block_directive():
     assert len(directives) == 1
     assert "HOOKZ_LEAN4_U64" in directives[0].code
     assert directives[0].line > 0
+    assert directives[0].end_line >= directives[0].line
 
 
 def test_renders_dev_source_with_prelude_and_unwrapped_code():
@@ -79,18 +80,38 @@ def test_renders_dev_source_with_prelude_and_unwrapped_code():
 
     assert "extern int64_t hookz_dev_check" in rendered
     assert "HOOKZ_LEAN4_U64(\"count\", count);" in rendered
+    assert "#line 1 \"<hookz-dev-source>\"" in rendered
     assert "hookz:" not in rendered
 
 
-def test_extracts_lean4_metadata_without_unwrapping_it():
-    annotations = extract_hookz_lean4_annotations(LEAN4_METADATA_SOURCE)
-    rendered = render_dev_source(LEAN4_METADATA_SOURCE)
+def test_legacy_lean4_metadata_is_not_unwrapped():
+    directives = extract_hookz_directives(LEGACY_LEAN4_METADATA_SOURCE)
+    rendered = render_dev_source(LEGACY_LEAN4_METADATA_SOURCE)
 
-    assert len(annotations) == 1
-    assert annotations[0].adapter == "state_counter"
-    assert annotations[0].model == "Hookz.Contracts.StateCounter.expected"
+    assert directives == []
     assert "hookz: lean4 adapter=state_counter" in rendered
     assert "extern int64_t hookz_dev_check" not in rendered
+
+
+@pytest.mark.skipif(WASI_SDK is None, reason="wasi-sdk not found")
+def test_dev_compile_dwarf_lines_stay_in_original_source_range(tmp_path):
+    source = tmp_path / "dev_directive_hook.c"
+    source.write_text(DEV_DIRECTIVE_SOURCE)
+    config = replace(load_config(source_file=source), exports=["hook"])
+
+    wasm = compile_hook_dev(source, config=config)
+    locs = parse_dwarf_locations(wasm)
+    source_lines = DEV_DIRECTIVE_SOURCE.splitlines()
+    post_directive_line = next(
+        index
+        for index, line in enumerate(source_lines, start=1)
+        if "return accept" in line
+    )
+    dwarf_lines = {loc.line for loc in locs}
+
+    assert locs
+    assert post_directive_line in dwarf_lines
+    assert max(dwarf_lines) <= len(source_lines)
 
 
 @pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")

@@ -1,52 +1,58 @@
-"""Lean4 hook annotation coverage."""
+"""Lean4 hook binding coverage."""
 
 import tomllib
 from pathlib import Path
 
-from hookz.dev_directives import extract_hookz_lean4_annotations
-from hookz.lean_annotations import load_lean4_annotations
+from hookz.config import load_config
+from hookz.lean_annotations import load_lean4_bindings
 
 
 HOOKZ_TOML = Path(__file__).parent / "e2e" / "hookz.toml"
-E2E_ROOT = HOOKZ_TOML.parent
+
+EXPECTED_LEAN_HOOKS = {
+    "accept_incoming_xah",
+    "balance_gate",
+    "mint",
+    "multi_invoke_emit",
+    "reject_incoming_xah",
+    "reward",
+    "state_counter",
+    "state_toggle",
+    "treasury",
+}
 
 
-def test_every_configured_hook_has_lean4_annotation():
+def test_hookz_toml_has_no_separate_lean4_todo_schema():
     with open(HOOKZ_TOML, "rb") as f:
         data = tomllib.load(f)
 
-    hooks = set(data["hooks"])
-    annotations = load_lean4_annotations(HOOKZ_TOML)
-
-    assert set(annotations) == hooks
-
-
-def test_modeled_lean4_annotations_have_models():
-    annotations = load_lean4_annotations(HOOKZ_TOML)
-
-    modeled = [annotation for annotation in annotations.values() if annotation.status == "modeled"]
-
-    assert modeled
-    for annotation in modeled:
-        assert annotation.model
-        assert annotation.model.startswith("Hookz.Contracts.")
+    assert "lean4" not in data
+    for raw_entry in data["hooks"].values():
+        if isinstance(raw_entry, dict):
+            assert set(raw_entry) <= {"source", "lean"}
 
 
-def test_parent_owned_modeled_hooks_have_matching_source_metadata():
-    with open(HOOKZ_TOML, "rb") as f:
-        data = tomllib.load(f)
+def test_lean4_bindings_are_discovered_from_hook_entries():
+    config = load_config(toml_path=HOOKZ_TOML)
+    assert config.hook_entries is not None
 
-    annotations = load_lean4_annotations(HOOKZ_TOML)
-    for hook, source in data["hooks"].items():
-        if source.startswith("hooks/XahauHooks101/"):
-            continue
-        annotation = annotations[hook]
-        if annotation.status != "modeled":
-            continue
+    bindings = load_lean4_bindings(HOOKZ_TOML)
 
-        source_annotations = extract_hookz_lean4_annotations(E2E_ROOT / source)
-        assert source_annotations, f"{hook} has no source lean4 metadata"
-        assert any(
-            item.adapter == annotation.adapter and item.model == annotation.model
-            for item in source_annotations
-        ), f"{hook} source metadata does not match hookz.toml"
+    assert set(bindings) == {
+        hook
+        for hook, entry in config.hook_entries.items()
+        if entry.lean is not None
+    }
+    assert set(bindings) == EXPECTED_LEAN_HOOKS
+
+
+def test_lean4_binding_paths_exist_and_preserve_source_map_compatibility():
+    config = load_config(toml_path=HOOKZ_TOML)
+    bindings = load_lean4_bindings(HOOKZ_TOML)
+
+    assert config.hooks is not None
+    for hook, binding in bindings.items():
+        assert binding.source.exists()
+        assert binding.lean.exists()
+        assert binding.lean.suffix == ".lean"
+        assert config.hooks[hook] == binding.source

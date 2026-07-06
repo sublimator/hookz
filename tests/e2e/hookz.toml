@@ -8,108 +8,23 @@ extra_cflags = ["-Ihooks/misc"]
 [hooks]
 # Genesis hooks (from Xahau/xahaud)
 govern = "hooks/genesis/govern.c"
-mint = "hooks/genesis/mint.c"
+mint = { source = "hooks/genesis/mint.c", lean = "../../lean/Hookz/Contracts/Mint.lean" }
 nftoken = "hooks/genesis/nftoken.c"
-reward = "hooks/genesis/reward.c"
+reward = { source = "hooks/genesis/reward.c", lean = "../../lean/Hookz/Contracts/Reward.lean" }
 
 # Misc hooks
-balance_gate = "hooks/misc/balance_gate.c"
-treasury = "hooks/misc/treasury.c"
+balance_gate = { source = "hooks/misc/balance_gate.c", lean = "../../lean/Hookz/Contracts/BalanceGate.lean" }
+treasury = { source = "hooks/misc/treasury.c", lean = "../../lean/Hookz/Contracts/Treasury.lean" }
 
 # XahauHooks101 examples (github.com/Handy4ndy/XahauHooks101)
-accept_incoming_xah = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_xah.c"
-reject_incoming_xah = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_xah.c"
+accept_incoming_xah = { source = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_xah.c", lean = "../../lean/Hookz/Contracts/BasicNative.lean" }
+reject_incoming_xah = { source = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_xah.c", lean = "../../lean/Hookz/Contracts/BasicNative.lean" }
 accept_incoming_min = "hooks/XahauHooks101/Basic_Native/Accept_Incoming_Payment/accept_incoming_min.c"
 reject_incoming_max = "hooks/XahauHooks101/Basic_Native/Reject_Incoming_Payment/reject_incoming_max.c"
-state_counter = "hooks/XahauHooks101/Basic_State/basic_state_counter.c"
-state_toggle = "hooks/XahauHooks101/Basic_State/basic_state_toggle.c"
+state_counter = { source = "hooks/XahauHooks101/Basic_State/basic_state_counter.c", lean = "../../lean/Hookz/Contracts/StateCounter.lean" }
+state_toggle = { source = "hooks/XahauHooks101/Basic_State/basic_state_toggle.c", lean = "../../lean/Hookz/Contracts/StateToggle.lean" }
 install_param = "hooks/XahauHooks101/Basic_Install_Parameters/install_parameter_exact.c"
 invoke_param = "hooks/XahauHooks101/Basic_Invoke_Parameters/invoke_parameter_exact.c"
 multi_iou_remit = "hooks/XahauHooks101/Remit_IOU/invoke_multi_iou_remit.c"
 multi_uri_remit = "hooks/XahauHooks101/Remit_URI/invoke_multi_uri_remit.c"
-multi_invoke_emit = "hooks/XahauHooks101/Emit_Invoke/invoke_multi_invoke_emit.c"
-
-[lean4.govern]
-adapter = "govern"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.mint]
-adapter = "mint"
-model = "Hookz.Contracts.Mint.expected"
-status = "modeled"
-
-[lean4.nftoken]
-adapter = "nftoken"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.reward]
-adapter = "reward"
-model = "Hookz.Contracts.Reward.expected"
-status = "modeled"
-
-[lean4.balance_gate]
-adapter = "balance_gate"
-model = "Hookz.Contracts.BalanceGate.expected"
-status = "modeled"
-
-[lean4.treasury]
-adapter = "treasury"
-model = "Hookz.Contracts.Treasury.expected"
-status = "modeled"
-
-[lean4.accept_incoming_xah]
-adapter = "accept_incoming_xah"
-model = "Hookz.Contracts.BasicNative.AcceptIncomingXah.expected"
-status = "modeled"
-
-[lean4.reject_incoming_xah]
-adapter = "reject_incoming_xah"
-model = "Hookz.Contracts.BasicNative.RejectIncomingXah.expected"
-status = "modeled"
-
-[lean4.accept_incoming_min]
-adapter = "accept_incoming_min"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.reject_incoming_max]
-adapter = "reject_incoming_max"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.state_counter]
-adapter = "state_counter"
-model = "Hookz.Contracts.StateCounter.expected"
-status = "modeled"
-
-[lean4.state_toggle]
-adapter = "state_toggle"
-model = "Hookz.Contracts.StateToggle.expected"
-status = "modeled"
-
-[lean4.install_param]
-adapter = "install_param"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.invoke_param]
-adapter = "invoke_param"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.multi_iou_remit]
-adapter = "multi_iou_remit"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.multi_uri_remit]
-adapter = "multi_uri_remit"
-status = "todo"
-note = "No Lean specimen yet."
-
-[lean4.multi_invoke_emit]
-adapter = "multi_invoke_emit"
-model = "Hookz.Contracts.MultiInvokeEmit.expected"
-status = "modeled"
+multi_invoke_emit = { source = "hooks/XahauHooks101/Emit_Invoke/invoke_multi_invoke_emit.c", lean = "../../lean/Hookz/Contracts/MultiInvokeEmit.lean" }
