@@ -578,9 +578,10 @@ def show(list_all, name):
 @cli.command("debug-compile")
 @click.argument("source", type=click.Path(exists=True))
 @click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path.")
-def debug_compile(source, output):
+@click.option("--dev-directives", is_flag=True, help="Unwrap hookz: comments into dev-only host calls.")
+def debug_compile(source, output, dev_directives):
     """Check if a hook compiles (debug build, not for deployment)."""
-    from hookz.compiler import compile_hook
+    from hookz.compiler import compile_hook, compile_hook_dev
     from hookz.config import load_config
 
     source = Path(source)
@@ -590,8 +591,10 @@ def debug_compile(source, output):
         output = Path(output)
 
     config = load_config()
-    wasm = compile_hook(source, output, config, debug=True, optimize=False)
-    print(f"Debug-compiled {source.name} → {output} ({len(wasm)} bytes)")
+    compile_fn = compile_hook_dev if dev_directives else compile_hook
+    wasm = compile_fn(source, output, config, debug=True, optimize=False)
+    mode = " with dev directives" if dev_directives else ""
+    print(f"Debug-compiled{mode} {source.name} → {output} ({len(wasm)} bytes)")
     sys.exit(0)
 
 
