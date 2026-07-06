@@ -34,6 +34,12 @@ BOB = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
 ALICE_ACCID = bytes.fromhex("b5f762798a53d543a014caf8b297cff8f2f937e8")
 BOB_ACCID = bytes.fromhex("f667b0ca50cc7709a220b0561b85e53a48461fa8")
 
+DST1 = b"\xD1" * 20
+DST2 = b"\xD2" * 20
+DST3 = b"\xD3" * 20
+DST_KEYS = (b"DST1", b"DST2", b"DST3")
+DST_VALUES = (DST1, DST2, DST3)
+
 
 @dataclass
 class BalanceGateInput:
@@ -68,6 +74,34 @@ class StateCounterCase:
     name: str
     input: StateCounterInput
     outcome: StateCounterOutcome
+
+
+@dataclass
+class MultiInvokeEmitConfigAction:
+    kind: str
+    destinations: list[bool]
+
+
+@dataclass
+class MultiInvokeEmitInput:
+    tx_kind: str
+    owner: bool
+    destinations: list[bool]
+    config_action: MultiInvokeEmitConfigAction
+
+
+@dataclass
+class MultiInvokeEmitOutcome:
+    verdict: str
+    destinations: list[bool]
+    emitted_count: int
+
+
+@dataclass
+class MultiInvokeEmitCase:
+    name: str
+    input: MultiInvokeEmitInput
+    outcome: MultiInvokeEmitOutcome
 
 
 def _base_runtime() -> HookRuntime:
@@ -123,6 +157,14 @@ def _set_counter_param(rt: HookRuntime, value: int) -> None:
     rt.params[b"CNT"] = struct.pack(">Q", value)
 
 
+def _set_destination_state(rt: HookRuntime, index: int, value: bytes) -> None:
+    rt.state_db[DST_KEYS[index]] = value
+
+
+def _set_destination_param(rt: HookRuntime, index: int, value: bytes) -> None:
+    rt.params[DST_KEYS[index]] = value
+
+
 def _make_owner(rt: HookRuntime) -> None:
     rt.otxn_account = rt.hook_account
 
@@ -145,6 +187,46 @@ def _configure_owner_invoke_set_counter(rt: HookRuntime) -> None:
 def _configure_owner_invoke_missing_param(rt: HookRuntime) -> None:
     _make_invoke(rt)
     _make_owner(rt)
+
+
+def _configure_owner_invoke_dst1(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _make_owner(rt)
+    _set_destination_param(rt, 0, DST1)
+
+
+def _configure_owner_invoke_all_destinations(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _make_owner(rt)
+    for index, value in enumerate(DST_VALUES):
+        _set_destination_param(rt, index, value)
+
+
+def _configure_owner_invoke_reset(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _make_owner(rt)
+    _set_destination_state(rt, 0, DST1)
+    _set_destination_state(rt, 1, DST2)
+    rt.params[b"RSET"] = b"\x01"
+
+
+def _configure_non_owner_invoke_dst1(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _set_destination_param(rt, 0, DST1)
+
+
+def _configure_state_dst1(rt: HookRuntime) -> None:
+    _set_destination_state(rt, 0, DST1)
+
+
+def _configure_state_all_destinations(rt: HookRuntime) -> None:
+    for index, value in enumerate(DST_VALUES):
+        _set_destination_state(rt, index, value)
+
+
+def _configure_state_dst1_zero_dst2(rt: HookRuntime) -> None:
+    _set_destination_state(rt, 0, DST1)
+    _set_destination_state(rt, 1, b"\x00" * 20)
 
 
 def gather_balance_gate_input(rt: HookRuntime) -> BalanceGateInput:
@@ -176,6 +258,57 @@ def gather_state_counter_outcome(rt: HookRuntime, verdict: str) -> StateCounterO
     return StateCounterOutcome(
         verdict=verdict,
         counter_state=_u64_be(rt.state_db.get(b"CNT")),
+    )
+
+
+def _destination_is_set(raw: bytes | None) -> bool:
+    return raw is not None and len(raw) == 20 and any(raw)
+
+
+def _destinations_from_state(rt: HookRuntime) -> list[bool]:
+    destinations = [
+        _destination_is_set(rt.state_db.get(key))
+        for key in DST_KEYS
+    ]
+    return destinations if any(destinations) else []
+
+
+def _destinations_from_params(rt: HookRuntime) -> list[bool]:
+    return [
+        _destination_is_set(rt.params.get(key))
+        for key in DST_KEYS
+    ]
+
+
+def _multi_invoke_emit_config_action(rt: HookRuntime) -> MultiInvokeEmitConfigAction:
+    if b"RSET" in rt.params:
+        return MultiInvokeEmitConfigAction(kind="reset", destinations=[])
+    destinations = _destinations_from_params(rt)
+    if any(destinations):
+        return MultiInvokeEmitConfigAction(
+            kind="setDestinations",
+            destinations=destinations,
+        )
+    return MultiInvokeEmitConfigAction(kind="noParams", destinations=[])
+
+
+def gather_multi_invoke_emit_input(rt: HookRuntime) -> MultiInvokeEmitInput:
+    return MultiInvokeEmitInput(
+        tx_kind=_tx_kind(rt),
+        owner=rt.hook_account == rt.otxn_account,
+        destinations=_destinations_from_state(rt),
+        config_action=_multi_invoke_emit_config_action(rt),
+    )
+
+
+def gather_multi_invoke_emit_outcome(
+    rt: HookRuntime,
+    verdict: str,
+) -> MultiInvokeEmitOutcome:
+    return MultiInvokeEmitOutcome(
+        verdict=verdict,
+        destinations=_destinations_from_state(rt),
+        emitted_count=len(rt.emitted_txns),
     )
 
 
@@ -214,6 +347,23 @@ def _run_state_counter_case(name: str, hook_wasm: bytes, configure) -> StateCoun
     )
 
 
+def _run_multi_invoke_emit_case(
+    name: str,
+    hook_wasm: bytes,
+    configure,
+) -> MultiInvokeEmitCase:
+    rt = _base_runtime()
+    configure(rt)
+    lean_input = gather_multi_invoke_emit_input(rt)
+    result = rt.run(hook_wasm, label="invoke_multi_invoke_emit.c")
+    verdict = _verdict(result)
+    return MultiInvokeEmitCase(
+        name=name,
+        input=lean_input,
+        outcome=gather_multi_invoke_emit_outcome(rt, verdict),
+    )
+
+
 def _lean_bool(value: bool) -> str:
     return "true" if value else "false"
 
@@ -224,6 +374,22 @@ def _lean_balance(value: int | None) -> str:
 
 def _lean_tx_kind(value: str) -> str:
     return f".{value}"
+
+
+def _lean_bool_list(values: list[bool]) -> str:
+    if not values:
+        return "[]"
+    return "[" + ", ".join(_lean_bool(value) for value in values) + "]"
+
+
+def _lean_config_action(action: MultiInvokeEmitConfigAction) -> str:
+    if action.kind == "setDestinations":
+        dst1, dst2, dst3 = action.destinations
+        return (
+            f".setDestinations {_lean_bool(dst1)} "
+            f"{_lean_bool(dst2)} {_lean_bool(dst3)}"
+        )
+    return f".{action.kind}"
 
 
 def _lean_balance_gate_case(case: BalanceGateCase) -> str:
@@ -254,17 +420,39 @@ example :
 """
 
 
+def _lean_multi_invoke_emit_case(case: MultiInvokeEmitCase) -> str:
+    inp = case.input
+    out = case.outcome
+    return f"""-- generated from hookz runtime case: {case.name}
+example :
+    Hookz.Contracts.MultiInvokeEmit.expected {{
+      txKind := {_lean_tx_kind(inp.tx_kind)},
+      owner := {_lean_bool(inp.owner)},
+      destinations := {_lean_bool_list(inp.destinations)},
+      configAction := {_lean_config_action(inp.config_action)}
+    }} = {{
+      verdict := .{out.verdict},
+      destinations := {_lean_bool_list(out.destinations)},
+      emittedCount := {out.emitted_count}
+    }} := by
+  native_decide
+"""
+
+
 def generate_lean(
     balance_gate_cases: list[BalanceGateCase],
     state_counter_cases: list[StateCounterCase],
+    multi_invoke_emit_cases: list[MultiInvokeEmitCase],
 ) -> str:
     body = "\n".join(
         [
             *(_lean_balance_gate_case(case) for case in balance_gate_cases),
             *(_lean_state_counter_case(case) for case in state_counter_cases),
+            *(_lean_multi_invoke_emit_case(case) for case in multi_invoke_emit_cases),
         ]
     )
     return f"""import Hookz.Contracts.BalanceGate
+import Hookz.Contracts.MultiInvokeEmit
 import Hookz.Contracts.StateCounter
 
 open Hookz.Contracts
@@ -353,10 +541,70 @@ def main() -> int:
         ),
     ]
 
+    multi_invoke_emit_wasm = _compile_hook("multi_invoke_emit")
+    multi_invoke_emit_cases = [
+        _run_multi_invoke_emit_case(
+            "set_dst1",
+            multi_invoke_emit_wasm,
+            _configure_owner_invoke_dst1,
+        ),
+        _run_multi_invoke_emit_case(
+            "set_all_three",
+            multi_invoke_emit_wasm,
+            _configure_owner_invoke_all_destinations,
+        ),
+        _run_multi_invoke_emit_case(
+            "reset_clears_all",
+            multi_invoke_emit_wasm,
+            _configure_owner_invoke_reset,
+        ),
+        _run_multi_invoke_emit_case(
+            "non_owner_rejected",
+            multi_invoke_emit_wasm,
+            _configure_non_owner_invoke_dst1,
+        ),
+        _run_multi_invoke_emit_case(
+            "no_params_rejected",
+            multi_invoke_emit_wasm,
+            _configure_owner_invoke_missing_param,
+        ),
+        _run_multi_invoke_emit_case(
+            "no_destinations_set",
+            multi_invoke_emit_wasm,
+            _noop,
+        ),
+        _run_multi_invoke_emit_case(
+            "emit_to_one_destination",
+            multi_invoke_emit_wasm,
+            _configure_state_dst1,
+        ),
+        _run_multi_invoke_emit_case(
+            "emit_to_three_destinations",
+            multi_invoke_emit_wasm,
+            _configure_state_all_destinations,
+        ),
+        _run_multi_invoke_emit_case(
+            "zero_dst_skipped",
+            multi_invoke_emit_wasm,
+            _configure_state_dst1_zero_dst2,
+        ),
+        _run_multi_invoke_emit_case(
+            "non_payment_skipped",
+            multi_invoke_emit_wasm,
+            _make_other_tx,
+        ),
+    ]
+
     out_dir = Path(os.environ.get("HOOKZ_LEAN_SMOKE_DIR", "/tmp/hookz-lean-contract-smoke"))
     out_dir.mkdir(parents=True, exist_ok=True)
     lean_file = out_dir / "GeneratedRuntimeCases.lean"
-    lean_file.write_text(generate_lean(balance_gate_cases, state_counter_cases))
+    lean_file.write_text(
+        generate_lean(
+            balance_gate_cases,
+            state_counter_cases,
+            multi_invoke_emit_cases,
+        )
+    )
 
     cmd = [_lake_binary(), "env", "lean", str(lean_file)]
     result = subprocess.run(cmd, cwd=ROOT)
