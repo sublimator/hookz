@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Crude Python-to-Lean contract smoke check.
 
-This is intentionally narrow: run a few real balance_gate hook executions,
-distill HookRuntime state into the Lean BalanceGate.Input shape, generate Lean
-examples asserting the model matches the observed hook verdict, and ask Lean to
-check the generated file.
+This is intentionally narrow: run a few real hook executions, distill
+HookRuntime state into Lean input shapes, generate Lean examples asserting the
+models match observed hook outcomes, and ask Lean to check the generated file.
 """
 
 from __future__ import annotations
@@ -44,10 +43,31 @@ class BalanceGateInput:
 
 
 @dataclass
-class GeneratedCase:
+class BalanceGateCase:
     name: str
     input: BalanceGateInput
     verdict: str
+
+
+@dataclass
+class StateCounterInput:
+    tx_kind: str
+    owner: bool
+    counter_state: int | None
+    counter_param: int | None
+
+
+@dataclass
+class StateCounterOutcome:
+    verdict: str
+    counter_state: int | None
+
+
+@dataclass
+class StateCounterCase:
+    name: str
+    input: StateCounterInput
+    outcome: StateCounterOutcome
 
 
 def _base_runtime() -> HookRuntime:
@@ -56,6 +76,10 @@ def _base_runtime() -> HookRuntime:
     rt.otxn_account = BOB_ACCID
     rt.otxn_type = hookapi.ttPAYMENT
     return rt
+
+
+def _noop(_rt: HookRuntime) -> None:
+    pass
 
 
 def _put_account_balance(rt: HookRuntime, account: str, balance_drops: int) -> None:
@@ -85,11 +109,73 @@ def _min_balance_from_params(rt: HookRuntime) -> int:
     return int(xfl_to_float(xfl))
 
 
+def _u64_be(raw: bytes | None) -> int | None:
+    if raw is None or len(raw) != 8:
+        return None
+    return struct.unpack(">Q", raw)[0]
+
+
+def _set_counter_state(rt: HookRuntime, value: int) -> None:
+    rt.state_db[b"CNT"] = struct.pack(">Q", value)
+
+
+def _set_counter_param(rt: HookRuntime, value: int) -> None:
+    rt.params[b"CNT"] = struct.pack(">Q", value)
+
+
+def _make_owner(rt: HookRuntime) -> None:
+    rt.otxn_account = rt.hook_account
+
+
+def _make_invoke(rt: HookRuntime) -> None:
+    rt.otxn_type = hookapi.ttINVOKE
+
+
+def _make_other_tx(rt: HookRuntime) -> None:
+    rt.otxn_type = hookapi.ttTRUST_SET
+
+
+def _configure_owner_invoke_set_counter(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _make_owner(rt)
+    _set_counter_param(rt, 42)
+    _set_counter_state(rt, 5)
+
+
+def _configure_owner_invoke_missing_param(rt: HookRuntime) -> None:
+    _make_invoke(rt)
+    _make_owner(rt)
+
+
 def gather_balance_gate_input(rt: HookRuntime) -> BalanceGateInput:
     return BalanceGateInput(
         outgoing=rt.hook_account == rt.otxn_account,
         sender_balance_drops=_sender_balance_from_ledger(rt),
         min_balance_drops=_min_balance_from_params(rt),
+    )
+
+
+def _tx_kind(rt: HookRuntime) -> str:
+    if rt.otxn_type == hookapi.ttPAYMENT:
+        return "payment"
+    if rt.otxn_type == hookapi.ttINVOKE:
+        return "invoke"
+    return "other"
+
+
+def gather_state_counter_input(rt: HookRuntime) -> StateCounterInput:
+    return StateCounterInput(
+        tx_kind=_tx_kind(rt),
+        owner=rt.hook_account == rt.otxn_account,
+        counter_state=_u64_be(rt.state_db.get(b"CNT")),
+        counter_param=_u64_be(rt.params.get(b"CNT")),
+    )
+
+
+def gather_state_counter_outcome(rt: HookRuntime, verdict: str) -> StateCounterOutcome:
+    return StateCounterOutcome(
+        verdict=verdict,
+        counter_state=_u64_be(rt.state_db.get(b"CNT")),
     )
 
 
@@ -101,18 +187,31 @@ def _verdict(result) -> str:
     raise RuntimeError(f"hook did not accept or reject: {result!r}")
 
 
-def _compile_balance_gate() -> bytes:
+def _compile_hook(name: str) -> bytes:
     config = load_config(toml_path=ROOT / "tests" / "e2e" / "hookz.toml")
     assert config.hooks is not None
-    return compile_hook(config.hooks["balance_gate"], config=config)
+    return compile_hook(config.hooks[name], config=config)
 
 
-def _run_case(name: str, hook_wasm: bytes, configure) -> GeneratedCase:
+def _run_balance_gate_case(name: str, hook_wasm: bytes, configure) -> BalanceGateCase:
     rt = _base_runtime()
     configure(rt)
     lean_input = gather_balance_gate_input(rt)
     result = rt.run(hook_wasm, label="balance_gate.c")
-    return GeneratedCase(name=name, input=lean_input, verdict=_verdict(result))
+    return BalanceGateCase(name=name, input=lean_input, verdict=_verdict(result))
+
+
+def _run_state_counter_case(name: str, hook_wasm: bytes, configure) -> StateCounterCase:
+    rt = _base_runtime()
+    configure(rt)
+    lean_input = gather_state_counter_input(rt)
+    result = rt.run(hook_wasm, label="basic_state_counter.c")
+    verdict = _verdict(result)
+    return StateCounterCase(
+        name=name,
+        input=lean_input,
+        outcome=gather_state_counter_outcome(rt, verdict),
+    )
 
 
 def _lean_bool(value: bool) -> str:
@@ -123,11 +222,15 @@ def _lean_balance(value: int | None) -> str:
     return "none" if value is None else f"some {value}"
 
 
-def _lean_case(case: GeneratedCase) -> str:
+def _lean_tx_kind(value: str) -> str:
+    return f".{value}"
+
+
+def _lean_balance_gate_case(case: BalanceGateCase) -> str:
     inp = case.input
     return f"""-- generated from hookz runtime case: {case.name}
 example :
-    expected {{
+    Hookz.Contracts.BalanceGate.expected {{
       outgoing := {_lean_bool(inp.outgoing)},
       senderBalanceDrops := {_lean_balance(inp.sender_balance_drops)},
       minBalanceDrops := {inp.min_balance_drops}
@@ -136,12 +239,35 @@ example :
 """
 
 
-def generate_lean(cases: list[GeneratedCase]) -> str:
-    body = "\n".join(_lean_case(case) for case in cases)
+def _lean_state_counter_case(case: StateCounterCase) -> str:
+    inp = case.input
+    out = case.outcome
+    return f"""-- generated from hookz runtime case: {case.name}
+example :
+    Hookz.Contracts.StateCounter.expected {{
+      txKind := {_lean_tx_kind(inp.tx_kind)},
+      owner := {_lean_bool(inp.owner)},
+      counterState := {_lean_balance(inp.counter_state)},
+      counterParam := {_lean_balance(inp.counter_param)}
+    }} = {{ verdict := .{out.verdict}, counterState := {_lean_balance(out.counter_state)} }} := by
+  native_decide
+"""
+
+
+def generate_lean(
+    balance_gate_cases: list[BalanceGateCase],
+    state_counter_cases: list[StateCounterCase],
+) -> str:
+    body = "\n".join(
+        [
+            *(_lean_balance_gate_case(case) for case in balance_gate_cases),
+            *(_lean_state_counter_case(case) for case in state_counter_cases),
+        ]
+    )
     return f"""import Hookz.Contracts.BalanceGate
+import Hookz.Contracts.StateCounter
 
 open Hookz.Contracts
-open Hookz.Contracts.BalanceGate
 
 {body}
 """
@@ -161,31 +287,31 @@ def _lake_binary() -> str:
 
 
 def main() -> int:
-    hook_wasm = _compile_balance_gate()
-    cases = [
-        _run_case(
+    balance_gate_wasm = _compile_hook("balance_gate")
+    balance_gate_cases = [
+        _run_balance_gate_case(
             "outgoing_always_passes",
-            hook_wasm,
-            lambda rt: setattr(rt, "otxn_account", rt.hook_account),
+            balance_gate_wasm,
+            _make_owner,
         ),
-        _run_case(
+        _run_balance_gate_case(
             "sender_exactly_at_minimum",
-            hook_wasm,
+            balance_gate_wasm,
             lambda rt: _put_account_balance(rt, BOB, 10_000_000),
         ),
-        _run_case(
+        _run_balance_gate_case(
             "sender_below_minimum",
-            hook_wasm,
+            balance_gate_wasm,
             lambda rt: _put_account_balance(rt, BOB, 5_000_000),
         ),
-        _run_case(
+        _run_balance_gate_case(
             "sender_not_in_ledger",
-            hook_wasm,
-            lambda rt: None,
+            balance_gate_wasm,
+            _noop,
         ),
-        _run_case(
+        _run_balance_gate_case(
             "custom_min_1_xah",
-            hook_wasm,
+            balance_gate_wasm,
             lambda rt: (
                 _set_min_balance(rt, 1_000_000),
                 _put_account_balance(rt, BOB, 5_000_000),
@@ -193,10 +319,44 @@ def main() -> int:
         ),
     ]
 
+    state_counter_wasm = _compile_hook("state_counter")
+    state_counter_cases = [
+        _run_state_counter_case(
+            "first_payment_sets_counter_to_1",
+            state_counter_wasm,
+            _noop,
+        ),
+        _run_state_counter_case(
+            "second_payment_increments",
+            state_counter_wasm,
+            lambda rt: _set_counter_state(rt, 5),
+        ),
+        _run_state_counter_case(
+            "owner_invoke_sets_counter",
+            state_counter_wasm,
+            _configure_owner_invoke_set_counter,
+        ),
+        _run_state_counter_case(
+            "non_owner_invoke_rejected",
+            state_counter_wasm,
+            _make_invoke,
+        ),
+        _run_state_counter_case(
+            "owner_invoke_missing_param_rejected",
+            state_counter_wasm,
+            _configure_owner_invoke_missing_param,
+        ),
+        _run_state_counter_case(
+            "non_payment_non_invoke_accepted",
+            state_counter_wasm,
+            _make_other_tx,
+        ),
+    ]
+
     out_dir = Path(os.environ.get("HOOKZ_LEAN_SMOKE_DIR", "/tmp/hookz-lean-contract-smoke"))
     out_dir.mkdir(parents=True, exist_ok=True)
-    lean_file = out_dir / "BalanceGateGenerated.lean"
-    lean_file.write_text(generate_lean(cases))
+    lean_file = out_dir / "GeneratedRuntimeCases.lean"
+    lean_file.write_text(generate_lean(balance_gate_cases, state_counter_cases))
 
     cmd = [_lake_binary(), "env", "lean", str(lean_file)]
     result = subprocess.run(cmd, cwd=ROOT)
