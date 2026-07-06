@@ -120,12 +120,17 @@ The branch currently carries four specimen models:
 - `Mint`: coarse emitted-transaction model over presence of `sfBlob`.
 - `MultiInvokeEmit`: state-configured fanout model that keeps only destination
   presence and emitted transaction count, not emitted transaction bytes.
+- `Treasury`: coarse parameter/action/cooldown model for withdrawal and claim
+  paths.
+- `Reward`: claim-reward model for pass-through, disabled rewards, first claim,
+  delay rejection, and reward emission.
 
 The contrast is intentional. `BalanceGate` proves a decision predicate,
 `BasicNative` proves pure transaction classification, `StateCounter` proves a
 state update, `Mint` proves a one-emission boundary, and `MultiInvokeEmit`
-proves count-based fanout. These are the first vocabularies to stress before
-adding generated cases.
+proves count-based fanout. `Treasury` and `Reward` show the next pressure point:
+several low-level host facts collapse into hook-specific boolean predicates.
+These are the first vocabularies to stress before adding generated cases.
 
 ## Projected-Source Shape
 
@@ -156,3 +161,24 @@ Lean files use the corresponding Lean marker syntax:
 ...
 -- @@end model
 ```
+
+## First Crude Integration
+
+The first working Python-to-Lean bridge is
+`scripts/lean_contract_smoke.py`. It is intentionally narrow and rough:
+
+1. Compile `balance_gate` with the existing hookz compiler.
+2. Build several concrete `HookRuntime` worlds.
+3. Run the real WASM hook for each world.
+4. Gather the Lean input imperatively from the runtime:
+   - outgoing status from `hook_account == otxn_account`
+   - sender balance by decoding the serialized `AccountRoot` in `rt.ledger`
+   - minimum balance from `MIN_BAL` or the default
+5. Generate a temporary Lean file containing examples where the Lean model's
+   expected verdict must equal the observed hook verdict.
+6. Run `lake env lean` on the generated file.
+
+This is not the final API. The useful fact is that the direction works:
+runtime world -> hook execution -> distilled Lean input -> generated checked
+examples. The next iteration should generalize the case generation interface
+without making every hook adapter pretend to expose the same fields.
