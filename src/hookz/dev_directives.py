@@ -43,6 +43,19 @@ class HookzDirective:
     code: str
 
 
+@dataclass(frozen=True)
+class HookzLean4Annotation:
+    """A metadata-only Lean4 annotation found in a `hookz:` comment."""
+
+    line: int
+    column: int
+    start_byte: int
+    end_byte: int
+    adapter: str
+    model: str
+    attrs: dict[str, str]
+
+
 def _walk_comments(node):
     if node.type == "comment":
         yield node
@@ -56,7 +69,10 @@ def _line_directive(raw: str) -> str | None:
     body = raw[2:].strip()
     if not body.startswith("hookz:"):
         return None
-    return body[len("hookz:"):].strip()
+    directive = body[len("hookz:"):].strip()
+    if directive.startswith("lean4 "):
+        return None
+    return directive
 
 
 def _block_directive(raw: str) -> str | None:
@@ -69,7 +85,30 @@ def _block_directive(raw: str) -> str | None:
     code = stripped[len("hookz:"):]
     if code.startswith("\n"):
         code = code[1:]
+    if code.lstrip().startswith("lean4 "):
+        return None
     return textwrap.dedent(code).strip()
+
+
+def _lean4_annotation(raw: str) -> dict[str, str] | None:
+    if not raw.startswith("//"):
+        return None
+    body = raw[2:].strip()
+    if not body.startswith("hookz:"):
+        return None
+    directive = body[len("hookz:"):].strip()
+    if not directive.startswith("lean4 "):
+        return None
+
+    attrs: dict[str, str] = {}
+    for token in directive[len("lean4 "):].split():
+        key, sep, value = token.partition("=")
+        if not sep:
+            continue
+        attrs[key] = value
+    if "adapter" not in attrs or "model" not in attrs:
+        return None
+    return attrs
 
 
 def extract_hookz_directives(source: str | bytes | Path) -> list[HookzDirective]:
@@ -100,6 +139,36 @@ def extract_hookz_directives(source: str | bytes | Path) -> list[HookzDirective]
             code=code,
         ))
     return directives
+
+
+def extract_hookz_lean4_annotations(source: str | bytes | Path) -> list[HookzLean4Annotation]:
+    """Extract metadata-only `hookz: lean4` annotations from C comments."""
+    if isinstance(source, Path):
+        source_bytes = source.read_bytes()
+    elif isinstance(source, bytes):
+        source_bytes = source
+    else:
+        source_bytes = source.encode()
+
+    parser = Parser(C_LANGUAGE)
+    tree = parser.parse(source_bytes)
+
+    annotations: list[HookzLean4Annotation] = []
+    for node in _walk_comments(tree.root_node):
+        raw = source_bytes[node.start_byte:node.end_byte].decode(errors="replace")
+        attrs = _lean4_annotation(raw)
+        if attrs is None:
+            continue
+        annotations.append(HookzLean4Annotation(
+            line=node.start_point[0] + 1,
+            column=node.start_point[1] + 1,
+            start_byte=node.start_byte,
+            end_byte=node.end_byte,
+            adapter=attrs["adapter"],
+            model=attrs["model"],
+            attrs=attrs,
+        ))
+    return annotations
 
 
 def render_dev_source(source: str | Path) -> str:

@@ -1,4 +1,5 @@
 // This hook just tests GenesisMint transactor, it is not for production use
+// hookz: lean4 adapter=mint model=Hookz.Contracts.Mint.expected
 
 #include "hookapi.h"
 #define ASSERT(x)\

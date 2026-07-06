@@ -1,3 +1,4 @@
+// hookz: lean4 adapter=treasury model=Hookz.Contracts.Treasury.expected
 #include "hookapi.h"
 #include "encode_macros.h"
 

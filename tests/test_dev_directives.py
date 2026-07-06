@@ -6,7 +6,11 @@ import pytest
 
 from hookz.compiler import compile_hook_dev
 from hookz.config import load_config
-from hookz.dev_directives import extract_hookz_directives, render_dev_source
+from hookz.dev_directives import (
+    extract_hookz_directives,
+    extract_hookz_lean4_annotations,
+    render_dev_source,
+)
 from hookz.dev_lean import dispatch_dev_lean_checks, lean_available, render_dev_lean_checks
 from hookz.runtime import HookRuntime
 from location_consts import WASI_SDK
@@ -34,6 +38,14 @@ int64_t hook(uint32_t reserved)
 }
 """
 
+LEAN4_METADATA_SOURCE = r"""
+// hookz: lean4 adapter=state_counter model=Hookz.Contracts.StateCounter.expected
+int64_t hook(uint32_t reserved)
+{
+    return 0;
+}
+"""
+
 
 def test_extracts_block_directive():
     directives = extract_hookz_directives(DEV_DIRECTIVE_SOURCE)
@@ -49,6 +61,17 @@ def test_renders_dev_source_with_prelude_and_unwrapped_code():
     assert "extern int64_t hookz_dev_check" in rendered
     assert "HOOKZ_LEAN4_U64(\"count\", count);" in rendered
     assert "hookz:" not in rendered
+
+
+def test_extracts_lean4_metadata_without_unwrapping_it():
+    annotations = extract_hookz_lean4_annotations(LEAN4_METADATA_SOURCE)
+    rendered = render_dev_source(LEAN4_METADATA_SOURCE)
+
+    assert len(annotations) == 1
+    assert annotations[0].adapter == "state_counter"
+    assert annotations[0].model == "Hookz.Contracts.StateCounter.expected"
+    assert "hookz: lean4 adapter=state_counter" in rendered
+    assert "extern int64_t hookz_dev_check" not in rendered
 
 
 @pytest.mark.skipif(WASI_SDK is None, reason="wasi-sdk not found")

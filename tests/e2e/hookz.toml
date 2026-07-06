@@ -28,3 +28,88 @@ invoke_param = "hooks/XahauHooks101/Basic_Invoke_Parameters/invoke_parameter_exa
 multi_iou_remit = "hooks/XahauHooks101/Remit_IOU/invoke_multi_iou_remit.c"
 multi_uri_remit = "hooks/XahauHooks101/Remit_URI/invoke_multi_uri_remit.c"
 multi_invoke_emit = "hooks/XahauHooks101/Emit_Invoke/invoke_multi_invoke_emit.c"
+
+[lean4.govern]
+adapter = "govern"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.mint]
+adapter = "mint"
+model = "Hookz.Contracts.Mint.expected"
+status = "modeled"
+
+[lean4.nftoken]
+adapter = "nftoken"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.reward]
+adapter = "reward"
+model = "Hookz.Contracts.Reward.expected"
+status = "modeled"
+
+[lean4.balance_gate]
+adapter = "balance_gate"
+model = "Hookz.Contracts.BalanceGate.expected"
+status = "modeled"
+
+[lean4.treasury]
+adapter = "treasury"
+model = "Hookz.Contracts.Treasury.expected"
+status = "modeled"
+
+[lean4.accept_incoming_xah]
+adapter = "accept_incoming_xah"
+model = "Hookz.Contracts.BasicNative.AcceptIncomingXah.expected"
+status = "modeled"
+
+[lean4.reject_incoming_xah]
+adapter = "reject_incoming_xah"
+model = "Hookz.Contracts.BasicNative.RejectIncomingXah.expected"
+status = "modeled"
+
+[lean4.accept_incoming_min]
+adapter = "accept_incoming_min"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.reject_incoming_max]
+adapter = "reject_incoming_max"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.state_counter]
+adapter = "state_counter"
+model = "Hookz.Contracts.StateCounter.expected"
+status = "modeled"
+
+[lean4.state_toggle]
+adapter = "state_toggle"
+model = "Hookz.Contracts.StateToggle.expected"
+status = "modeled"
+
+[lean4.install_param]
+adapter = "install_param"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.invoke_param]
+adapter = "invoke_param"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.multi_iou_remit]
+adapter = "multi_iou_remit"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.multi_uri_remit]
+adapter = "multi_uri_remit"
+status = "todo"
+note = "No Lean specimen yet."
+
+[lean4.multi_invoke_emit]
+adapter = "multi_invoke_emit"
+model = "Hookz.Contracts.MultiInvokeEmit.expected"
+status = "modeled"
