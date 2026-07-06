@@ -118,11 +118,14 @@ The branch currently carries four specimen models:
 - `StateToggle`: owner-gated state mutation with payment paths that always
   accept while preserving toggle state.
 - `Mint`: coarse emitted-transaction model over presence of `sfBlob`.
+- `MultiInvokeEmit`: state-configured fanout model that keeps only destination
+  presence and emitted transaction count, not emitted transaction bytes.
 
 The contrast is intentional. `BalanceGate` proves a decision predicate,
 `BasicNative` proves pure transaction classification, `StateCounter` proves a
-state update, and `Mint` proves an emitted transaction count. These are the
-first four vocabularies to stress before adding generated cases.
+state update, `Mint` proves a one-emission boundary, and `MultiInvokeEmit`
+proves count-based fanout. These are the first vocabularies to stress before
+adding generated cases.
 
 ## Projected-Source Shape
 
