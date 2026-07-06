@@ -49,9 +49,16 @@ _WASI_SDK_SEARCH = [
 
 
 @dataclass
+class HookEntry:
+    source: Path
+    lean: Path | None = None
+
+
+@dataclass
 class HookzConfig:
     paths: dict[str, Path] = field(default_factory=dict)
     hooks: dict[str, Path] | None = None
+    hook_entries: dict[str, HookEntry] | None = None
     compile_target: str = "wasm32-wasip1"
     extra_cflags: list[str] | None = None
     exports: list[str] | None = None
@@ -136,6 +143,41 @@ def _resolve_path(raw: str, base: Path, variables: dict[str, str]) -> Path:
     return p.resolve()
 
 
+def _resolve_hook_entry(
+    name: str,
+    raw: object,
+    base: Path,
+    variables: dict[str, str],
+) -> HookEntry:
+    """Normalize a hook entry from string shorthand or expanded object form."""
+    if isinstance(raw, str):
+        return HookEntry(source=_resolve_path(raw, base, variables))
+
+    if not isinstance(raw, dict):
+        raise ConfigError(
+            f"hooks.{name} must be a source string or a table with source/lean"
+        )
+
+    allowed_keys = {"source", "lean"}
+    unknown_keys = set(raw) - allowed_keys
+    if unknown_keys:
+        unknown = ", ".join(sorted(unknown_keys))
+        raise ConfigError(f"hooks.{name} has unknown keys: {unknown}")
+
+    source_raw = raw.get("source")
+    if not isinstance(source_raw, str) or not source_raw:
+        raise ConfigError(f"hooks.{name}.source is required")
+
+    lean_raw = raw.get("lean")
+    if lean_raw is not None and (not isinstance(lean_raw, str) or not lean_raw):
+        raise ConfigError(f"hooks.{name}.lean must be a path string")
+
+    return HookEntry(
+        source=_resolve_path(source_raw, base, variables),
+        lean=_resolve_path(lean_raw, base, variables) if lean_raw else None,
+    )
+
+
 def _load_toml(path: Path) -> tuple[dict, Path]:
     """Load a toml file, returning (data, base_dir). Merges .hookz.local.toml."""
     with open(path, "rb") as f:
@@ -147,22 +189,38 @@ def _load_toml(path: Path) -> tuple[dict, Path]:
         with open(local_path, "rb") as f:
             local_data = tomllib.load(f)
         for section, values in local_data.items():
-            if isinstance(values, dict):
-                data.setdefault(section, {}).update(values)
-            else:
-                data[section] = values
+            data[section] = _merge_section(section, data.get(section), values)
 
     return data, base
+
+
+def _merge_hooks(base: dict, overlay: dict) -> dict:
+    """Merge [hooks] while preserving source when only lean is overridden."""
+    merged = dict(base)
+    for key, value in overlay.items():
+        current = merged.get(key)
+        if isinstance(current, dict) and isinstance(value, dict):
+            merged[key] = {**current, **value}
+        elif isinstance(current, str) and isinstance(value, dict):
+            merged[key] = {"source": current, **value}
+        else:
+            merged[key] = value
+    return merged
+
+
+def _merge_section(section: str, base: object, overlay: object) -> object:
+    if isinstance(base, dict) and isinstance(overlay, dict):
+        if section == "hooks":
+            return _merge_hooks(base, overlay)
+        return {**base, **overlay}
+    return overlay
 
 
 def _merge_toml(base: dict, overlay: dict) -> dict:
     """Merge overlay into base (overlay wins). Shallow merge per section."""
     merged = dict(base)
     for key, value in overlay.items():
-        if isinstance(value, dict) and isinstance(merged.get(key), dict):
-            merged[key] = {**merged[key], **value}
-        else:
-            merged[key] = value
+        merged[key] = _merge_section(key, merged.get(key), value)
     return merged
 
 
@@ -311,15 +369,23 @@ def _build_config(toml_data: dict, base: Path,
 
     # Resolve [hooks] with all paths available as variables
     hooks = None
+    hook_entries = None
     if hooks_cfg:
         resolved_strs = {k: str(v) for k, v in paths.items()}
-        hooks = {}
-        for name, source_path in hooks_cfg.items():
-            hooks[name] = _resolve_path(source_path, base, resolved_strs)
+        hook_entries = {}
+        for name, raw_entry in hooks_cfg.items():
+            hook_entries[name] = _resolve_hook_entry(
+                name, raw_entry, base, resolved_strs
+            )
+        hooks = {
+            name: entry.source
+            for name, entry in hook_entries.items()
+        }
 
     return HookzConfig(
         paths=paths,
         hooks=hooks,
+        hook_entries=hook_entries,
         compile_target=compile_cfg.get("target", "wasm32-wasip1"),
         extra_cflags=compile_cfg.get("extra_cflags"),
         exports=compile_cfg.get("exports", ["hook", "cbak"]),

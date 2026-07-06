@@ -16,12 +16,13 @@ from hookz.wasm.clean import clean_hook, CleanError
 
 def _compile_hook(source: str) -> bytes:
     """Compile a hook C file and return raw WASM bytes."""
-    subprocess.run(
-        ["uv", "run", "hookz", "debug-compile", source],
-        cwd="tests/e2e", capture_output=True, check=True,
-    )
-    wasm_path = Path("tests/e2e") / Path(source).with_suffix(".wasm")
-    return wasm_path.read_bytes()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        wasm_path = Path(tmpdir) / f"{Path(source).stem}.wasm"
+        subprocess.run(
+            ["uv", "run", "hookz", "debug-compile", "-o", str(wasm_path), source],
+            cwd="tests/e2e", capture_output=True, check=True,
+        )
+        return wasm_path.read_bytes()
 
 
 def _compile_and_strip(source: str) -> bytes:

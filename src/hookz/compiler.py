@@ -7,9 +7,10 @@ Supports two modes:
 
 from __future__ import annotations
 
+from dataclasses import replace
+from pathlib import Path
 import subprocess
 import tempfile
-from pathlib import Path
 
 # xahaud Guard.h rejects memory.fill (0xFC 0x0B) and memory.copy (0xFC 0x0A)
 # when GuardRuleFix20250131 is active. These come from LLVM lowering
@@ -134,6 +135,41 @@ def compile_hook(
 
     wasm_bytes = out_path.read_bytes()
     return wasm_bytes
+
+
+def compile_hook_dev(
+    source: Path,
+    output: Path | None = None,
+    config: HookzConfig | None = None,
+    debug: bool = True,
+    optimize: bool = False,
+) -> bytes:
+    """Compile a hook after unwrapping development-only `hookz:` comments.
+
+    The original source is not modified. A temporary source file is generated
+    with hookz dev macros and host-call externs prepended, then compiled through
+    the normal hook compiler.
+    """
+    from hookz.dev_directives import render_dev_source
+
+    source = Path(source)
+    if config is None:
+        config = load_config(source_file=source)
+
+    extra_cflags = list(config.extra_cflags or [])
+    extra_cflags.append(f"-I{source.resolve().parent}")
+    dev_config = replace(config, extra_cflags=extra_cflags)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dev_source = Path(tmpdir) / source.name
+        dev_source.write_text(render_dev_source(source))
+        return compile_hook(
+            dev_source,
+            output=output,
+            config=dev_config,
+            debug=debug,
+            optimize=optimize,
+        )
 
 
 def compile_hook_two_stage(

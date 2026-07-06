@@ -472,20 +472,27 @@ def config_path(name):
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.option("--no-lean", is_flag=True, help="Compile test hooks without dev Lean directives.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
-def test(pytest_args):
+def test(no_lean, pytest_args):
     """Run tests via pytest (extra args passed through)."""
     import pytest
-    sys.exit(pytest.main(list(pytest_args)))
+    args = list(pytest_args)
+    if no_lean:
+        args = ["--hookz-no-lean"] + args
+    sys.exit(pytest.main(args))
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.option("--no-lean", is_flag=True, help="Compile test hooks without dev Lean directives.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
-def coverage(pytest_args):
+def coverage(no_lean, pytest_args):
     """Run tests and show coverage report."""
     import pytest
 
     args = list(pytest_args)
+    if no_lean:
+        args = ["--hookz-no-lean"] + args
 
     if "-v" not in args and "--verbose" not in args:
         args = ["-v"] + args
@@ -578,9 +585,10 @@ def show(list_all, name):
 @cli.command("debug-compile")
 @click.argument("source", type=click.Path(exists=True))
 @click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path.")
-def debug_compile(source, output):
+@click.option("--dev-directives", is_flag=True, help="Unwrap hookz: comments into dev-only host calls.")
+def debug_compile(source, output, dev_directives):
     """Check if a hook compiles (debug build, not for deployment)."""
-    from hookz.compiler import compile_hook
+    from hookz.compiler import compile_hook, compile_hook_dev
     from hookz.config import load_config
 
     source = Path(source)
@@ -590,8 +598,10 @@ def debug_compile(source, output):
         output = Path(output)
 
     config = load_config()
-    wasm = compile_hook(source, output, config, debug=True, optimize=False)
-    print(f"Debug-compiled {source.name} → {output} ({len(wasm)} bytes)")
+    compile_fn = compile_hook_dev if dev_directives else compile_hook
+    wasm = compile_fn(source, output, config, debug=True, optimize=False)
+    mode = " with dev directives" if dev_directives else ""
+    print(f"Debug-compiled{mode} {source.name} → {output} ({len(wasm)} bytes)")
     sys.exit(0)
 
 

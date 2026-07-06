@@ -67,6 +67,7 @@ class HookResult:
     return_msg: bytes = b""
     return_code: int = 0
     call_log: list[HostCall] = field(default_factory=list)
+    dev_events: list[dict] = field(default_factory=list)
     error: Exception | None = None
 
 
@@ -121,6 +122,8 @@ class HookRuntime:
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
+        self.dev_events: list[dict] = []
+        self._dev_pending_events: list[dict] = []
         self.emitted_txns: list[bytes] = []
         self.traces: list = []  # list[Trace] from handlers.core
         self.coverage = CoverageTracker()
@@ -230,6 +233,8 @@ class HookRuntime:
         result = HookResult()
         self.call_log = []
         self.traces = []
+        self.dev_events = []
+        self._dev_pending_events = []
         # Preserve markers if already loaded
         markers = self.coverage._markers
         self.coverage = CoverageTracker()
@@ -275,6 +280,7 @@ class HookRuntime:
             result.error = e
 
         result.call_log = self.call_log
+        result.dev_events = self.dev_events
 
         # Merge coverage into shared tracker(s)
         if self._shared_coverage is not None:

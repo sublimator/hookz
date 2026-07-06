@@ -34,7 +34,14 @@ int64_t hook(uint32_t reserved)
             equal = 1;
 
     if (equal)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 1);
+        HOOKZ_LEAN4_U64("verdict_accept", 1);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         DONE("balance_gate: outgoing — pass.");
+    }
 
     // Read minimum balance from parameter (default 10 XAH = 10M drops)
     int64_t min_balance = float_set(-6, 10); // 10 * 10^-6 ... no wait
@@ -52,27 +59,75 @@ int64_t hook(uint32_t reserved)
     // Look up sender's AccountRoot
     uint8_t kl[34];
     if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, SBUF(otxn_acc), 0, 0, 0, 0) != 34)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 0);
+        HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         NOPE("balance_gate: keylet failed.");
+    }
 
     if (slot_set(SBUF(kl), 1) != 1)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 0);
+        HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         NOPE("balance_gate: could not load account.");
+    }
 
     // Navigate to Balance field
     if (slot_subfield(1, sfBalance, 2) != 2)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 0);
+        HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         NOPE("balance_gate: no balance field.");
+    }
 
     // Read balance as XFL
     int64_t balance = slot_float(2);
     if (balance < 0)
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 0);
+        HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         NOPE("balance_gate: could not read balance.");
+    }
 
     trace_float((uint32_t)"bal", 3, balance);
     trace_float((uint32_t)"min", 3, min_balance);
 
     // Compare: balance >= min_balance
     if (float_compare(balance, min_balance, COMPARE_LESS))
+    {
+        /* hookz:
+        HOOKZ_LEAN4_U64("outgoing", 0);
+        HOOKZ_LEAN4_I64("sender_balance_xfl", balance);
+        HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+        HOOKZ_LEAN4_U64("verdict_accept", 0);
+        HOOKZ_LEAN4_CHECK("after_decision");
+        */
         NOPE("balance_gate: sender balance too low.");
+    }
 
+    /* hookz:
+    HOOKZ_LEAN4_U64("outgoing", 0);
+    HOOKZ_LEAN4_I64("sender_balance_xfl", balance);
+    HOOKZ_LEAN4_I64("min_balance_xfl", min_balance);
+    HOOKZ_LEAN4_U64("verdict_accept", 1);
+    HOOKZ_LEAN4_CHECK("after_decision");
+    */
     DONE("balance_gate: pass.");
 }
 
