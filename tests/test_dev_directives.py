@@ -14,14 +14,19 @@ from hookz.dev_directives import (
     render_dev_source,
 )
 from hookz.dev_lean import (
+    DevCheckContext,
     DevLeanError,
+    capture_u64,
     dispatch_dev_lean_checks,
+    import_module,
     lean_available,
+    register_dev_lean_adapter,
     render_dev_lean_checks,
 )
 from hookz.ledger import account_root
 from hookz.runtime import Hook, HookRuntime
 from hookz.xfl import float_to_xfl
+from e2e.lean_adapters import register_lean_adapters
 from location_consts import WASI_SDK
 
 
@@ -34,6 +39,37 @@ ALICE_ACCID = bytes.fromhex("b5f762798a53d543a014caf8b297cff8f2f937e8")
 BOB = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
 BOB_ACCID = bytes.fromhex("f667b0ca50cc7709a220b0561b85e53a48461fa8")
 SENDER_ACCID = bytes.fromhex("01" * 20)
+
+
+def _state_counter_after_increment(
+    captures: dict[str, dict],
+    context: DevCheckContext,
+) -> str:
+    before = capture_u64(captures, "before_count")
+    after = capture_u64(captures, "count")
+    lean_import = import_module(context, "Hookz.Contracts.StateCounter")
+    model_module = "Hookz.Contracts.StateCounter"
+    return f"""import {lean_import}
+
+open Hookz.Contracts
+
+-- generated from hookz dev checkpoint: state_counter.after_increment
+example :
+    {model_module}.expected {{
+      txKind := .payment,
+      owner := false,
+      counterState := some {before},
+      counterParam := none
+    }} = {{ verdict := .accept, counterState := some {after} }} := by
+  native_decide
+"""
+
+
+register_dev_lean_adapter(
+    "state_counter.after_increment",
+    _state_counter_after_increment,
+)
+register_lean_adapters()
 
 
 DEV_DIRECTIVE_SOURCE = r"""

@@ -36,6 +36,31 @@ class DevLeanError(RuntimeError):
     """Raised when a development Lean checkpoint cannot be checked."""
 
 
+DevLeanAdapter = Callable[[dict[str, dict], DevCheckContext], str]
+
+_ADAPTERS: dict[str, DevLeanAdapter] = {}
+
+
+def register_dev_lean_adapter(tag: str, adapter: DevLeanAdapter) -> None:
+    """Register a renderer for a development Lean checkpoint tag."""
+    if not tag or not isinstance(tag, str):
+        raise DevLeanError("Lean dev adapter tag must be a non-empty string")
+    _ADAPTERS[tag] = adapter
+
+
+def clear_dev_lean_adapters() -> None:
+    """Clear registered adapters.
+
+    Intended for tests that need registry isolation.
+    """
+    _ADAPTERS.clear()
+
+
+def registered_dev_lean_adapters() -> dict[str, DevLeanAdapter]:
+    """Return a copy of the current adapter registry."""
+    return dict(_ADAPTERS)
+
+
 def _lake_binary() -> str | None:
     configured = os.environ.get("LAKE")
     if configured:
@@ -64,7 +89,7 @@ def _capture_map(events: list[dict]) -> dict[str, dict]:
     return captures
 
 
-def _required_u64(captures: dict[str, dict], name: str) -> int:
+def capture_u64(captures: dict[str, dict], name: str) -> int:
     event = captures.get(name)
     if event is None or event.get("kind") != "u64":
         raise DevLeanError(f"missing u64 capture {name!r}")
@@ -74,7 +99,7 @@ def _required_u64(captures: dict[str, dict], name: str) -> int:
     return value
 
 
-def _optional_i64(captures: dict[str, dict], name: str) -> int | None:
+def capture_optional_i64(captures: dict[str, dict], name: str) -> int | None:
     event = captures.get(name)
     if event is None:
         return None
@@ -86,15 +111,15 @@ def _optional_i64(captures: dict[str, dict], name: str) -> int | None:
     return value
 
 
-def _bool_literal(value: bool) -> str:
+def bool_literal(value: bool) -> str:
     return "true" if value else "false"
 
 
-def _verdict_literal(accepted: bool) -> str:
+def verdict_literal(accepted: bool) -> str:
     return ".accept" if accepted else ".reject"
 
 
-def _xfl_int_literal(value: int) -> int:
+def xfl_int_literal(value: int) -> int:
     if value == 0:
         return 0
     negative = ((value >> 62) & 1) == 0
@@ -158,96 +183,8 @@ def _resolve_tag(tag: str, source_path: Path | None) -> tuple[str, DevCheckConte
     return tag, context
 
 
-def _import_module(context: DevCheckContext, fallback: str) -> str:
+def import_module(context: DevCheckContext, fallback: str) -> str:
     return context.lean_import or fallback
-
-
-def _state_counter_after_increment(
-    captures: dict[str, dict],
-    context: DevCheckContext,
-) -> str:
-    before = _required_u64(captures, "before_count")
-    after = _required_u64(captures, "count")
-    import_module = _import_module(context, "Hookz.Contracts.StateCounter")
-    model_module = "Hookz.Contracts.StateCounter"
-    return f"""import {import_module}
-
-open Hookz.Contracts
-
--- generated from hookz dev checkpoint: state_counter.after_increment
-example :
-    {model_module}.expected {{
-      txKind := .payment,
-      owner := false,
-      counterState := some {before},
-      counterParam := none
-    }} = {{ verdict := .accept, counterState := some {after} }} := by
-  native_decide
-"""
-
-
-def _balance_gate_after_decision(
-    captures: dict[str, dict],
-    context: DevCheckContext,
-) -> str:
-    outgoing = _required_u64(captures, "outgoing") != 0
-    accepted = _required_u64(captures, "verdict_accept") != 0
-    sender_balance_xfl = _optional_i64(captures, "sender_balance_xfl")
-    min_balance_xfl = _optional_i64(captures, "min_balance_xfl")
-    sender_balance = (
-        "none"
-        if sender_balance_xfl is None
-        else f"some {_xfl_int_literal(sender_balance_xfl)}"
-    )
-    min_balance = (
-        10000000
-        if min_balance_xfl is None
-        else _xfl_int_literal(min_balance_xfl)
-    )
-    import_module = _import_module(context, "Hookz.Contracts.BalanceGate")
-    model_module = "Hookz.Contracts.BalanceGate"
-    return f"""import {import_module}
-
-open Hookz.Contracts
-
--- generated from hookz dev checkpoint: balance_gate.after_decision
-example :
-    {model_module}.expected {{
-      outgoing := {_bool_literal(outgoing)},
-      senderBalanceDrops := {sender_balance},
-      minBalanceDrops := {min_balance}
-    }} = {_verdict_literal(accepted)} := by
-  native_decide
-"""
-
-
-def _mint_after_decision(
-    captures: dict[str, dict],
-    context: DevCheckContext,
-) -> str:
-    has_blob = _required_u64(captures, "has_blob") != 0
-    emitted_count = _required_u64(captures, "emitted_count")
-    accepted = _required_u64(captures, "verdict_accept") != 0
-    import_module = _import_module(context, "Hookz.Contracts.Mint")
-    model_module = "Hookz.Contracts.Mint"
-    return f"""import {import_module}
-
-open Hookz.Contracts
-
--- generated from hookz dev checkpoint: mint.after_decision
-example :
-    {model_module}.expected {{
-      hasBlob := {_bool_literal(has_blob)}
-    }} = {{ verdict := {_verdict_literal(accepted)}, emittedCount := {emitted_count} }} := by
-  native_decide
-"""
-
-
-_ADAPTERS: dict[str, Callable[[dict[str, dict], DevCheckContext], str]] = {
-    "balance_gate.after_decision": _balance_gate_after_decision,
-    "mint.after_decision": _mint_after_decision,
-    "state_counter.after_increment": _state_counter_after_increment,
-}
 
 
 def render_dev_lean_checks(

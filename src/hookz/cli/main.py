@@ -472,20 +472,27 @@ def config_path(name):
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.option("--no-lean", is_flag=True, help="Compile test hooks without dev Lean directives.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
-def test(pytest_args):
+def test(no_lean, pytest_args):
     """Run tests via pytest (extra args passed through)."""
     import pytest
-    sys.exit(pytest.main(list(pytest_args)))
+    args = list(pytest_args)
+    if no_lean:
+        args = ["--hookz-no-lean"] + args
+    sys.exit(pytest.main(args))
 
 
 @cli.command(context_settings={"ignore_unknown_options": True, "allow_extra_args": True})
+@click.option("--no-lean", is_flag=True, help="Compile test hooks without dev Lean directives.")
 @click.argument("pytest_args", nargs=-1, type=click.UNPROCESSED)
-def coverage(pytest_args):
+def coverage(no_lean, pytest_args):
     """Run tests and show coverage report."""
     import pytest
 
     args = list(pytest_args)
+    if no_lean:
+        args = ["--hookz-no-lean"] + args
 
     if "-v" not in args and "--verbose" not in args:
         args = ["-v"] + args

@@ -17,12 +17,13 @@ This creates for each hook:
 
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from hookz.compiler import compile_hook
+from hookz.compiler import compile_hook, compile_hook_dev
 from hookz.config import load_config
 from hookz.coverage.tracker import CoverageTracker
 from hookz.coverage.rewriter import instrument_wasm
@@ -32,6 +33,33 @@ from hookz.runtime import Hook, HookRuntime
 # Global registry: populated by register_hooks(), read by the plugin
 _hook_registry: dict[str, Path] = {}
 _coverage_trackers: dict[str, CoverageTracker] = {}
+_hookz_no_lean = False
+
+
+def pytest_addoption(parser):
+    group = parser.getgroup("hookz")
+    group.addoption(
+        "--hookz-no-lean",
+        action="store_true",
+        default=False,
+        help="Compile hooks without development Lean directives.",
+    )
+
+
+def pytest_configure(config):
+    global _hookz_no_lean
+    _hookz_no_lean = bool(config.getoption("--hookz-no-lean", default=False))
+
+
+def _env_disables_lean() -> bool:
+    if os.environ.get("HOOKZ_NO_LEAN"):
+        return True
+    value = os.environ.get("HOOKZ_LEAN")
+    return value is not None and value.lower() in {"0", "false", "no", "off"}
+
+
+def _dev_lean_enabled() -> bool:
+    return not _hookz_no_lean and not _env_disables_lean()
 
 
 def register_hooks(hooks: dict[str, str | Path], base_dir: Path | None = None):
@@ -57,16 +85,19 @@ def register_hooks(hooks: dict[str, str | Path], base_dir: Path | None = None):
     _generate_fixtures()
 
 
-_compiled_hooks: dict[str, Hook] = {}
+_compiled_hooks: dict[tuple[str, bool], Hook] = {}
 
 
 def _compile_once(name: str) -> Hook:
     """Compile and instrument a hook, cached per session."""
-    if name not in _compiled_hooks:
+    lean_enabled = _dev_lean_enabled()
+    cache_key = (name, lean_enabled)
+    if cache_key not in _compiled_hooks:
         source_path = _hook_registry[name]
         tracker = _coverage_trackers[name]
         config = load_config()
-        wasm_bytes = compile_hook(source_path, config=config)
+        compile_fn = compile_hook_dev if lean_enabled else compile_hook
+        wasm_bytes = compile_fn(source_path, config=config)
 
         tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
         tmp.write(wasm_bytes)
@@ -74,10 +105,10 @@ def _compile_once(name: str) -> Hook:
 
         instrumented, locs = instrument_wasm(wasm_bytes, tmp.name)
         tracker.set_executable_lines(locs, source_path=source_path)
-        _compiled_hooks[name] = Hook(
+        _compiled_hooks[cache_key] = Hook(
             wasm=instrumented, label=source_path.name, source=source_path,
         )
-    return _compiled_hooks[name]
+    return _compiled_hooks[cache_key]
 
 
 def _generate_fixtures():
