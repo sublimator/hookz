@@ -7,7 +7,7 @@ import pytest
 
 from hookz import hookapi
 from hookz.compiler import compile_hook_dev
-from hookz.config import load_config
+from hookz.config import ConfigError, load_config
 from hookz.coverage.rewriter import parse_dwarf_locations
 from hookz.dev_directives import (
     extract_hookz_directives,
@@ -73,6 +73,24 @@ int64_t hook(uint32_t reserved)
 
     return accept(0, 0, (int64_t)count);
 }
+"""
+
+BUGGY_BALANCE_GATE_SOURCE = f"""
+#include <stdint.h>
+extern int64_t accept(uint32_t, uint32_t, int64_t);
+
+int64_t hook(uint32_t reserved)
+{{
+    /* hookz:
+    HOOKZ_LEAN4_U64("outgoing", 0);
+    HOOKZ_LEAN4_I64("sender_balance_xfl", {float_to_xfl(5_000_000.0)});
+    HOOKZ_LEAN4_I64("min_balance_xfl", {float_to_xfl(10_000_000.0)});
+    HOOKZ_LEAN4_U64("verdict_accept", 1);
+    HOOKZ_LEAN4_CHECK("balance_gate.after_decision");
+    */
+
+    return accept(0, 0, 1);
+}}
 """
 
 LEGACY_LEAN4_METADATA_SOURCE = r"""
@@ -171,6 +189,22 @@ def test_dev_compile_fails_fast_when_lean_checkpoint_fails(tmp_path, monkeypatch
     assert "state_counter.after_increment" in str(result.error)
 
 
+@pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
+def test_buggy_balance_gate_checkpoint_is_caught_by_lean(tmp_path, monkeypatch):
+    source = tmp_path / "buggy_balance_gate_hook.c"
+    source.write_text(BUGGY_BALANCE_GATE_SOURCE)
+    config = replace(load_config(source_file=source), exports=["hook"])
+
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(tmp_path / "lean"))
+    wasm = compile_hook_dev(source, config=config)
+    rt = HookRuntime()
+    result = rt.run(wasm)
+
+    assert not result.accepted
+    assert isinstance(result.error, DevLeanError)
+    assert "balance_gate.after_decision" in str(result.error)
+
+
 def test_renders_dev_events_to_lean_check():
     events = [
         {"kind": "u64", "name": "before_count", "value": 40},
@@ -210,9 +244,32 @@ def test_renders_hook_local_balance_gate_checkpoint():
     assert len(rendered) == 1
     tag, lean_source = rendered[0]
     assert tag == "balance_gate.after_decision"
-    assert "import Hookz.Contracts.BalanceGate" in lean_source
+    assert "import HookzDevSidecar_balance_gate" in lean_source
+    assert "Hookz.Contracts.BalanceGate.expected" in lean_source
     assert "senderBalanceDrops := some 50000000" in lean_source
     assert "minBalanceDrops := 10000000" in lean_source
+
+
+def test_hook_local_checkpoint_surfaces_bad_config(tmp_path):
+    source = tmp_path / "bad.c"
+    source.write_text("int64_t hook(uint32_t reserved) { return 0; }")
+    (tmp_path / "hookz.toml").write_text(
+        """
+[hooks.bad]
+source = "bad.c"
+status = "todo"
+""",
+        encoding="utf-8",
+    )
+
+    events = [
+        {"kind": "u64", "name": "outgoing", "value": 0},
+        {"kind": "u64", "name": "verdict_accept", "value": 1},
+        {"kind": "check", "tag": "after_decision"},
+    ]
+
+    with pytest.raises(ConfigError, match="unknown keys: status"):
+        render_dev_lean_checks(events, source_path=source)
 
 
 @pytest.mark.skipif(not lean_available(), reason="lake not found")
@@ -228,6 +285,22 @@ def test_dispatches_dev_events_to_lean(tmp_path):
     assert len(results) == 1
     assert results[0].tag == "state_counter.after_increment"
     assert results[0].lean_file.exists()
+
+
+@pytest.mark.skipif(not lean_available(), reason="lake not found")
+def test_dispatch_keeps_repeated_witness_files(tmp_path):
+    events = [
+        {"kind": "u64", "name": "before_count", "value": 40},
+        {"kind": "u64", "name": "count", "value": 41},
+        {"kind": "check", "tag": "state_counter.after_increment"},
+    ]
+
+    first = dispatch_dev_lean_checks(events, out_dir=tmp_path)
+    second = dispatch_dev_lean_checks(events, out_dir=tmp_path)
+
+    assert first[0].lean_file.exists()
+    assert second[0].lean_file.exists()
+    assert first[0].lean_file != second[0].lean_file
 
 
 def _balance_gate_runtime() -> HookRuntime:
@@ -254,3 +327,4 @@ def test_balance_gate_dev_checkpoint_dispatches_to_lean(tmp_path, monkeypatch):
     assert result.accepted
     assert {"kind": "check", "tag": "after_decision", "line": None} in result.dev_events
     assert list((tmp_path / "lean").glob("*balance_gate_after_decision.lean"))
+    assert list((tmp_path / "lean" / "_sidecars").glob("HookzDevSidecar_balance_gate.olean"))

@@ -13,7 +13,7 @@ nftoken = "hooks/genesis/nftoken.c"
 reward = { source = "hooks/genesis/reward.c", lean = "../../lean/Hookz/Contracts/Reward.lean" }
 
 # Misc hooks
-balance_gate = { source = "hooks/misc/balance_gate.c", lean = "../../lean/Hookz/Contracts/BalanceGate.lean" }
+balance_gate = { source = "hooks/misc/balance_gate.c", lean = "hooks/misc/balance_gate.lean" }
 treasury = { source = "hooks/misc/treasury.c", lean = "../../lean/Hookz/Contracts/Treasury.lean" }
 
 # XahauHooks101 examples (github.com/Handy4ndy/XahauHooks101)

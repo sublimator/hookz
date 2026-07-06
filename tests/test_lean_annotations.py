@@ -56,3 +56,7 @@ def test_lean4_binding_paths_exist_and_preserve_source_map_compatibility():
         assert binding.lean.exists()
         assert binding.lean.suffix == ".lean"
         assert config.hooks[hook] == binding.source
+    assert (
+        bindings["balance_gate"].lean
+        == HOOKZ_TOML.parent / "hooks" / "misc" / "balance_gate.lean"
+    )

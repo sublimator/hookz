@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -10,10 +11,10 @@ from pathlib import Path
 from typing import Callable
 
 from hookz.config import load_config
-from hookz.xfl import xfl_to_float
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LEAN_SRC_ROOT = PROJECT_ROOT / "lean"
 
 
 @dataclass(frozen=True)
@@ -27,7 +28,8 @@ class DevCheckContext:
     source_path: Path | None = None
     hook: str | None = None
     lean_file: Path | None = None
-    lean_module: str | None = None
+    lean_import: str | None = None
+    sidecar_source: Path | None = None
 
 
 class DevLeanError(RuntimeError):
@@ -92,16 +94,35 @@ def _verdict_literal(accepted: bool) -> str:
     return ".accept" if accepted else ".reject"
 
 
-def _xfl_drops_literal(value: int) -> int:
-    return int(xfl_to_float(value))
+def _xfl_int_literal(value: int) -> int:
+    if value == 0:
+        return 0
+    negative = ((value >> 62) & 1) == 0
+    exponent = ((value >> 54) & 0xFF) - 97
+    mantissa = value & ((1 << 54) - 1)
+    if exponent >= 0:
+        result = mantissa * (10 ** exponent)
+    else:
+        divisor = 10 ** (-exponent)
+        if mantissa % divisor != 0:
+            raise DevLeanError(f"XFL value {value} is not an integer amount")
+        result = mantissa // divisor
+    return -result if negative else result
 
 
-def _lean_module_from_file(lean_file: Path) -> str | None:
+def _module_slug(raw: str) -> str:
+    slug = re.sub(r"[^0-9A-Za-z_]", "_", raw)
+    if not slug or slug[0].isdigit():
+        slug = f"_{slug}"
+    return slug
+
+
+def _lean_import_from_file(lean_file: Path, hook: str | None) -> tuple[str, Path | None]:
     try:
-        rel = lean_file.resolve().relative_to((PROJECT_ROOT / "lean").resolve())
+        rel = lean_file.resolve().relative_to(LEAN_SRC_ROOT.resolve())
     except ValueError:
-        return None
-    return ".".join(rel.with_suffix("").parts)
+        return f"HookzDevSidecar_{_module_slug(hook or lean_file.stem)}", lean_file
+    return ".".join(rel.with_suffix("").parts), None
 
 
 def _context_for_source(source_path: Path | None) -> DevCheckContext:
@@ -109,20 +130,23 @@ def _context_for_source(source_path: Path | None) -> DevCheckContext:
         return DevCheckContext()
 
     source_path = source_path.resolve()
-    try:
-        config = load_config(source_file=source_path)
-    except Exception:
-        return DevCheckContext(source_path=source_path)
+    config = load_config(source_file=source_path)
 
     for hook, entry in (config.hook_entries or {}).items():
         if entry.source.resolve() != source_path:
             continue
         lean_file = entry.lean.resolve() if entry.lean is not None else None
+        lean_import, sidecar_source = (
+            _lean_import_from_file(lean_file, hook)
+            if lean_file
+            else (None, None)
+        )
         return DevCheckContext(
             source_path=source_path,
             hook=hook,
             lean_file=lean_file,
-            lean_module=_lean_module_from_file(lean_file) if lean_file else None,
+            lean_import=lean_import,
+            sidecar_source=sidecar_source,
         )
     return DevCheckContext(source_path=source_path)
 
@@ -134,8 +158,8 @@ def _resolve_tag(tag: str, source_path: Path | None) -> tuple[str, DevCheckConte
     return tag, context
 
 
-def _module(context: DevCheckContext, fallback: str) -> str:
-    return context.lean_module or fallback
+def _import_module(context: DevCheckContext, fallback: str) -> str:
+    return context.lean_import or fallback
 
 
 def _state_counter_after_increment(
@@ -144,14 +168,15 @@ def _state_counter_after_increment(
 ) -> str:
     before = _required_u64(captures, "before_count")
     after = _required_u64(captures, "count")
-    module = _module(context, "Hookz.Contracts.StateCounter")
-    return f"""import {module}
+    import_module = _import_module(context, "Hookz.Contracts.StateCounter")
+    model_module = "Hookz.Contracts.StateCounter"
+    return f"""import {import_module}
 
 open Hookz.Contracts
 
 -- generated from hookz dev checkpoint: state_counter.after_increment
 example :
-    {module}.expected {{
+    {model_module}.expected {{
       txKind := .payment,
       owner := false,
       counterState := some {before},
@@ -172,21 +197,22 @@ def _balance_gate_after_decision(
     sender_balance = (
         "none"
         if sender_balance_xfl is None
-        else f"some {_xfl_drops_literal(sender_balance_xfl)}"
+        else f"some {_xfl_int_literal(sender_balance_xfl)}"
     )
     min_balance = (
         10000000
         if min_balance_xfl is None
-        else _xfl_drops_literal(min_balance_xfl)
+        else _xfl_int_literal(min_balance_xfl)
     )
-    module = _module(context, "Hookz.Contracts.BalanceGate")
-    return f"""import {module}
+    import_module = _import_module(context, "Hookz.Contracts.BalanceGate")
+    model_module = "Hookz.Contracts.BalanceGate"
+    return f"""import {import_module}
 
 open Hookz.Contracts
 
 -- generated from hookz dev checkpoint: balance_gate.after_decision
 example :
-    {module}.expected {{
+    {model_module}.expected {{
       outgoing := {_bool_literal(outgoing)},
       senderBalanceDrops := {sender_balance},
       minBalanceDrops := {min_balance}
@@ -211,7 +237,24 @@ def render_dev_lean_checks(
     calls this during hook execution, so the directive acts like a point-in-time
     assertion rather than a post-run trace.
     """
-    rendered: list[tuple[str, str]] = []
+    return [
+        (rendered.tag, rendered.lean_source)
+        for rendered in _render_dev_lean_checks(events, source_path=source_path)
+    ]
+
+
+@dataclass(frozen=True)
+class _RenderedLeanCheck:
+    tag: str
+    lean_source: str
+    context: DevCheckContext
+
+
+def _render_dev_lean_checks(
+    events: list[dict],
+    source_path: Path | None = None,
+) -> list[_RenderedLeanCheck]:
+    rendered: list[_RenderedLeanCheck] = []
     pending: list[dict] = []
     for event in events:
         kind = event.get("kind")
@@ -223,11 +266,73 @@ def render_dev_lean_checks(
             adapter = _ADAPTERS.get(resolved_tag)
             if adapter is None:
                 raise DevLeanError(f"no Lean dev adapter registered for {resolved_tag!r}")
-            rendered.append((resolved_tag, adapter(_capture_map(pending), context)))
+            rendered.append(_RenderedLeanCheck(
+                tag=resolved_tag,
+                lean_source=adapter(_capture_map(pending), context),
+                context=context,
+            ))
             pending = []
         else:
             pending.append(event)
     return rendered
+
+
+def _lean_env_with_path(extra_path: Path) -> dict[str, str]:
+    env = os.environ.copy()
+    existing = env.get("LEAN_PATH")
+    env["LEAN_PATH"] = (
+        str(extra_path)
+        if not existing
+        else f"{extra_path}{os.pathsep}{existing}"
+    )
+    return env
+
+
+def _compile_sidecar(
+    check: _RenderedLeanCheck,
+    lake: str,
+    out_dir: Path,
+    project_root: Path,
+) -> tuple[Path | None, dict[str, str] | None]:
+    source = check.context.sidecar_source
+    module = check.context.lean_import
+    if source is None or module is None:
+        return None, None
+
+    try:
+        source.resolve().relative_to(project_root.resolve())
+    except ValueError as exc:
+        raise DevLeanError(
+            f"Lean sidecar {source} must be inside project root {project_root}"
+        ) from exc
+
+    sidecar_dir = out_dir / "_sidecars"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    olean_file = sidecar_dir / f"{module}.olean"
+    checked = subprocess.run(
+        [lake, "env", "lean", "-o", str(olean_file), str(source)],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+    )
+    if checked.returncode != 0:
+        raise DevLeanError(
+            f"Lean sidecar failed for {source}:\n"
+            f"stdout:\n{checked.stdout}\n"
+            f"stderr:\n{checked.stderr}"
+        )
+    return olean_file, _lean_env_with_path(sidecar_dir)
+
+
+def _unique_lean_file(out_dir: Path, index: int, slug: str) -> Path:
+    candidate = out_dir / f"{index:03d}_{slug}.lean"
+    if not candidate.exists():
+        return candidate
+    for suffix in range(2, 1000):
+        candidate = out_dir / f"{index:03d}_{slug}_{suffix}.lean"
+        if not candidate.exists():
+            return candidate
+    raise DevLeanError(f"could not allocate unique Lean witness for {slug!r}")
 
 
 def dispatch_dev_lean_checks(
@@ -246,20 +351,29 @@ def dispatch_dev_lean_checks(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[LeanCheckResult] = []
-    for index, (tag, lean_source) in enumerate(
-        render_dev_lean_checks(events, source_path=source_path), 1
+    for index, check in enumerate(
+        _render_dev_lean_checks(events, source_path=source_path), 1
     ):
-        slug = tag.replace(".", "_").replace("-", "_")
-        lean_file = out_dir / f"{index:03d}_{slug}.lean"
-        lean_file.write_text(lean_source)
+        slug = check.tag.replace(".", "_").replace("-", "_")
+        lean_file = _unique_lean_file(out_dir, index, slug)
+        lean_file.write_text(check.lean_source)
 
+        _sidecar_olean, lean_env = _compile_sidecar(
+            check, lake=lake, out_dir=out_dir, project_root=project_root
+        )
         cmd = [lake, "env", "lean", str(lean_file)]
-        checked = subprocess.run(cmd, cwd=project_root, capture_output=True, text=True)
+        checked = subprocess.run(
+            cmd,
+            cwd=project_root,
+            capture_output=True,
+            text=True,
+            env=lean_env,
+        )
         if checked.returncode != 0:
             raise DevLeanError(
-                f"Lean dev check failed for {tag!r}:\n"
+                f"Lean dev check failed for {check.tag!r}:\n"
                 f"stdout:\n{checked.stdout}\n"
                 f"stderr:\n{checked.stderr}"
             )
-        results.append(LeanCheckResult(tag=tag, lean_file=lean_file))
+        results.append(LeanCheckResult(tag=check.tag, lean_file=lean_file))
     return results
