@@ -1,0 +1,50 @@
+# State Counter Contract
+
+This page projects the stateful counter specimen across the C hook, pytest
+cases, Python runtime-to-Lean adapter, and Lean model.
+
+## Hook
+
+{{ code('tests/e2e/hooks/XahauHooks101/Basic_State/basic_state_counter.c', function='hook') }}
+
+## Runtime Cases
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_first_payment_sets_counter_to_1') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_second_payment_increments') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_invoke_by_owner_updates_counter') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_invoke_by_non_owner_rejected') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_invoke_missing_param_rejected') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestStateCounter.test_non_payment_non_invoke_accepted') }}
+
+## Runtime Projection
+
+{{ code('scripts/lean_contract_smoke.py', function='gather_state_counter_input') }}
+
+{{ code('scripts/lean_contract_smoke.py', function='gather_state_counter_outcome') }}
+
+## Lean Model
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.expected') }}
+
+## Lean Theorems
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.first_payment_sets_one') }}
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.payment_increments_existing') }}
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.owner_invoke_sets_counter') }}
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.non_owner_invoke_rejects') }}
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.owner_invoke_without_param_rejects') }}
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', function='Hookz.Contracts.StateCounter.other_tx_accepts_without_state_change') }}
+
+## Mirrored Cases
+
+{{ code('lean/Hookz/Contracts/StateCounter.lean', marker='pytest-cases') }}

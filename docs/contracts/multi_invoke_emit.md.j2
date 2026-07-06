@@ -1,0 +1,64 @@
+# Multi Invoke Emit Contract
+
+This page projects the emitted-transaction specimen across the C hook, pytest
+cases, Python runtime-to-Lean adapter, and Lean model. The Lean model tracks
+destination presence and emitted count, while byte-level emitted transaction
+shape remains available to pytest.
+
+## Hook
+
+{{ code('tests/e2e/hooks/XahauHooks101/Emit_Invoke/invoke_multi_invoke_emit.c', function='hook') }}
+
+## Runtime Cases
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitConfig.test_set_dst1') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitConfig.test_set_all_three') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitConfig.test_reset_clears_all') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitConfig.test_non_owner_rejected') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitConfig.test_no_params_rejected') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitPayment.test_no_destinations_set') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitPayment.test_emit_to_one_destination') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitPayment.test_emit_to_three_destinations') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitPayment.test_zero_dst_skipped') }}
+
+{{ code('tests/e2e/test_hooks101.py', function='TestMultiInvokeEmitPayment.test_non_payment_skipped') }}
+
+## Runtime Projection
+
+{{ code('scripts/lean_contract_smoke.py', function='_destinations_from_state') }}
+
+{{ code('scripts/lean_contract_smoke.py', function='_multi_invoke_emit_config_action') }}
+
+{{ code('scripts/lean_contract_smoke.py', function='gather_multi_invoke_emit_input') }}
+
+{{ code('scripts/lean_contract_smoke.py', function='gather_multi_invoke_emit_outcome') }}
+
+## Lean Model
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.expected') }}
+
+## Lean Theorems
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.owner_reset_clears_destinations') }}
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.owner_no_params_rejects') }}
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.non_owner_invoke_rejects') }}
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.payment_without_destinations_rejects') }}
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.payment_emits_enabled_destinations') }}
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', function='Hookz.Contracts.MultiInvokeEmit.other_tx_accepts_without_emit') }}
+
+## Mirrored Cases
+
+{{ code('lean/Hookz/Contracts/MultiInvokeEmit.lean', marker='pytest-cases') }}
