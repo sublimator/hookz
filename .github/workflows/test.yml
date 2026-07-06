@@ -16,6 +16,15 @@ jobs:
           submodules: true
           fetch-depth: 1
 
+      - name: Install Lean toolchain
+        uses: leanprover/lean-action@v1
+        with:
+          auto-config: false
+          build: false
+          test: false
+          lint: false
+          use-mathlib-cache: false
+
       - name: Install uv
         uses: astral-sh/setup-uv@v7
 
