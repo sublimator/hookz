@@ -51,5 +51,8 @@ jobs:
       - name: Install Python dependencies
         run: uv sync
 
+      - name: Check dev directive Lean dispatch
+        run: uv run pytest tests/test_dev_directives.py -q
+
       - name: Check generated Lean runtime cases
         run: uv run python scripts/lean_contract_smoke.py

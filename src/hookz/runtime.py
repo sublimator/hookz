@@ -70,6 +70,11 @@ class HookResult:
     dev_events: list[dict] = field(default_factory=list)
     error: Exception | None = None
 
+    def check_dev_lean(self, out_dir: Path | None = None):
+        """Dispatch recorded development checkpoints to Lean."""
+        from hookz.dev_lean import dispatch_dev_lean_checks
+        return dispatch_dev_lean_checks(self.dev_events, out_dir=out_dir)
+
 
 # Amendments enabled by default.
 # The whitelist-gating amendments (featureHooksUpdate1, featureHooksUpdate2)
