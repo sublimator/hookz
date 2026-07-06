@@ -9,6 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
+from hookz.config import load_config
+from hookz.xfl import xfl_to_float
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -17,6 +20,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 class LeanCheckResult:
     tag: str
     lean_file: Path
+
+
+@dataclass(frozen=True)
+class DevCheckContext:
+    source_path: Path | None = None
+    hook: str | None = None
+    lean_file: Path | None = None
+    lean_module: str | None = None
 
 
 class DevLeanError(RuntimeError):
@@ -61,16 +72,86 @@ def _required_u64(captures: dict[str, dict], name: str) -> int:
     return value
 
 
-def _state_counter_after_increment(captures: dict[str, dict]) -> str:
+def _optional_i64(captures: dict[str, dict], name: str) -> int | None:
+    event = captures.get(name)
+    if event is None:
+        return None
+    if event.get("kind") != "i64":
+        raise DevLeanError(f"capture {name!r} must be an i64")
+    value = event.get("value")
+    if not isinstance(value, int):
+        raise DevLeanError(f"capture {name!r} must be an integer")
+    return value
+
+
+def _bool_literal(value: bool) -> str:
+    return "true" if value else "false"
+
+
+def _verdict_literal(accepted: bool) -> str:
+    return ".accept" if accepted else ".reject"
+
+
+def _xfl_drops_literal(value: int) -> int:
+    return int(xfl_to_float(value))
+
+
+def _lean_module_from_file(lean_file: Path) -> str | None:
+    try:
+        rel = lean_file.resolve().relative_to((PROJECT_ROOT / "lean").resolve())
+    except ValueError:
+        return None
+    return ".".join(rel.with_suffix("").parts)
+
+
+def _context_for_source(source_path: Path | None) -> DevCheckContext:
+    if source_path is None:
+        return DevCheckContext()
+
+    source_path = source_path.resolve()
+    try:
+        config = load_config(source_file=source_path)
+    except Exception:
+        return DevCheckContext(source_path=source_path)
+
+    for hook, entry in (config.hook_entries or {}).items():
+        if entry.source.resolve() != source_path:
+            continue
+        lean_file = entry.lean.resolve() if entry.lean is not None else None
+        return DevCheckContext(
+            source_path=source_path,
+            hook=hook,
+            lean_file=lean_file,
+            lean_module=_lean_module_from_file(lean_file) if lean_file else None,
+        )
+    return DevCheckContext(source_path=source_path)
+
+
+def _resolve_tag(tag: str, source_path: Path | None) -> tuple[str, DevCheckContext]:
+    context = _context_for_source(source_path)
+    if "." not in tag and context.hook:
+        return f"{context.hook}.{tag}", context
+    return tag, context
+
+
+def _module(context: DevCheckContext, fallback: str) -> str:
+    return context.lean_module or fallback
+
+
+def _state_counter_after_increment(
+    captures: dict[str, dict],
+    context: DevCheckContext,
+) -> str:
     before = _required_u64(captures, "before_count")
     after = _required_u64(captures, "count")
-    return f"""import Hookz.Contracts.StateCounter
+    module = _module(context, "Hookz.Contracts.StateCounter")
+    return f"""import {module}
 
 open Hookz.Contracts
 
 -- generated from hookz dev checkpoint: state_counter.after_increment
 example :
-    Hookz.Contracts.StateCounter.expected {{
+    {module}.expected {{
       txKind := .payment,
       owner := false,
       counterState := some {before},
@@ -80,12 +161,50 @@ example :
 """
 
 
-_ADAPTERS: dict[str, Callable[[dict[str, dict]], str]] = {
+def _balance_gate_after_decision(
+    captures: dict[str, dict],
+    context: DevCheckContext,
+) -> str:
+    outgoing = _required_u64(captures, "outgoing") != 0
+    accepted = _required_u64(captures, "verdict_accept") != 0
+    sender_balance_xfl = _optional_i64(captures, "sender_balance_xfl")
+    min_balance_xfl = _optional_i64(captures, "min_balance_xfl")
+    sender_balance = (
+        "none"
+        if sender_balance_xfl is None
+        else f"some {_xfl_drops_literal(sender_balance_xfl)}"
+    )
+    min_balance = (
+        10000000
+        if min_balance_xfl is None
+        else _xfl_drops_literal(min_balance_xfl)
+    )
+    module = _module(context, "Hookz.Contracts.BalanceGate")
+    return f"""import {module}
+
+open Hookz.Contracts
+
+-- generated from hookz dev checkpoint: balance_gate.after_decision
+example :
+    {module}.expected {{
+      outgoing := {_bool_literal(outgoing)},
+      senderBalanceDrops := {sender_balance},
+      minBalanceDrops := {min_balance}
+    }} = {_verdict_literal(accepted)} := by
+  native_decide
+"""
+
+
+_ADAPTERS: dict[str, Callable[[dict[str, dict], DevCheckContext], str]] = {
+    "balance_gate.after_decision": _balance_gate_after_decision,
     "state_counter.after_increment": _state_counter_after_increment,
 }
 
 
-def render_dev_lean_checks(events: list[dict]) -> list[tuple[str, str]]:
+def render_dev_lean_checks(
+    events: list[dict],
+    source_path: Path | None = None,
+) -> list[tuple[str, str]]:
     """Render Lean snippets for all `check` events in a dev event stream.
 
     Captures before a `check` event are consumed by that check. `hookz_dev_check`
@@ -100,10 +219,11 @@ def render_dev_lean_checks(events: list[dict]) -> list[tuple[str, str]]:
             tag = event.get("tag")
             if not isinstance(tag, str):
                 raise DevLeanError(f"invalid check event tag: {event!r}")
-            adapter = _ADAPTERS.get(tag)
+            resolved_tag, context = _resolve_tag(tag, source_path)
+            adapter = _ADAPTERS.get(resolved_tag)
             if adapter is None:
-                raise DevLeanError(f"no Lean dev adapter registered for {tag!r}")
-            rendered.append((tag, adapter(_capture_map(pending))))
+                raise DevLeanError(f"no Lean dev adapter registered for {resolved_tag!r}")
+            rendered.append((resolved_tag, adapter(_capture_map(pending), context)))
             pending = []
         else:
             pending.append(event)
@@ -114,6 +234,7 @@ def dispatch_dev_lean_checks(
     events: list[dict],
     out_dir: Path | None = None,
     project_root: Path = PROJECT_ROOT,
+    source_path: Path | None = None,
 ) -> list[LeanCheckResult]:
     """Generate and check Lean files for recorded development hook events."""
     lake = _lake_binary()
@@ -125,7 +246,9 @@ def dispatch_dev_lean_checks(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     results: list[LeanCheckResult] = []
-    for index, (tag, lean_source) in enumerate(render_dev_lean_checks(events), 1):
+    for index, (tag, lean_source) in enumerate(
+        render_dev_lean_checks(events, source_path=source_path), 1
+    ):
         slug = tag.replace(".", "_").replace("-", "_")
         lean_file = out_dir / f"{index:03d}_{slug}.lean"
         lean_file.write_text(lean_source)

@@ -1,9 +1,11 @@
 """Development-only hookz comment directives."""
 
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
+from hookz import hookapi
 from hookz.compiler import compile_hook_dev
 from hookz.config import load_config
 from hookz.coverage.rewriter import parse_dwarf_locations
@@ -11,9 +13,25 @@ from hookz.dev_directives import (
     extract_hookz_directives,
     render_dev_source,
 )
-from hookz.dev_lean import DevLeanError, dispatch_dev_lean_checks, lean_available, render_dev_lean_checks
-from hookz.runtime import HookRuntime
+from hookz.dev_lean import (
+    DevLeanError,
+    dispatch_dev_lean_checks,
+    lean_available,
+    render_dev_lean_checks,
+)
+from hookz.ledger import account_root
+from hookz.runtime import Hook, HookRuntime
+from hookz.xfl import float_to_xfl
 from location_consts import WASI_SDK
+
+
+E2E_ROOT = Path(__file__).parent / "e2e"
+BALANCE_GATE_SOURCE = E2E_ROOT / "hooks" / "misc" / "balance_gate.c"
+HOOKZ_TOML = E2E_ROOT / "hookz.toml"
+
+ALICE_ACCID = bytes.fromhex("b5f762798a53d543a014caf8b297cff8f2f937e8")
+BOB = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
+BOB_ACCID = bytes.fromhex("f667b0ca50cc7709a220b0561b85e53a48461fa8")
 
 
 DEV_DIRECTIVE_SOURCE = r"""
@@ -170,6 +188,33 @@ def test_renders_dev_events_to_lean_check():
     assert "counterState := some 41" in lean_source
 
 
+def test_renders_hook_local_balance_gate_checkpoint():
+    events = [
+        {"kind": "u64", "name": "outgoing", "value": 0},
+        {
+            "kind": "i64",
+            "name": "sender_balance_xfl",
+            "value": float_to_xfl(50_000_000.0),
+        },
+        {
+            "kind": "i64",
+            "name": "min_balance_xfl",
+            "value": float_to_xfl(10_000_000.0),
+        },
+        {"kind": "u64", "name": "verdict_accept", "value": 1},
+        {"kind": "check", "tag": "after_decision"},
+    ]
+
+    rendered = render_dev_lean_checks(events, source_path=BALANCE_GATE_SOURCE)
+
+    assert len(rendered) == 1
+    tag, lean_source = rendered[0]
+    assert tag == "balance_gate.after_decision"
+    assert "import Hookz.Contracts.BalanceGate" in lean_source
+    assert "senderBalanceDrops := some 50000000" in lean_source
+    assert "minBalanceDrops := 10000000" in lean_source
+
+
 @pytest.mark.skipif(not lean_available(), reason="lake not found")
 def test_dispatches_dev_events_to_lean(tmp_path):
     events = [
@@ -183,3 +228,29 @@ def test_dispatches_dev_events_to_lean(tmp_path):
     assert len(results) == 1
     assert results[0].tag == "state_counter.after_increment"
     assert results[0].lean_file.exists()
+
+
+def _balance_gate_runtime() -> HookRuntime:
+    rt = HookRuntime()
+    rt.hook_account = ALICE_ACCID
+    rt.otxn_account = BOB_ACCID
+    rt.otxn_type = hookapi.ttPAYMENT
+    return rt
+
+
+@pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
+def test_balance_gate_dev_checkpoint_dispatches_to_lean(tmp_path, monkeypatch):
+    config = load_config(toml_path=HOOKZ_TOML)
+    wasm = compile_hook_dev(BALANCE_GATE_SOURCE, config=config)
+    hook = Hook(wasm=wasm, label=BALANCE_GATE_SOURCE.name, source=BALANCE_GATE_SOURCE)
+
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(tmp_path / "lean"))
+    rt = _balance_gate_runtime()
+    keylet, data = account_root(BOB, Balance="50000000")
+    rt.ledger[keylet] = data
+
+    result = rt.run(hook)
+
+    assert result.accepted
+    assert {"kind": "check", "tag": "after_decision", "line": None} in result.dev_events
+    assert list((tmp_path / "lean").glob("*balance_gate_after_decision.lean"))

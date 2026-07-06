@@ -27,7 +27,7 @@ def hookz_dev_check(rt: HookRuntime, tag_ptr: int, tag_len: int) -> int:
     _append_event(rt, event)
 
     from hookz.dev_lean import dispatch_dev_lean_checks
-    dispatch_dev_lean_checks(rt._dev_pending_events)
+    dispatch_dev_lean_checks(rt._dev_pending_events, source_path=rt._source_path)
     rt._dev_pending_events = []
     return 0
 
