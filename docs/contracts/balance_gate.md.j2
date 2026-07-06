@@ -1,0 +1,33 @@
+# Balance Gate Contract
+
+This page is a projected-source sketch for the first Lean-backed hook
+contract. The source of truth remains the C hook, the pytest cases, and the
+Lean model.
+
+## Hook
+
+{{ code('tests/e2e/hooks/misc/balance_gate.c', function='hook') }}
+
+## Runtime Cases
+
+{{ code('tests/e2e/test_balance_gate.py', function='TestBalanceGatePass.test_sender_exactly_at_minimum') }}
+
+{{ code('tests/e2e/test_balance_gate.py', function='TestBalanceGateReject.test_sender_below_minimum') }}
+
+{{ code('tests/e2e/test_balance_gate.py', function='TestBalanceGateCustomMinimum.test_custom_min_1_xah') }}
+
+## Lean Model
+
+{{ code('lean/Hookz/Contracts/BalanceGate.lean', function='expected') }}
+
+## Lean Theorems
+
+{{ code('lean/Hookz/Contracts/BalanceGate.lean', function='outgoing_accepts') }}
+
+{{ code('lean/Hookz/Contracts/BalanceGate.lean', function='below_minimum_rejects') }}
+
+{{ code('lean/Hookz/Contracts/BalanceGate.lean', function='not_below_minimum_accepts') }}
+
+## Mirrored Cases
+
+{{ code('lean/Hookz/Contracts/BalanceGate.lean', marker='pytest-cases') }}
