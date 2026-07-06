@@ -11,7 +11,7 @@ from hookz.dev_directives import (
     extract_hookz_lean4_annotations,
     render_dev_source,
 )
-from hookz.dev_lean import dispatch_dev_lean_checks, lean_available, render_dev_lean_checks
+from hookz.dev_lean import DevLeanError, dispatch_dev_lean_checks, lean_available, render_dev_lean_checks
 from hookz.runtime import HookRuntime
 from location_consts import WASI_SDK
 
@@ -31,6 +31,25 @@ int64_t hook(uint32_t reserved)
     HOOKZ_LEAN4_U64("before_count", before_count);
     HOOKZ_LEAN4_U64("count", count);
     HOOKZ_LEAN4_BYTES("buf", buf, 2);
+    HOOKZ_LEAN4_CHECK("state_counter.after_increment");
+    */
+
+    return accept(0, 0, (int64_t)count);
+}
+"""
+
+DEV_DIRECTIVE_FAILING_SOURCE = r"""
+#include <stdint.h>
+extern int64_t accept(uint32_t, uint32_t, int64_t);
+
+int64_t hook(uint32_t reserved)
+{
+    uint64_t before_count = 40;
+    uint64_t count = 42;
+
+    /* hookz:
+    HOOKZ_LEAN4_U64("before_count", before_count);
+    HOOKZ_LEAN4_U64("count", count);
     HOOKZ_LEAN4_CHECK("state_counter.after_increment");
     */
 
@@ -74,12 +93,14 @@ def test_extracts_lean4_metadata_without_unwrapping_it():
     assert "extern int64_t hookz_dev_check" not in rendered
 
 
-@pytest.mark.skipif(WASI_SDK is None, reason="wasi-sdk not found")
-def test_dev_compile_records_unwrapped_hook_events(tmp_path):
+@pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
+def test_dev_compile_records_unwrapped_hook_events(tmp_path, monkeypatch):
     source = tmp_path / "dev_directive_hook.c"
     source.write_text(DEV_DIRECTIVE_SOURCE)
     config = replace(load_config(source_file=source), exports=["hook"])
 
+    lean_out = tmp_path / "lean"
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(lean_out))
     wasm = compile_hook_dev(source, config=config)
     rt = HookRuntime()
     result = rt.run(wasm)
@@ -92,22 +113,23 @@ def test_dev_compile_records_unwrapped_hook_events(tmp_path):
         {"kind": "bytes", "name": "buf", "value": b"\xAA\xBB", "line": None},
         {"kind": "check", "tag": "state_counter.after_increment", "line": None},
     ]
+    assert list(lean_out.glob("*.lean"))
 
 
 @pytest.mark.skipif(WASI_SDK is None or not lean_available(), reason="wasi-sdk/lake not found")
-def test_dev_compile_dispatches_unwrapped_hook_events_to_lean(tmp_path):
-    source = tmp_path / "dev_directive_hook.c"
-    source.write_text(DEV_DIRECTIVE_SOURCE)
+def test_dev_compile_fails_fast_when_lean_checkpoint_fails(tmp_path, monkeypatch):
+    source = tmp_path / "dev_directive_hook_fails.c"
+    source.write_text(DEV_DIRECTIVE_FAILING_SOURCE)
     config = replace(load_config(source_file=source), exports=["hook"])
 
+    monkeypatch.setenv("HOOKZ_LEAN_DEV_DIR", str(tmp_path / "lean"))
     wasm = compile_hook_dev(source, config=config)
     rt = HookRuntime()
     result = rt.run(wasm)
 
-    checks = result.check_dev_lean(out_dir=tmp_path / "lean")
-
-    assert len(checks) == 1
-    assert checks[0].tag == "state_counter.after_increment"
+    assert not result.accepted
+    assert isinstance(result.error, DevLeanError)
+    assert "state_counter.after_increment" in str(result.error)
 
 
 def test_renders_dev_events_to_lean_check():

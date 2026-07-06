@@ -70,11 +70,6 @@ class HookResult:
     dev_events: list[dict] = field(default_factory=list)
     error: Exception | None = None
 
-    def check_dev_lean(self, out_dir: Path | None = None):
-        """Dispatch recorded development checkpoints to Lean."""
-        from hookz.dev_lean import dispatch_dev_lean_checks
-        return dispatch_dev_lean_checks(self.dev_events, out_dir=out_dir)
-
 
 # Amendments enabled by default.
 # The whitelist-gating amendments (featureHooksUpdate1, featureHooksUpdate2)
@@ -128,6 +123,7 @@ class HookRuntime:
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
         self.dev_events: list[dict] = []
+        self._dev_pending_events: list[dict] = []
         self.emitted_txns: list[bytes] = []
         self.traces: list = []  # list[Trace] from handlers.core
         self.coverage = CoverageTracker()
@@ -238,6 +234,7 @@ class HookRuntime:
         self.call_log = []
         self.traces = []
         self.dev_events = []
+        self._dev_pending_events = []
         # Preserve markers if already loaded
         markers = self.coverage._markers
         self.coverage = CoverageTracker()

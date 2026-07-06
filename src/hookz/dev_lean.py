@@ -88,8 +88,9 @@ _ADAPTERS: dict[str, Callable[[dict[str, dict]], str]] = {
 def render_dev_lean_checks(events: list[dict]) -> list[tuple[str, str]]:
     """Render Lean snippets for all `check` events in a dev event stream.
 
-    Captures before a `check` event are consumed by that check. This keeps the
-    v1 convention simple: C fragments should emit typed captures, then a check.
+    Captures before a `check` event are consumed by that check. `hookz_dev_check`
+    calls this during hook execution, so the directive acts like a point-in-time
+    assertion rather than a post-run trace.
     """
     rendered: list[tuple[str, str]] = []
     pending: list[dict] = []

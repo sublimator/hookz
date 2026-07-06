@@ -16,13 +16,19 @@ def _read_label(rt: HookRuntime, ptr: int, length: int) -> str:
 def _append_event(rt: HookRuntime, event: dict) -> None:
     event.setdefault("line", rt._current_line)
     rt.dev_events.append(event)
+    rt._dev_pending_events.append(event)
 
 
 def hookz_dev_check(rt: HookRuntime, tag_ptr: int, tag_len: int) -> int:
-    _append_event(rt, {
+    event = {
         "kind": "check",
         "tag": _read_label(rt, tag_ptr, tag_len),
-    })
+    }
+    _append_event(rt, event)
+
+    from hookz.dev_lean import dispatch_dev_lean_checks
+    dispatch_dev_lean_checks(rt._dev_pending_events)
+    rt._dev_pending_events = []
     return 0
 
 
