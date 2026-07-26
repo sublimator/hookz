@@ -180,7 +180,9 @@
 #define NOPE(x)\
     rollback(SBUF(x), __LINE__);
 
+//@@start debug-flag
 #define DEBUG 1
+//@@end debug-flag
 
 // genesis account id
 uint8_t genesis[20] =

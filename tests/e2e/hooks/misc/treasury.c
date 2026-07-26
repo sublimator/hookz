@@ -49,11 +49,13 @@ uint8_t ctxn[251] =
 };
 // clang-format on
 
+//@@start ctxn-offsets
 #define CFLS_OUT (ctxn + 15U)
 #define CLLS_OUT (ctxn + 21U)
 #define CFEE_OUT (ctxn + 26U)
 #define CACCOUNT_OUT (ctxn + 71U)
 #define CEMIT_OUT (ctxn + 113U)
+//@@end ctxn-offsets
 
 // clang-format off
 uint8_t txn[260] =
@@ -74,6 +76,7 @@ uint8_t txn[260] =
 };
 // clang-format on
 
+//@@start txn-offsets
 #define FLS_OUT (txn + 15U)
 #define LLS_OUT (txn + 21U)
 #define FEE_OUT (txn + 35U)
@@ -81,6 +84,7 @@ uint8_t txn[260] =
 #define ACC_OUT (txn + 80U)
 #define DEST_OUT (txn + 102U)
 #define EMIT_OUT (txn + 122U)
+//@@end txn-offsets
 
 #define BE_DROPS(drops)\
 {\
