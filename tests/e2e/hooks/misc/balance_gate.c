@@ -16,6 +16,7 @@ int64_t hook(uint32_t reserved)
 {
     _g(1, 1);
 
+    //@@start outgoing-pass
     // Pass outgoing transactions
     uint8_t hook_acc[20];
     hook_account(SBUF(hook_acc));
@@ -35,7 +36,9 @@ int64_t hook(uint32_t reserved)
 
     if (equal)
         DONE("balance_gate: outgoing — pass.");
+    //@@end outgoing-pass
 
+    //@@start min-balance
     // Read minimum balance from parameter (default 10 XAH = 10M drops)
     int64_t min_balance = float_set(-6, 10); // 10 * 10^-6 ... no wait
     // Actually: 10 XAH = 10,000,000 drops. In XFL that's float_set(0, 10000000)
@@ -49,6 +52,9 @@ int64_t hook(uint32_t reserved)
         min_balance = *((int64_t*)min_buf);
     }
 
+    //@@end min-balance
+
+    //@@start load-balance
     // Look up sender's AccountRoot
     uint8_t kl[34];
     if (util_keylet(SBUF(kl), KEYLET_ACCOUNT, SBUF(otxn_acc), 0, 0, 0, 0) != 34)
@@ -66,14 +72,18 @@ int64_t hook(uint32_t reserved)
     if (balance < 0)
         NOPE("balance_gate: could not read balance.");
 
+    //@@end load-balance
+
     trace_float((uint32_t)"bal", 3, balance);
     trace_float((uint32_t)"min", 3, min_balance);
 
+    //@@start decide
     // Compare: balance >= min_balance
     if (float_compare(balance, min_balance, COMPARE_LESS))
         NOPE("balance_gate: sender balance too low.");
 
     DONE("balance_gate: pass.");
+    //@@end decide
 }
 
 int64_t cbak(uint32_t reserved)

@@ -210,6 +210,7 @@ int64_t hook(uint32_t r)
     if (tt != 99)  // ttINVOKE only
         DONE("Governance: Passing non-Invoke txn. HookOn should be changed to avoid this.");
 
+    //@@start direction-check
     // get the account id
     uint8_t account_field[32];
     otxn_field(account_field + 12, 20, sfAccount);
@@ -224,7 +225,8 @@ int64_t hook(uint32_t r)
         if (otxn_field(SBUF(dest_acc), sfDestination) == 20 && !BUFFER_EQUAL_20(hook_accid + 12, dest_acc))
             DONE("Goverance: Passing outgoing txn.");
     }
-    
+    //@@end direction-check
+
     int64_t is_L1_table = BUFFER_EQUAL_20(hook_accid + 12, genesis);
 
     if (is_L1_table)
@@ -237,6 +239,7 @@ int64_t hook(uint32_t r)
     // initial execution, setup hook
     if (member_count == DOESNT_EXIST)
     {
+        //@@start init-params
         // gather hook parameters
 
         uint8_t imc;
@@ -275,7 +278,9 @@ int64_t hook(uint32_t r)
             // set reward delay
             ASSERT(0 < state_set(SVAR(ird), "RD", 2));
         }
+        //@@end init-params
 
+        //@@start seat-params
         for (uint8_t i = 0; GUARD(SEAT_COUNT), i < member_count; ++i)
         {
             uint8_t member_acc[20];
@@ -293,6 +298,7 @@ int64_t hook(uint32_t r)
             // forward key
             ASSERT(state_set(SVAR(i), SBUF(member_acc)) == 1);
         }
+        //@@end seat-params
 
         DONE("Governance: Setup completed successfully.");
     }
@@ -376,6 +382,7 @@ int64_t hook(uint32_t r)
     trace_num(SBUF("topic_size:"), topic_size);
     trace(SBUF("topic_data:"), topic_data + padding, topic_size, 1);
 
+    //@@start vote-key
     // reuse account_field to create vote key
     account_field[0] = 'V';
     account_field[1] = t;
@@ -386,6 +393,7 @@ int64_t hook(uint32_t r)
     uint8_t previous_topic_data[32];
     int64_t previous_topic_size =
         state(previous_topic_data + padding, topic_size, SBUF(account_field));
+    //@@end vote-key
 
     // check if the vote they're making has already been cast before,
     // if it is identical to their existing vote for this topic then just end with tesSUCCESS
@@ -400,6 +408,7 @@ int64_t hook(uint32_t r)
     // we might have to decrement the old voting if they voted previously
     // and we will have to increment the new voting
 
+    //@@start counter-update
     // write vote to their voting key
     ASSERT(state_set(topic_data + padding, topic_size, SBUF(account_field)) == topic_size);
     
@@ -440,7 +449,8 @@ int64_t hook(uint32_t r)
         // restore the saved bytes
         *((uint64_t*)topic_data) = saved_data;
     }
-   
+    //@@end counter-update
+
 
 
     if (DEBUG)
@@ -484,6 +494,7 @@ int64_t hook(uint32_t r)
     {
     
 
+        //@@start emit-l1-vote
         uint8_t txn_out[1024];
         uint8_t* buf_out = txn_out;
         uint32_t cls = (uint32_t)ledger_seq();
@@ -545,6 +556,7 @@ int64_t hook(uint32_t r)
 
         uint8_t emit_hash[32];
         int64_t emit_result = emit(SBUF(emit_hash), txn_out, txn_len);
+        //@@end emit-l1-vote
 
         trace_num(SBUF("Governance: Emit result"), emit_result);
 
@@ -572,6 +584,7 @@ int64_t hook(uint32_t r)
         {
             // hook topics
 
+            //@@start action-hook
             // first get the hook ledget object
             uint8_t keylet[34];
             util_keylet(SBUF(keylet), KEYLET_HOOK, hook_accid + 12, 20, 0,0,0,0);
@@ -625,6 +638,7 @@ int64_t hook(uint32_t r)
 
             uint8_t emithash[32];
             int64_t emit_result = emit(SBUF(emithash), emit_buf, emit_size);
+            //@@end action-hook
 
             if (DEBUG)
                 TRACEVAR(emit_result);
@@ -714,6 +728,7 @@ int64_t hook(uint32_t r)
                 
             }
 
+            //@@start vote-gc
             // we need to garbage collect all their votes
             if (previous_present)
             {
@@ -778,6 +793,7 @@ int64_t hook(uint32_t r)
                 // forward key
                 ASSERT(state_set(0, 0, previous_member + 12, 20) == 0);
             }
+            //@@end vote-gc
 
             if (!topic_data_zero)
             {

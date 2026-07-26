@@ -1,4 +1,5 @@
 #include "hookapi.h"
+//@@start defaults
 #define DEFAULT_REWARD_DELAY 6199553087261802496ULL
 // 2600000
 #define DEFAULT_REWARD_RATE 6038156834009797973ULL
@@ -6,6 +7,7 @@
 
 #define L1SEATS 20U
 #define MAXUNL 128U
+//@@end defaults
 #define SVAR(x) &(x), sizeof(x)
 
 #define ASSERT(x)\
@@ -117,6 +119,7 @@ int64_t hook(uint32_t r)
     if (BUFFER_EQUAL_20(hook_acc, otxn_acc))
         accept(SBUF("Reward: Passing outgoing txn"), __LINE__);
 
+    //@@start reward-config
     // the default rate and delay are used if somehow the keys are missing from hook state (graceful failure)
     int64_t xfl_rr = DEFAULT_REWARD_RATE;
     int64_t xfl_rd = DEFAULT_REWARD_DELAY;
@@ -135,7 +138,9 @@ int64_t hook(uint32_t r)
             float_compare(xfl_rr, float_one(), COMPARE_GREATER) ||
             float_compare(xfl_rd, float_one(), COMPARE_LESS))
         rollback(SBUF("Reward: Rewards incorrectly configured by governance or unrecoverable error."), __LINE__);
+    //@@end reward-config
 
+    //@@start reward-fields
     // get the account root keylet
     uint8_t kl[34];
     util_keylet(SBUF(kl), KEYLET_ACCOUNT, SBUF(otxn_acc), 0,0,0,0);
@@ -154,7 +159,9 @@ int64_t hook(uint32_t r)
     slot_subfield(1, sfRewardTime, 6);
 
     int64_t time = slot(0,0,6);
+    //@@end reward-fields
 
+    //@@start wait-message
     int64_t time_elapsed = ledger_last_time() - time;
 
 
@@ -172,7 +179,9 @@ int64_t hook(uint32_t r)
 
         rollback(SBUF(msg_buf), __LINE__);
     }
+    //@@end wait-message
 
+    //@@start reward-calc
     int64_t accumulator = slot(0,0,2);
     int64_t first = slot(0,0,3);
     int64_t last = slot(0,0,4);
@@ -227,7 +236,9 @@ int64_t hook(uint32_t r)
 
 
     uint64_t reward_drops = float_int(xfl_reward, 6, 1);
+    //@@end reward-calc
 
+    //@@start fee-refund
     uint64_t l1_drops = reward_drops / L1SEATS;
 
     int64_t otxn_slot_num = otxn_slot(10);
@@ -241,7 +252,9 @@ int64_t hook(uint32_t r)
     // user gets back the fee they spent running the hook
     if (xfl_fee > 0)
         reward_drops += float_int(xfl_fee, 6, 1);
+    //@@end fee-refund
 
+    //@@start mint-entries
     TEMPLATE_DROPS(reward_drops);
 
     uint8_t* upto = txn_mint + 209U;
@@ -260,7 +273,9 @@ int64_t hook(uint32_t r)
 
     // now iterate all possible seats in all possible tables
     TEMPLATE_DROPS(l1_drops);
+    //@@end mint-entries
 
+    //@@start unl-report
 
     // there are two conditions for L1 governance members to receive rewards:
     // 1. they must be an L1 member
@@ -309,6 +324,9 @@ int64_t hook(uint32_t r)
         }
 
     }
+    //@@end unl-report
+
+    //@@start emit-mint
     *upto++ = 0xF1U;
 
 
@@ -342,6 +360,7 @@ int64_t hook(uint32_t r)
 
     if (emit_result < 0)
         rollback(SBUF("Reward: Emit loopback failed."), __LINE__);
+    //@@end emit-mint
 
 
     accept(SBUF("Reward: Emitted reward txn successfully."), __LINE__);

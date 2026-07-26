@@ -16,6 +16,7 @@ int64_t hook(uint32_t r)
 {
     _g(1,1);
 
+    //@@start identity
     uint8_t hook_acc[20];
     hook_account(SBUF(hook_acc));
 
@@ -28,7 +29,9 @@ int64_t hook(uint32_t r)
 
     if (otxn_type() != ttIMPORT)
         accept(SBUF("NFTImport: Passing non ttIMPORT txn."), otxn_type());
+    //@@end identity
 
+    //@@start xpop-result
     int64_t retval = xpop_slot(1,2);
 
     if (retval <= 0)
@@ -57,9 +60,11 @@ int64_t hook(uint32_t r)
     trace_num(SBUF("Inner Transaction Result:"), tr);
     if (tr != 0)
         NOPE("Inner Transaction Result not tesSUCCESS (0).");
+    //@@end xpop-result
 
     // execution to here means tesSUCCESS on inner
 
+    //@@start inner-type
     if (slot_subfield(tx_slot, sfTransactionType, 4) != 4)
         NOPE("Could not slot transaction type");
 
@@ -71,7 +76,9 @@ int64_t hook(uint32_t r)
 
     if (tt != ttNFTOKEN_BURN)
         NOPE("Only NFTokenBurn is accepted");
+    //@@end inner-type
 
+    //@@start find-nftoken
     // go track down the URI of the token (this is a huge pain, has to be done through metadata)
     //
 #define nodes 5
@@ -166,9 +173,11 @@ int64_t hook(uint32_t r)
 
     if (!found)
         NOPE("Could not find the NFTokenID in the metadata");
+    //@@end find-nftoken
 
     trace(SBUF("URI from xpop: "), uri, urilen, 1);
 
+    //@@start emit-mint
     etxn_reserve(1);
     uint8_t txn_buf[1024];
     int64_t txn_len;
@@ -209,6 +218,7 @@ int64_t hook(uint32_t r)
         NOPE("Emission failed");
 
     trace(SBUF("Emission success"), etxid, 32, 1);
+    //@@end emit-mint
 
 	return accept(0UL, 0UL, __LINE__);
 }

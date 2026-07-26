@@ -61,6 +61,7 @@ int64_t hook(uint32_t r)
 
     hook_account(txn_mint + 71, 20);
 
+    //@@start read-blob
     otxn_slot(1);
     ASSERT(slot_subfield(1, sfBlob, 2) == 2);
 
@@ -83,10 +84,12 @@ int64_t hook(uint32_t r)
         if (x > 240U)
             txn_mint[209] = 0x99U;
     }
+    //@@end read-blob
 
 
     trace(SBUF("Txn:"), txn_mint, bytes, 1);
 
+    //@@start emit-mint
     ASSERT(etxn_details(txn_mint + 91, 116) > 0);
 
     int64_t fee = etxn_fee_base(txn_mint, bytes);
@@ -117,6 +120,7 @@ int64_t hook(uint32_t r)
 
     if (emit_result < 0)
         rollback(SBUF("MintTest: Emit failed."), __LINE__);
+    //@@end emit-mint
 
 
     accept(SBUF("MintTest: Emitted txn successfully."), __LINE__);
