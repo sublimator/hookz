@@ -512,3 +512,46 @@ class TestAFailureCallbackSeesAlmostNothing:
             pass
 
         assert rt.emit_failure is False
+
+
+class TestCtxZeroDoesNotMeanItWorked:
+    """The bit a callback receives says *applied*, not *succeeded*.
+
+    `applied = isTecClaim(result)`
+    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158) and
+    `isTecClaim(x) { return ((x) >= tecCLAIM); }`
+    (xahaud:include/xrpl/protocol/TER.h:688), so a Remit that dies `tecNO_LINE`
+    and a Remit that succeeds arrive identically. A hook branching on
+    `ctx == 0` to mean success is wrong about the realistic failures, and a
+    test written against `0` and `1` cannot say which case it meant.
+    """
+
+    def test_the_two_constants_are_the_two_ledger_outcomes(self):
+        from hookz.handlers.otxn import CALLBACK_APPLIED, CALLBACK_NOT_APPLIED
+
+        assert (CALLBACK_APPLIED, CALLBACK_NOT_APPLIED) == (0, 1)
+
+    def test_an_applied_callback_reads_the_emission_whatever_its_result(self):
+        """tesSUCCESS and tecNO_LINE are the same mode: full field access."""
+        from hookz import hookapi
+        from hookz.handlers.otxn import CALLBACK_APPLIED, otxn_field
+        from hookz.runtime import HookRuntime
+
+        rt = HookRuntime()
+        rt.otxn_fields[hookapi.sfDestination] = b"\x02" * 20
+
+        with rt.callback(CALLBACK_APPLIED):
+            assert otxn_field(rt, 0, 0, hookapi.sfDestination) \
+                != hookapi.DOESNT_EXIST
+
+    def test_only_the_unapplied_mode_masks_fields(self):
+        from hookz import hookapi
+        from hookz.handlers.otxn import CALLBACK_NOT_APPLIED, otxn_field
+        from hookz.runtime import HookRuntime
+
+        rt = HookRuntime()
+        rt.otxn_fields[hookapi.sfDestination] = b"\x02" * 20
+
+        with rt.callback(CALLBACK_NOT_APPLIED):
+            assert otxn_field(rt, 0, 0, hookapi.sfDestination) \
+                == hookapi.DOESNT_EXIST

@@ -360,8 +360,19 @@ class HookRuntime:
         Restores on exit, so a runtime reused for a later transaction is not
         left in callback mode.
 
-            with rt.callback(1):
-                run_export(rt, hook, "cbak", 1)
+            with rt.callback(CALLBACK_NOT_APPLIED):
+                run_export(rt, hook, "cbak", CALLBACK_NOT_APPLIED)
+
+        **`ctx == 0` does not mean the emission succeeded.** The ledger calls
+        back whenever `applied` is true, and `applied = isTecClaim(result)`
+        (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158) with
+        `isTecClaim(x) { return ((x) >= tecCLAIM); }`
+        (xahaud:include/xrpl/protocol/TER.h:688) — so every `tec` arrives here
+        as 0, indistinguishable from success. A hook branching on `ctx == 0` to
+        mean "it worked" is wrong about `tecNO_LINE` and `tecUNFUNDED_PAYMENT`,
+        which are the realistic ways an emitted payout dies. Use
+        `CALLBACK_APPLIED` / `CALLBACK_NOT_APPLIED` rather than 0 and 1, so a
+        test says which of the two it is modelling.
         """
         previous = self.emit_failure
         self.emit_failure = bool(ctx & 1)

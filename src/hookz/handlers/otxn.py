@@ -26,6 +26,32 @@ EMIT_FAILURE_FIELDS = frozenset({
     hookapi.sfTransactionHash,
 })
 
+#: `cbak(0)` — the emitted transaction reached a ledger.
+#:
+#: This is **not** the same as "it worked". The ledger calls the callback when
+#: `applied` is true, and
+#:
+#:     xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158
+#:         applied = isTecClaim(result);
+#:     xahaud:include/xrpl/protocol/TER.h:688
+#:         inline bool isTecClaim(TER x) { return ((x) >= tecCLAIM); }
+#:
+#: so *every* `tec` counts — `tecNO_LINE` on a Remit to a staker with no
+#: trustline, `tecUNFUNDED_PAYMENT` on a payout the account cannot cover. Those
+#: arrive with ctx 0, indistinguishable from success, because the hook is handed
+#: one bit and the bit does not mean what its name suggests.
+CALLBACK_APPLIED = 0
+
+#: `cbak(1)` — the emission never reached a ledger, so the ledger applies a
+#: `ttEMIT_FAILURE` pseudo-transaction instead. Only `EMIT_FAILURE_FIELDS` are
+#: readable in this mode.
+#:
+#: xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1584
+#:     ctx_.tx.getTxnType() == ttEMIT_FAILURE ? 1UL : 0UL
+#: xahaud:include/xrpl/protocol/detail/transactions.macro:598
+#:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, …)
+CALLBACK_NOT_APPLIED = 1
+
 
 def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
                            data: bytes, is_account: bool = False) -> int:
