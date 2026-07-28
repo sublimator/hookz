@@ -257,9 +257,9 @@ int64_t hook(uint32_t r) {
 """)
         t = CoverageTracker()
         t._markers = parse_block_markers(src)
-        # every line in both blocks is executable; only the first block ran
-        for ln in (4, 5, 8, 9, 10):
-            t._line_hits[ln] = 0
+        # the denominator has to be stated — the tracker will not infer one
+        # from the hits, since that makes every entered region complete
+        t._executable_lines = {4, 5, 8, 9, 10}
         t._line_hits[4] = 1
         t._line_hits[5] = 1
 
@@ -324,3 +324,72 @@ int64_t hook(uint32_t r) {
 
         assert region.not_entered
         assert len(region.lines_total) == 4
+
+
+class TestNoDenominatorIsNotFullCoverage:
+    """Hits with no executable set means 0/0, and 0/0 is not 100%.
+
+    Reported by review as three residuals of the earlier region fix: the
+    denominator could still fall back to the hits, `run(coverage=True)`
+    discarded the instrumentation's line list, and the plugin footer printed
+    "100% coverage!" whenever the uncovered set was empty — which it always is
+    when nothing was ever known to be coverable.
+    """
+
+    @staticmethod
+    def _tracker(tmp_path):
+        from hookz.coverage.markers import parse_block_markers
+        from hookz.coverage.tracker import CoverageTracker
+
+        src = tmp_path / "h.c"
+        src.write_text("""
+int64_t hook(uint32_t r) {
+    //@@start half
+    int a = 1;
+    int b = 2;
+    int c = 3;
+    int d = 4;
+    //@@end half
+    return 0;
+}
+""")
+        t = CoverageTracker()
+        t._markers = parse_block_markers(src)
+        t.hit(4)
+        t.hit(5)
+        return t
+
+    def test_a_region_does_not_borrow_the_hits(self, tmp_path):
+        region = self._tracker(tmp_path).region("half")
+
+        assert region.lines_total == set(), "no denominator was established"
+        assert not region.completed, "0/0 must not read as complete"
+        assert region.coverage_pct == 0.0
+
+    def test_but_entered_still_works(self, tmp_path):
+        """"Did anything in here run" is answerable from the hits alone, and
+        is the assertion marker tests are built on."""
+        region = self._tracker(tmp_path).region("half")
+
+        assert region.entered
+        assert region.lines_hit == {4, 5}
+
+    def test_the_tracker_says_whether_it_can_measure(self, tmp_path):
+        t = self._tracker(tmp_path)
+
+        assert not t.has_denominator
+        assert t.uncovered_lines == set(), "empty for want of a denominator"
+
+        t.set_executable_lines([])
+        t._executable_lines = {4, 5, 6, 7}
+        assert t.has_denominator
+        assert t.uncovered_lines == {6, 7}
+
+    def test_a_stated_denominator_gives_a_real_ratio(self, tmp_path):
+        t = self._tracker(tmp_path)
+        t._executable_lines = {4, 5, 6, 7}
+
+        region = t.region("half")
+        assert region.lines_total == {4, 5, 6, 7}
+        assert region.coverage_pct == 50.0
+        assert not region.completed

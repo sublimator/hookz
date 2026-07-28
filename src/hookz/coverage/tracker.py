@@ -55,8 +55,12 @@ class RegionCoverage:
 
     @property
     def completed(self) -> bool:
-        """All lines with DWARF entries in the region were hit."""
-        return self.lines_total and self.lines_hit >= self.lines_total
+        """Every coverable line in the region ran.
+
+        False when no executable set was established: 0/0 is "we never asked
+        what was coverable", which is not the same claim as "all of it ran".
+        """
+        return bool(self.lines_total) and self.lines_hit >= self.lines_total
 
     @property
     def hit_count(self) -> int:
@@ -113,6 +117,15 @@ class CoverageTracker:
         return set(self._executable_lines)
 
     @property
+    def has_denominator(self) -> bool:
+        """Was the executable-line set ever established?
+
+        Without it every ratio here is 0/0, and a reader cannot tell that from
+        a genuine zero. Callers that print a percentage must ask first.
+        """
+        return bool(self._executable_lines)
+
+    @property
     def uncovered_lines(self) -> set[int]:
         """Executable lines that were never hit."""
         return self._executable_lines - self.lines_hit
@@ -164,12 +177,19 @@ class CoverageTracker:
                 # lines that happened to be hit. Counting only hits makes every
                 # entered region 100% complete and every unentered one 0/0 —
                 # a region can then never report a gap, which is the one thing
-                # it exists to report. Falls back to observed lines when no
-                # DWARF/AST set was supplied, so a bare tracker still works.
-                known = self._executable_lines or set(self._line_hits)
-                total = {ln for ln in range(m.region_start, m.region_end + 1)
-                         if ln in known}
-                hit = {ln for ln in total if self._line_hits.get(ln, 0) > 0}
+                # it exists to report.
+                #
+                # With no executable set there is no denominator, and the
+                # region reports 0/0 rather than borrowing the hits. "We never
+                # established what was coverable" and "everything coverable ran"
+                # are different statements, and only one of them is reassuring.
+                span = range(m.region_start, m.region_end + 1)
+                # Two different questions, and only one of them needs a
+                # denominator. "Did anything in here run" is answerable from
+                # the hits alone; "did all of it run" is not, and must not
+                # borrow the hits to manufacture an answer.
+                total = {ln for ln in span if ln in self._executable_lines}
+                hit = {ln for ln in span if self._line_hits.get(ln, 0) > 0}
                 return RegionCoverage(
                     name=name,
                     start_line=m.region_start,

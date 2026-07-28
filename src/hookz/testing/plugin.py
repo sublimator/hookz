@@ -209,7 +209,21 @@ def pytest_sessionfinish(session, exitstatus):
                 border_style="yellow",
             ))
 
-        if tracker.uncovered_lines:
+        if not tracker.has_denominator:
+            # Hits but no executable set: every ratio is 0/0. An empty
+            # uncovered list then means "nothing was ever known to be
+            # coverable", and printing 100% for it is the exact inversion of
+            # the truth.
+            console.print(Panel(
+                f"{len(tracker.lines_hit)} line(s) ran, but the executable-line "
+                "set was never established, so no percentage is meaningful.\n"
+                "Instrument via tests.support.instrumented_hook, or call "
+                "set_executable_lines with the locations instrument_wasm "
+                "returned.",
+                title=f"{src_name} — coverage not measurable",
+                border_style="red",
+            ))
+        elif tracker.uncovered_lines:
             report = tracker.uncovered_report(source_path, context=1)
             console.print(Panel(
                 report,

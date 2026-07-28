@@ -371,7 +371,15 @@ class HookRuntime:
 
         if coverage:
             from hookz.coverage.rewriter import instrument_wasm
-            wasm_bytes, _locs = instrument_wasm(wasm_bytes)
+            wasm_bytes, locs = instrument_wasm(wasm_bytes)
+            # The instrumentation is what knows which lines are coverable, and
+            # dropping it left the tracker with hits and no denominator — every
+            # ratio 0/0, which reads as "nothing to cover" rather than "we never
+            # asked". `source` is optional; without it the DWARF lines stand
+            # alone, unfiltered by the AST.
+            source = getattr(hook, "source", None) if isinstance(hook, Hook) else None
+            if locs:
+                self.coverage.set_executable_lines(locs, source_path=source)
 
         # Compiling the module is the expensive part — a few hundred KB of
         # wasm costs tens of milliseconds, and a test suite runs the same
