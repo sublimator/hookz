@@ -535,21 +535,46 @@ def constant_locals(wasm: bytes, start: int, end: int,
     return out
 
 
+def barrier_offsets(wasm: bytes, start: int, end: int) -> tuple[int, ...]:
+    """Where control flow can diverge or arrive, in one body.
+
+    Needed to tell "the assignment is above this read" from "the assignment
+    *runs* before this read". Those are the same thing only inside a basic
+    block.
+    """
+    return tuple(i.offset for i in decode_body(wasm, start, end)
+                 if i.opcode in BARRIERS)
+
+
 def resolve_locals(args: tuple, consts: dict[int, ConstFromLocal],
-                   at_offset: int) -> tuple:
+                   at_offset: int, barriers: tuple[int, ...] = ()) -> tuple:
     """Replace `Local` arguments with the constant they can only hold.
 
-    Only where every assignment precedes this call. A read that could run
-    before the local was ever written sees the zero it was declared with, not
-    the literal, so it is left as `Local`.
+    Only when some assignment **reaches** the read: it is above it *and* no
+    control flow lies between, so the read cannot be arrived at by a path that
+    skipped it. Textual order alone is not enough —
+
+        block
+          i32.const 1
+          br_if 0          ;; leaves without assigning
+          i32.const 7
+          local.set 0
+        end
+        local.get 0        ;; 0 on the branch, 7 otherwise
+
+    — the assignment is above the read and the local is still the zero it was
+    declared with whenever the branch is taken. Requiring a barrier-free run
+    between them is conservative, since a def that genuinely dominates across a
+    block boundary is declined too, but it cannot report a value the local may
+    not hold.
     """
     out = []
     for a in args:
         known = consts.get(a.index) if isinstance(a, Local) else None
-        if known is not None and all(d < at_offset for d in known.defs):
-            out.append(known)
-        else:
-            out.append(a)
+        reaches = known is not None and any(
+            d < at_offset and not any(d < b < at_offset for b in barriers)
+            for d in known.defs)
+        out.append(known if reaches else a)
     return tuple(out)
 
 
@@ -594,23 +619,25 @@ def api_calls(wasm: bytes, module=None) -> list[ApiCall]:
     for n, (start, end) in enumerate(decode_code_bodies_raw(wasm)):
         type_idx = module.functions[n] if n < len(module.functions) else 0
         params = len(module.types[type_idx].params) if module.types else 0
-        per_body.append((start, end, constant_locals(wasm, start, end, params)))
+        per_body.append((start, end, constant_locals(wasm, start, end, params),
+                         barrier_offsets(wasm, start, end)))
 
-    def locals_at(offset: int) -> dict:
-        for start, end, consts in per_body:
+    def locals_at(offset: int):
+        for start, end, consts, barriers in per_body:
             if start <= offset < end:
-                return consts
-        return {}
+                return consts, barriers
+        return {}, ()
 
     out: list[ApiCall] = []
     for site in call_sites(wasm, module):
         name = names.get(site.func_index)
         if name is None:
             continue                        # a call into the hook's own code
+        consts, barriers = locals_at(site.offset)
         out.append(ApiCall(
             offset=site.offset,
             name=name,
-            args=resolve_locals(site.args, locals_at(site.offset), site.offset),
+            args=resolve_locals(site.args, consts, site.offset, barriers),
         ))
     return out
 

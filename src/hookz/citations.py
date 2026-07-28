@@ -119,14 +119,44 @@ def _declarator_name(node) -> str | None:
     return None
 
 
+# Macros that declare a function whose real name is one of their arguments.
+# Most of the hook API is written this way, so without unwrapping them every
+# citation into it is labelled with the macro instead of the function.
+_NAMING_MACROS = {
+    "DEFINE_HOOK_FUNCTION": 1,
+    "DEFINE_HOOK_FUNCNARG": 1,
+}
+
+
+def _macro_named_function(node) -> str | None:
+    """The function name carried in a declaring macro's arguments."""
+    decl = node.child_by_field_name("declarator")
+    while decl is not None and decl.type != "function_declarator":
+        decl = decl.child_by_field_name("declarator")
+    if decl is None:
+        return None
+    name = decl.child_by_field_name("declarator")
+    if name is None or name.text.decode(errors="replace") not in _NAMING_MACROS:
+        return None
+    position = _NAMING_MACROS[name.text.decode(errors="replace")]
+    params = decl.child_by_field_name("parameters")
+    args = [c for c in params.children if c.is_named] if params else []
+    if position >= len(args):
+        return None
+    return args[position].text.decode(errors="replace").strip()
+
+
 def enclosing_symbol(tree, line: int) -> str | None:
     """The function a line sits in, or None outside one.
 
     A construct type says what the code *is*; the symbol says what it is
-    *for*, which is what a reader following a citation actually wants. A
-    macro-defined entry point (`DEFINE_HOOK_FUNCTION(...)`) parses as a
-    declaration rather than a function, so this returns None there rather than
-    guessing a name from the macro arguments.
+    *for*, which is what a reader following a citation actually wants.
+
+    Most of the hook API is declared through `DEFINE_HOOK_FUNCTION(ret, name,
+    …)`, which tree-sitter reads as a function definition whose *name is the
+    macro*. Labelling every one of those `DEFINE_HOOK_FUNCTION` is worse than
+    saying nothing, so the real name is taken from the argument that carries
+    it.
     """
     target = line - 1
     best = None
@@ -139,7 +169,9 @@ def enclosing_symbol(tree, line: int) -> str | None:
                 if best is None or size < (best.end_point[0] - best.start_point[0]):
                     best = node
             stack.extend(node.children)
-    return _declarator_name(best) if best is not None else None
+    if best is None:
+        return None
+    return _macro_named_function(best) or _declarator_name(best)
 
 def span_for(path: Path | str, line: int) -> Span:
     """The construct a citation points at.

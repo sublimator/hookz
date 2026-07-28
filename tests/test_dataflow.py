@@ -364,3 +364,94 @@ class TestConstantNamingIsPositionAware:
 
         assert _pretty(Const(7)) == "7"
         assert _pretty(ConstFromLocal(7, local=3, defs=(1,))) == "7*"
+
+
+class TestAConstantMustReachTheUse:
+    """Textual order is not reachability.
+
+    A local assigned inside a block a branch can skip is still the zero it was
+    declared with on that path, however far above the read the assignment sits.
+    Reported as the severe finding of round 1: resolution was path-insensitive
+    and reported the value with the same authority as one read off the stack.
+    """
+
+    # block; i32.const 1; br_if 0; i32.const 7; local.set 0; end; local.get 0
+    SKIPPABLE = bytes([0x02, 0x40, 0x41, 0x01, 0x0D, 0x00,
+                       0x41, 0x07, 0x21, 0x00, 0x0B, 0x20, 0x00, 0x0B])
+    USE = 11
+
+    # i32.const 7; local.set 0; local.get 0 — nothing between them
+    STRAIGHT = bytes([0x41, 0x07, 0x21, 0x00, 0x20, 0x00, 0x0B])
+
+    def test_an_assignment_a_branch_can_skip_is_not_used(self):
+        from hookz.wasm.dataflow import (
+            Local, barrier_offsets, constant_locals, resolve_locals)
+
+        consts = constant_locals(self.SKIPPABLE, 0, len(self.SKIPPABLE), 0)
+        assert consts, "it is a single-constant local"
+
+        barriers = barrier_offsets(self.SKIPPABLE, 0, len(self.SKIPPABLE))
+        resolved = resolve_locals((Local(0),), consts, self.USE, barriers)
+
+        assert resolved == (Local(0),), (
+            "the br_if leaves without assigning, so the local may be 0")
+
+    def test_without_the_barriers_it_would_be_used(self):
+        """The check is the barrier list; passing none is the old behaviour and
+        this test says what that behaviour was."""
+        from hookz.wasm.dataflow import Local, constant_locals, resolve_locals
+
+        consts = constant_locals(self.SKIPPABLE, 0, len(self.SKIPPABLE), 0)
+        assert resolve_locals((Local(0),), consts, self.USE)[0].value == 7
+
+    def test_a_reaching_assignment_is_still_used(self):
+        """Conservative, not useless — nothing between def and use resolves."""
+        from hookz.wasm.dataflow import (
+            Local, barrier_offsets, constant_locals, resolve_locals)
+
+        consts = constant_locals(self.STRAIGHT, 0, len(self.STRAIGHT), 0)
+        barriers = barrier_offsets(self.STRAIGHT, 0, len(self.STRAIGHT))
+
+        assert resolve_locals((Local(0),), consts, 4, barriers)[0].value == 7
+
+    def test_the_real_hook_barely_notices(self, hook_wasm):
+        """The rule declines a def that genuinely dominates across a block, so
+        it could have cost a lot. On real hooks it costs almost nothing, which
+        is why soundness was affordable here."""
+        from hookz.wasm.dataflow import Const, ConstFromLocal, api_calls
+
+        args = [a for c in api_calls(hook_wasm) for a in c.args]
+        resolved = [a for a in args if isinstance(a, (Const, ConstFromLocal))]
+
+        assert len(resolved) / max(len(args), 1) > 0.5
+
+
+class TestMacroDeclaredFunctionsAreNamed:
+    """Most of the hook API is `DEFINE_HOOK_FUNCTION(ret, name, …)`.
+
+    tree-sitter reads that as a function definition whose name is the *macro*,
+    so every citation into the API was labelled `DEFINE_HOOK_FUNCTION`. Worse
+    than saying nothing, and the docstring claimed it returned None.
+    """
+
+    @pytest.mark.parametrize("line, expected", [
+        (2104, "util_keylet"),
+        (1891, "otxn_field"),
+    ])
+    def test_the_real_name_is_reported(self, line, expected):
+        from hookz.citations import span_for
+        from hookz.wasm.xahaud_ref import vendored_root
+
+        span = span_for(
+            vendored_root() / "src/xrpld/app/hook/detail/applyHook.cpp", line)
+
+        assert span.symbol == expected
+
+    def test_an_ordinary_method_is_unaffected(self):
+        from hookz.citations import span_for
+        from hookz.wasm.xahaud_ref import vendored_root
+
+        span = span_for(
+            vendored_root() / "src/xrpld/app/hook/detail/HookAPI.cpp", 511)
+
+        assert span.symbol == "HookAPI::emit"
