@@ -402,3 +402,18 @@ class TestNopCap:
         result = parse_object(self.BASE + b"\x99" * 64, strict=False)
         assert not result.complete
         assert "NOP" in str(result.error)
+
+
+class TestKnownGapsAreStated:
+    """A gap nobody wrote down is a gap nobody fixes."""
+
+    def test_the_gaps_are_enumerated(self):
+        from hookz.emission import KNOWN_GAPS
+        assert len(KNOWN_GAPS) >= 5
+        assert all(isinstance(g, str) and g for g in KNOWN_GAPS)
+
+    def test_the_fee_floor_gap_is_real(self):
+        """Documented because handlers/emit.py passes min_fee=None."""
+        import inspect
+        from hookz.handlers import emit as handler
+        assert "min_fee=None" in inspect.getsource(handler.emit)

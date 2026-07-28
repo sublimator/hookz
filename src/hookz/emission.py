@@ -74,10 +74,37 @@ RULES = {
     "preflight": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:794",
 }
 
-# Transaction types whose preflight hookz does not reproduce. An emit of one of
-# these passes the fourteen rules here and may still be refused on chain.
+# KNOWN GAPS — hookz ACCEPTS what xahaud REJECTS
+# ----------------------------------------------
+# Stated rather than discovered, in the same spirit as wasm/xahaud_ref's list.
+# Each is an emit that passes here and may be refused on chain.
+KNOWN_GAPS = (
+    # xahaud binds the EmitDetails values to the running hook: burden against
+    # the parent's, parent txn id against the originating transaction, nonce
+    # against those etxn_nonce actually issued, hook hash against the emitting
+    # hook. All of it needs execution context this function is not given.
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:660
+    "EmitDetails values (burden, parent txn, nonce, hook hash) are not bound "
+    "to the emitting context — only their presence is checked",
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:531
+    "canEmit / the hook's own allow-list of emittable transaction types is "
+    "not consulted",
+    # handlers/emit.py passes min_fee=None because the mock's etxn_fee_base is
+    # a constant, not xahaud's calculation. Rule 7 therefore only checks that a
+    # fee is present in a live emit; the floor is reachable via the unit API.
+    "the fee floor is not enforced in a live emit, only fee presence",
+    # TYPE_VALIDATORS covers SignerListSet. Everything else — Payment, Remit,
+    # ClaimReward, URIToken, OfferCreate — gets the fourteen rules and no
+    # transactor preflight at all.
+    "ripple::preflight is ported for SignerListSet only",
+    # prepare() is a copy-stub: it does not inject Sequence, FirstLedgerSequence,
+    # LastLedgerSequence, SigningPubKey, Fee or EmitDetails. A hook that relies
+    # on it emits a transaction missing all six.
+    "prepare() does not build the fields it documents",
+)
+
 PREFLIGHT_UNPORTED = (
-    "every type except those in TYPE_VALIDATORS — see the module docstring")
+    "every type except those in TYPE_VALIDATORS — see KNOWN_GAPS")
 
 
 @dataclass
