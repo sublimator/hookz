@@ -208,6 +208,31 @@ BUILDBOX_PIPELINE = BuildPipeline(
     transforms=("hookz.annotations:strip",),
 )
 
+# Analysis builds — coverage, `hookz wce`, the instrumented hooks tests drive.
+# They deliberately do NOT strip annotations, and the reason is not obvious:
+# DWARF line numbers have to point at the file a human is reading, and a
+# `hookz:` directive block must be rendered rather than removed. Stripping here
+# would produce coverage against a file nobody has open.
+#
+# The consequence is a divergence worth naming: a coverage report and an
+# on-chain rollback code index different files. `annotations.line_map` converts
+# between them; nothing else should be guessing.
+#
+# Declared rather than left implicit because these paths reach clang by other
+# routes (compile_hook_two_stage for DWARF, compile_hook_dev for directives),
+# so a transform added to the default pipeline silently would not apply to
+# them — and whether it should is a decision, not an oversight.
+ANALYSIS_PIPELINE = BuildPipeline(
+    name="analysis",
+    summary="coverage and WCE — keeps annotations so line numbers match the "
+            "source being read",
+    provenance="hookz",
+    compile=CompileSpec(opt_level="-O2", debug=True),
+    opt=NONE,
+    clean=False,
+    transforms=(),
+)
+
 DEBUG_PIPELINE = BuildPipeline(
     name="debug",
     summary="unoptimised, unstripped, uncleaned — for reading, not deploying",
@@ -218,7 +243,7 @@ DEBUG_PIPELINE = BuildPipeline(
 )
 
 BUILD_PIPELINES: dict[str, BuildPipeline] = {
-    p.name: p for p in (BUILDBOX_PIPELINE, DEBUG_PIPELINE)
+    p.name: p for p in (BUILDBOX_PIPELINE, ANALYSIS_PIPELINE, DEBUG_PIPELINE)
 }
 
 DEFAULT_PIPELINE = BUILDBOX_PIPELINE

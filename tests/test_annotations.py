@@ -11,7 +11,9 @@ import textwrap
 
 import pytest
 
-from hookz.annotations import strip, verify
+from hookz.annotations import (
+    annotated_line, line_map, published_line, strip, verify,
+)
 
 
 def dedent(s: str) -> str:
@@ -157,3 +159,55 @@ class TestPipelineIntegration:
         cfg = load_config(source_file=original)
         assert run_pipeline(plain, "buildbox", cfg).wasm == \
             run_pipeline(annotated, "buildbox", cfg).wasm
+
+
+class TestLineMapping:
+    """A line number means nothing without saying which file it indexes.
+
+    Hooks compile `__LINE__` in, so a rollback code from chain indexes the
+    *published* file. Coverage, `hookz wce` and every finding cite the
+    *annotated* one. On a heavily annotated hook those differ by hundreds of
+    lines, and neither number carries a label — so looking an on-chain code up
+    in the annotated source silently lands on unrelated code.
+    """
+
+    ANNOTATED = dedent("""
+        //@@entity actor any
+        int a = 1;
+        /*@@ a note
+           over two lines */
+        int b = 2;
+        //@@
+        int c = 3;
+    """)
+
+    def test_annotation_lines_have_no_published_counterpart(self):
+        m = line_map(self.ANNOTATED)
+        assert 1 not in m          # //@@entity
+        assert 3 not in m          # /*@@ opener
+        assert 4 not in m          # its continuation
+        assert 6 not in m          # //@@
+
+    def test_code_lines_map_to_their_stripped_position(self):
+        assert line_map(self.ANNOTATED) == {2: 1, 5: 2, 7: 3}
+
+    def test_the_map_agrees_with_strip(self):
+        """The two must not be able to disagree about what an annotation is."""
+        stripped = strip(self.ANNOTATED).splitlines()
+        for annotated_no, published_no in line_map(self.ANNOTATED).items():
+            assert (self.ANNOTATED.splitlines()[annotated_no - 1]
+                    == stripped[published_no - 1])
+
+    def test_a_chain_rollback_code_locates_its_line(self):
+        assert annotated_line(self.ANNOTATED, 3) == 7
+        assert published_line(self.ANNOTATED, 7) == 3
+
+    def test_an_annotation_line_has_no_published_line(self):
+        assert published_line(self.ANNOTATED, 1) is None
+
+    def test_a_code_past_the_end_locates_nothing(self):
+        assert annotated_line(self.ANNOTATED, 999) is None
+
+    def test_it_round_trips(self):
+        for a, p in line_map(self.ANNOTATED).items():
+            assert annotated_line(self.ANNOTATED, p) == a

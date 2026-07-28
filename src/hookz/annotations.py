@@ -77,6 +77,55 @@ def strip(source: str) -> str:
     return "".join(out)
 
 
+def line_map(annotated: str) -> dict[int, int]:
+    """Annotated line number -> the line it is in the stripped source.
+
+    Hooks compile `__LINE__` into the binary, so a rollback code observed on
+    chain is a line number in the *published* file. Coverage, `hookz wce` and
+    every finding cite the *annotated* file, because that is the one with the
+    reasoning written on it. On a heavily annotated hook those differ by
+    hundreds of lines, and nothing
+    about either number says which file it belongs to — so looking an on-chain
+    code up in the annotated source lands on unrelated code and reads as an
+    answer.
+
+    Annotation lines map to None's absence: they are simply not in the result.
+    """
+    out: dict[int, int] = {}
+    published = 0
+    lines = annotated.splitlines(keepends=True)
+    i, n = 0, len(lines)
+    while i < n:
+        line = lines[i]
+        if BLOCK_ONE_LINE.match(line) or LINE.match(line):
+            i += 1
+            continue
+        if BLOCK_OPEN.match(line):
+            while i < n and "*/" not in lines[i]:
+                i += 1
+            i += 1
+            continue
+        published += 1
+        out[i + 1] = published
+        i += 1
+    return out
+
+
+def published_line(annotated: str, line: int) -> int | None:
+    """Where an annotated line lands in the published file, or None if it is
+    an annotation and has no counterpart."""
+    return line_map(annotated).get(line)
+
+
+def annotated_line(annotated: str, line: int) -> int | None:
+    """The reverse: a line number from a deployed binary — a rollback code, a
+    guard id — located in the annotated source."""
+    for a, p in line_map(annotated).items():
+        if p == line:
+            return a
+    return None
+
+
 def verify(annotated: str, reference: str) -> list[str]:
     """Differences between the stripped source and what it claims to annotate.
 

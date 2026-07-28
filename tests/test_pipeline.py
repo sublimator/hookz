@@ -226,3 +226,42 @@ class TestCompileSpec:
         o3 = compile_hook(GOVERN, None, cfg, debug=False,
                           optimize=True, opt_level="-O3")
         assert len(o0) != len(o3)
+
+
+class TestTransformPolicy:
+    """Which builds strip annotations, and which must not.
+
+    Coverage keeping its annotations was correct and accidental — it reached
+    clang by a different route, so the default pipeline's transform never
+    applied. These pin the decision so the next transform lands deliberately.
+    """
+
+    def test_a_deployable_build_strips(self):
+        from hookz.wasm.pipeline import BUILDBOX_PIPELINE
+
+        assert BUILDBOX_PIPELINE.transforms == ("hookz.annotations:strip",)
+
+    def test_an_analysis_build_does_not(self):
+        """DWARF must point at the file a human is reading."""
+        from hookz.wasm.pipeline import ANALYSIS_PIPELINE
+
+        assert ANALYSIS_PIPELINE.transforms == ()
+        assert ANALYSIS_PIPELINE.compile.debug
+
+    def test_a_dev_build_does_not(self):
+        """`hookz:` directives are rendered into code, not stripped out."""
+        from hookz.wasm.pipeline import DEBUG_PIPELINE
+
+        assert DEBUG_PIPELINE.transforms == ()
+
+    def test_dev_mode_suppresses_transforms_even_when_declared(self):
+        """run_pipeline(dev=True) must not strip the directives it is rendering."""
+        from pathlib import Path
+
+        from hookz.config import load_config
+        from hookz.wasm.pipeline import run_pipeline
+
+        source = Path(__file__).parent / "e2e" / "hooks" / "misc" / "balance_gate.c"
+        trace = run_pipeline(source, "buildbox", load_config(source_file=source),
+                             dev=True)
+        assert "transform" not in [s.name for s in trace.stages]
