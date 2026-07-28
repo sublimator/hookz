@@ -106,6 +106,8 @@ CITED_FILES = (
     "src/libxrpl/protocol/STObject.cpp",          # xrpl/txn_parser.py, the (9,9) NOP
     "src/libxrpl/protocol/STTx.cpp",              # emission.py, isPseudoTx
     "include/xrpl/protocol/STTx.h",               # emission.py, maxMultiSigners
+    "src/libxrpl/protocol/Feature.cpp",           # amendments.py, the naming rule
+    "include/xrpl/protocol/detail/features.macro",  # amendments.py, the name index
 )
 
 

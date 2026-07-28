@@ -112,31 +112,33 @@ class HookResult:
         return [c for c in self.checkpoints if c.tag == tag]
 
 
-# Amendments enabled by default.
-# The whitelist-gating amendments (featureHooksUpdate1, featureHooksUpdate2)
-# are derived from hook_api.macro at runtime. The behavioral amendments
-# (fixHookAPI20251128, etc.) are listed here since they don't appear in
-# the macro file — they affect handler behavior, not the import whitelist.
-_BEHAVIORAL_AMENDMENTS: set[str] = {
-    "fixHookAPI20251128",
-    "featureHookAPISerializedType240",
-    "featureHooksUpdate1",
-    "featureDID",
-    "featurePriceOracle",
-    "featureCron",
-    # VoteBehavior::DefaultYes — validators adopt it unless told otherwise, so
-    # the fixed long-division is the behaviour a hook should expect to meet.
-    "fixFloatDivide",
-}
+# Amendments enabled by default: whatever mainnet has, read off a live node
+# and vendored as data/amendments-mainnet.json. See hookz.amendments — the
+# short version is that a hand-curated list was wrong in both directions at
+# once, and neither error is visible from inside a curated list.
+#
+# Override per test with rt.amendments.discard(...) / .add(...), or point at
+# another network's manifest with hookz.amendments.enabled_on("testnet").
 
 
 def _get_default_amendments() -> set[str]:
-    """Build default amendments: behavioral + whitelist-gating from macro."""
+    """Mainnet's enabled set, or a minimal fallback if no manifest is vendored.
+
+    The fallback is deliberately small and behavioural-only: if the manifest is
+    missing, the honest position is "we do not know what the network has", and
+    a large guessed set would look authoritative while being invented.
+    """
+    from hookz.amendments import enabled_on
+
+    recorded = enabled_on()
+    if recorded:
+        return set(recorded)
+
     try:
         from hookz.wasm.whitelist import get_default_amendments
-        return _BEHAVIORAL_AMENDMENTS | get_default_amendments()
-    except Exception:
-        return _BEHAVIORAL_AMENDMENTS.copy()
+        return set(get_default_amendments())
+    except Exception:                                      # noqa: BLE001
+        return set()
 
 
 _MODULE_CACHE: dict[bytes, tuple] = {}
