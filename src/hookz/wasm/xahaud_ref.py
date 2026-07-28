@@ -160,6 +160,21 @@ class Citation:
     def url(self) -> str:
         return permalink(self.path, self.line)
 
+    def context(self, max_lines: int = 40) -> str:
+        """What this citation points at, as the construct containing it.
+
+        `snippet()` returns the line, which is often `}` or `try` or nothing —
+        true, and useless to a reader checking the claim beside it. This
+        resolves to the enclosing function, `if` or declaration, names the
+        symbol, and abridges anything long.
+        """
+        from hookz.citations import render, span_for
+
+        source = vendored_root() / self.path
+        if not source.exists():
+            return f"<{self.path} is not vendored>"
+        return render(span_for(source, self.line), max_lines=max_lines)
+
     def snippet(self, context: int = 0) -> str:
         """What the vendored copy actually says there.
 

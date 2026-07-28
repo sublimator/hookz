@@ -133,7 +133,7 @@ def _nested_problem(contents: bytes, depth: int = 1) -> str | None:
 
     `STObject::set` is recursive — it constructs each nested field with
     `v_.emplace_back(sit, fn, depth + 1)`
-    (xahaud:src/libxrpl/protocol/STObject.cpp:264) — so the unknown-field,
+    (xahaud:src/libxrpl/protocol/STObject.cpp:259) — so the unknown-field,
     duplicate and end-of-array checks run at every level, not just the
     transaction's own. xrpl-py's reader instead consumes a nested object
     wholesale and folds repeats into a dict, where the last one wins, so a
@@ -188,7 +188,7 @@ def _array_problem(body: bytes, depth: int) -> str | None:
     once per signer — so the duplicate-field check that governs an object
     would reject every array with more than one entry. `STObject::set` runs
     that check per object (`getSortedFields` over one object's own fields,
-    xahaud:src/libxrpl/protocol/STObject.cpp:270), and each element is its own
+    xahaud:src/libxrpl/protocol/STObject.cpp:268), and each element is its own
     object. So: recurse into the elements, do not compare them to each other.
     """
     for element in _array_elements(body):
