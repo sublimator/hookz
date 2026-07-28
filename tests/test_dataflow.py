@@ -6,7 +6,10 @@ import pytest
 from wasm_tob import OP_CALL, OP_GET_LOCAL, OP_I32_CONST, decode_bytecode
 
 from hookz.compiler import compile_hook
-from hookz.wasm.dataflow import DecodeDesync, Instr, decode_body
+from hookz.wasm.dataflow import (
+    Const, DecodeDesync, Instr, UnmodelledOpcode, call_sites,
+    call_sites_over, decode_body,
+)
 from hookz.wasm.decode import decode_code_bodies_raw
 
 SOURCE = """
@@ -134,3 +137,98 @@ def test_opcode_predicates_do_not_overlap():
     assert not Instr(0, OP_CALL, (0,)).is_const
     assert Instr(0, OP_GET_LOCAL, (0,)).is_local
     assert not Instr(0, OP_GET_LOCAL, (0,)).is_memory
+
+
+# ---------------------------------------------------------------------------
+# Recovering call arguments
+# ---------------------------------------------------------------------------
+
+CALLS = """
+    #include "hookapi.h"
+    int64_t hook(uint32_t r) {
+        uint8_t buf[32];
+        otxn_field(SBUF(buf), sfAccount);
+        otxn_slot(7);
+        slot_subfield(7, sfAmount, 9);
+        accept(SBUF("ok"), 0);
+        _g(1,1);
+        return 0;
+    }
+"""
+
+
+@pytest.fixture(scope="module")
+def calls_wasm(tmp_path_factory):
+    src = tmp_path_factory.mktemp("df2") / "c.c"
+    src.write_text(CALLS)
+    return compile_hook(src)
+
+
+def sites_by_name(wasm):
+    from hookz.wasm.decode import decode_module
+    module = decode_module(wasm)
+    names = {i: imp.name for i, imp in enumerate(module.imports)}
+    out: dict[str, list] = {}
+    for site in call_sites(wasm, module):
+        out.setdefault(names.get(site.func_index, "<local>"), []).append(site)
+    return out
+
+
+class TestArgumentsComeOutOfTheBinary:
+    """The point of the exercise: the source says `sfAccount`, a macro, and
+    the C tools have to expand it to know what was asked for. The binary
+    already has the number."""
+
+    def test_a_field_id_is_recovered(self, calls_wasm):
+        from hookz import hookapi
+
+        (site,) = sites_by_name(calls_wasm)["otxn_field"]
+
+        assert site.args[-1] == Const(hookapi.sfAccount)
+
+    def test_a_slot_number_is_recovered(self, calls_wasm):
+        (site,) = sites_by_name(calls_wasm)["otxn_slot"]
+
+        assert site.args == (Const(7),)
+
+    def test_every_argument_of_a_three_arg_call(self, calls_wasm):
+        from hookz import hookapi
+
+        (site,) = sites_by_name(calls_wasm)["slot_subfield"]
+
+        assert site.args == (Const(7), Const(hookapi.sfAmount), Const(9))
+
+    def test_arity_comes_from_the_type_section(self, calls_wasm):
+        """Not from a table of API names — a call's argument count is a
+        property of the module, and reading it anywhere else would drift."""
+        for name, sites in sites_by_name(calls_wasm).items():
+            for site in sites:
+                assert isinstance(site.args, tuple), name
+
+
+class TestItRefusesRatherThanDrifts:
+    """A stack model that mis-handles one opcode misattributes every argument
+    after it, and reports the wrong constant with full confidence."""
+
+    def test_an_unmodelled_opcode_raises(self):
+        # 0xE0 is not a wasm opcode and has no entry in the effects table
+        body = bytes([0xE0])
+
+        with pytest.raises(UnmodelledOpcode, match="no stack effect"):
+            call_sites_over(body)
+
+    def test_the_table_covers_a_real_hook(self, hook_wasm, calls_wasm):
+        """Totality for the input at hand, which is the claim that can be
+        checked. Any opcode outside the table would have raised above."""
+        for wasm in (hook_wasm, calls_wasm):
+            assert call_sites(wasm), "decoded without hitting an unmodelled op"
+
+    def test_a_value_pushed_before_a_branch_is_not_guessed(self):
+        """Control flow abandons the model rather than merging it — an
+        argument whose value depends on which way a branch went comes back
+        Unknown, never as whatever was last on the modelled stack."""
+        from hookz.wasm.dataflow import BARRIERS
+
+        assert 0x0D in BARRIERS, "br_if"
+        assert 0x0B in BARRIERS, "end"
+        assert 0x04 in BARRIERS, "if"

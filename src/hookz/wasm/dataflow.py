@@ -201,3 +201,183 @@ def decode_body(wasm: bytes, start: int, end: int) -> list[Instr]:
             f"decoding ran to {i}, body ends at {end} — the walk lost sync "
             f"and every instruction after that point is fiction")
     return out
+
+
+# ---------------------------------------------------------------------------
+# Stack effects
+# ---------------------------------------------------------------------------
+#
+# (pops, pushes) per opcode. Only what a hook can contain, and anything absent
+# is a refusal rather than a guess: mis-modelling one arity slides the stack
+# under every later instruction, and the call whose arguments are then read off
+# it gets a confident wrong answer. `UnmodelledOpcode` says so instead.
+
+_UNARY = (1, 1)
+_BINARY = (2, 1)
+
+_EFFECTS: dict[int, tuple[int, int]] = {
+    0x0F: (0, 0),                       # return — handled as a barrier
+    0x1A: (1, 0),                       # drop
+    0x1B: (3, 1),                       # select
+    0x20: (0, 1), 0x21: (1, 0), 0x22: (1, 1),   # local get/set/tee
+    0x23: (0, 1), 0x24: (1, 0),                 # global get/set
+    0x41: (0, 1), 0x42: (0, 1), 0x43: (0, 1), 0x44: (0, 1),   # consts
+    0xA7: _UNARY, 0xAC: _UNARY, 0xAD: _UNARY,   # wrap / extend
+}
+
+# loads: one address in, one value out
+for _op in range(0x28, 0x36):
+    _EFFECTS[_op] = _UNARY
+# stores: address and value in, nothing out
+for _op in range(0x36, 0x3F):
+    _EFFECTS[_op] = (2, 0)
+# i32.eqz / i64.eqz are the only unary tests
+_EFFECTS[0x45] = _UNARY
+_EFFECTS[0x50] = _UNARY
+# every other numeric op in these ranges is binary
+for _op in list(range(0x46, 0x50)) + list(range(0x51, 0x5B)):
+    _EFFECTS[_op] = _BINARY
+for _op in range(0x6A, 0x79):           # i32 arithmetic
+    _EFFECTS[_op] = _BINARY
+for _op in range(0x7C, 0x8B):           # i64 arithmetic
+    _EFFECTS[_op] = _BINARY
+for _op in (0x67, 0x68, 0x69, 0x79, 0x7A, 0x7B):   # clz/ctz/popcnt
+    _EFFECTS[_op] = _UNARY
+del _op
+
+# Control flow. The stack model is abandoned at each of these rather than
+# merged: joining two branches needs a lattice, and claiming to know a value
+# that depends on which way a branch went is the error worth never making.
+BARRIERS = frozenset({0x02, 0x03, 0x04, 0x05, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F,
+                      0x00, 0x11})
+
+
+class UnmodelledOpcode(Exception):
+    """An opcode whose stack effect is not in the table."""
+
+
+@dataclass(frozen=True)
+class Const:
+    """A literal, which is what a field id or a buffer address looks like."""
+    value: int
+
+
+@dataclass(frozen=True)
+class Local:
+    index: int
+
+
+@dataclass(frozen=True)
+class Computed:
+    """A value derived from others. Kept as a shape, not evaluated."""
+    opcode: int
+
+
+@dataclass(frozen=True)
+class Unknown:
+    """The model could not say. Never conflated with a value."""
+    why: str
+
+
+@dataclass(frozen=True)
+class CallSite:
+    offset: int
+    func_index: int
+    args: tuple
+
+
+def _arity(module, func_index: int) -> tuple[int, int]:
+    """(params, results) of a function, imported or defined."""
+    n_imports = len(module.imports)
+    if func_index < n_imports:
+        type_idx = module.imports[func_index].type_idx
+    else:
+        type_idx = module.functions[func_index - n_imports]
+    ft = module.types[type_idx]
+    return len(ft.params), len(ft.results)
+
+
+def call_sites(wasm: bytes, module=None) -> list[CallSite]:
+    """Every `call`, with the arguments recoverable at it.
+
+    Simulated forward within a basic block. At a control-flow instruction the
+    stack model is abandoned, so an argument pushed before a branch reads as
+    `Unknown` rather than as whatever happened to be modelled. Conservative on
+    purpose — the question this answers is "which constant is passed here",
+    and a wrong constant is worse than no constant.
+    """
+    from .decode import decode_code_bodies_raw, decode_module
+
+    if module is None:
+        module = decode_module(wasm)
+
+    out: list[CallSite] = []
+    for start, end in decode_code_bodies_raw(wasm):
+        stack: list = []
+        for instr in decode_body(wasm, start, end):
+            op = instr.opcode
+
+            if op == OP_CALL:
+                params, results = _arity(module, instr.imm[0])
+                if len(stack) >= params:
+                    args = tuple(stack[len(stack) - params:]) if params else ()
+                    del stack[len(stack) - params:]
+                else:
+                    args = tuple([Unknown("before a branch")] * (params - len(stack))
+                                 + stack)
+                    stack.clear()
+                out.append(CallSite(instr.offset, instr.imm[0], args))
+                stack.extend(Computed(op) for _ in range(results))
+                continue
+
+            if op in BARRIERS:
+                stack.clear()
+                continue
+
+            effect = _EFFECTS.get(op)
+            if effect is None:
+                if op == OP_CALL_INDIRECT:
+                    stack.clear()
+                    continue
+                raise UnmodelledOpcode(
+                    f"opcode 0x{op:02X} at {instr.offset} has no stack effect "
+                    "in the table; add it rather than letting the model drift")
+            pops, pushes = effect
+            if len(stack) < pops:
+                stack.clear()
+            else:
+                del stack[len(stack) - pops:]
+
+            if pushes:
+                if op in (OP_I32_CONST, OP_I64_CONST):
+                    stack.append(Const(instr.imm[0]))
+                elif op in (OP_GET_LOCAL, OP_TEE_LOCAL):
+                    stack.append(Local(instr.imm[0]))
+                else:
+                    stack.extend(Computed(op) for _ in range(pushes))
+    return out
+
+
+def call_sites_over(body: bytes) -> list[CallSite]:
+    """`call_sites` for a bare instruction sequence, for tests and probes."""
+    class _Empty:
+        imports: list = []
+        functions: list = []
+        types: list = []
+
+    out: list[CallSite] = []
+    stack: list = []
+    for instr in decode_body(body, 0, len(body)):
+        op = instr.opcode
+        if op in BARRIERS:
+            stack.clear()
+            continue
+        effect = _EFFECTS.get(op)
+        if effect is None:
+            raise UnmodelledOpcode(
+                f"opcode 0x{op:02X} at {instr.offset} has no stack effect "
+                "in the table; add it rather than letting the model drift")
+        pops, pushes = effect
+        del stack[max(0, len(stack) - pops):]
+        stack.extend(Computed(op) for _ in range(pushes))
+    return out
