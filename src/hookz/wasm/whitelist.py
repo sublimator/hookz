@@ -202,20 +202,42 @@ def load_from_config() -> list[HookApiFunction]:
 
 
 def get_default_amendments() -> set[str]:
-    """Get all amendments derived from hook_api.macro. These are the defaults."""
+    """Every amendment named in hook_api.macro.
+
+    The amendments that *gate an import*, which is not the same question as
+    which ones a network has. See `_resolve`.
+    """
     return derive_amendments(load_from_config())
 
 
+def _resolve(functions: list[HookApiFunction],
+             amendments: set[str] | None) -> set[str]:
+    """What `amendments=None` means: the network, not every amendment.
+
+    Enabling everything `hook_api.macro` names admits imports the network
+    refuses. `prepare` is gated on featureHooksUpdate2, which mainnet vetoes,
+    so a macro-derived default passes a hook that SetHook would reject — the
+    accepting-what-the-network-refuses error, on the import path.
+
+    So the same manifest `HookRuntime.amendments` is built from decides this
+    too, and the two cannot drift apart. With no manifest vendored there is
+    nothing to consult and the macro set is the only answer available.
+    """
+    if amendments is not None:
+        return amendments
+    from hookz.amendments import enabled_on
+    return set(enabled_on()) or derive_amendments(functions)
+
+
 def _enabled(functions: list[HookApiFunction], amendments: set[str] | None):
-    if amendments is None:
-        amendments = derive_amendments(functions)
-    return [f for f in functions if not f.amendment or f.amendment in amendments]
+    enabled = _resolve(functions, amendments)
+    return [f for f in functions if not f.amendment or f.amendment in enabled]
 
 
 def get_whitelist(amendments: set[str] | None = None) -> set[str]:
     """Get allowed import function names for given amendments.
 
-    None = all amendments enabled (current mainnet default).
+    None = the amendments recorded for mainnet in `data/amendments-mainnet.json`.
     """
     return {f.name for f in _enabled(load_from_config(), amendments)}
 

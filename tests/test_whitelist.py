@@ -18,6 +18,7 @@ from hookz.wasm.whitelist import (
     WASM_TYPE_CODE,
     HookApiFunction,
     derive_amendments,
+    get_default_amendments,
     get_import_signatures,
     get_whitelist,
     load_from_config,
@@ -130,8 +131,31 @@ class TestSignatureLayout:
 
 
 class TestAmendmentFiltering:
-    def test_default_enables_everything(self, functions):
-        assert get_whitelist() == {f.name for f in functions}
+    def test_every_amendment_enables_every_api(self, functions):
+        assert get_whitelist(get_default_amendments()) == {f.name for f in functions}
+
+    def test_the_default_is_the_network_not_every_amendment(self):
+        """xahaud gates each entry on `rules.enabled(AMENDMENT)`
+        (xahaud:include/xrpl/hook/Enum.h:425), so its whitelist is whatever the
+        ledger has — not everything hook_api.macro names.
+
+        `prepare` is gated on featureHooksUpdate2, which mainnet vetoes. A
+        default that enabled every amendment would pass a hook importing it,
+        and SetHook would refuse that hook on mainnet.
+        """
+        from hookz.amendments import enabled_on
+
+        mainnet = set(enabled_on())
+        assert "featureHooksUpdate2" not in mainnet, "manifest changed; revisit"
+        assert "prepare" not in get_whitelist()
+        assert get_whitelist() == get_whitelist(mainnet)
+
+    def test_it_agrees_with_what_the_runtime_runs(self):
+        """One manifest behind both, so a hook cannot pass the guard checker
+        and then meet a runtime that disagrees about the same amendment."""
+        from hookz.runtime import HookRuntime
+
+        assert get_whitelist() == get_whitelist(HookRuntime().amendments)
 
     def test_no_amendments_drops_gated_apis(self, functions):
         ungated = {f.name for f in functions if not f.amendment}
@@ -194,9 +218,15 @@ class TestNormalisationSafety:
         comparing a parse against itself cannot detect a dropped entry. 76 is
         the count printed by a getImportWhitelist() dump built from xahaud's
         own Enum.h: 75 hook APIs plus __on_source_line.
+
+        Every amendment is passed explicitly because that dump is built with
+        every rule enabled. Against a real ledger the count is whatever that
+        ledger has enabled (xahaud:include/xrpl/hook/Enum.h:425) — 74 on
+        mainnet today, which vetoes the amendment gating `prepare`.
         """
-        assert len(get_import_signatures()) == 75
-        assert len(get_import_signatures(coverage=True)) == 76
+        every = get_default_amendments()
+        assert len(get_import_signatures(every)) == 75
+        assert len(get_import_signatures(every, coverage=True)) == 76
 
     def test_dropped_entries_are_detected(self, tmp_path, monkeypatch):
         """A macro construct tree-sitter cannot parse must not fail silently.

@@ -134,6 +134,18 @@ def _get_default_amendments() -> set[str]:
     if recorded:
         return set(recorded)
 
+    # Reaching here means the vendored manifest is gone. Every amendment that
+    # changes behaviour goes with it — a signer list of 9 is refused, float
+    # division takes the unfixed path — and each of those looks like a verdict
+    # about the hook rather than a missing file. Say so once, loudly.
+    import warnings
+    warnings.warn(
+        "no amendment manifest is vendored, so hookz does not know what the "
+        "network has enabled. Behaviour that depends on an amendment will not "
+        "match mainnet. Regenerate with: x-inspect-net amendments --net "
+        "mainnet --json src/hookz/data/amendments-mainnet.json",
+        RuntimeWarning, stacklevel=3)
+
     try:
         from hookz.wasm.whitelist import get_default_amendments
         return set(get_default_amendments())
