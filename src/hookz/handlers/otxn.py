@@ -14,6 +14,18 @@ from hookz import hookapi
 # xahaud:include/xrpl/hook/Enum.h:398
 MAX_SLOTS = 255
 
+#: The entire field set of the `ttEMIT_FAILURE` pseudo-transaction.
+#:
+#: xahaud:include/xrpl/protocol/detail/transactions.macro:598
+#:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, ({
+#:         {sfLedgerSequence, soeREQUIRED},
+#:         {sfTransactionHash, soeREQUIRED},
+#:     }))
+EMIT_FAILURE_FIELDS = frozenset({
+    hookapi.sfLedgerSequence,
+    hookapi.sfTransactionHash,
+})
+
 
 def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
                            data: bytes, is_account: bool = False) -> int:
@@ -46,7 +58,32 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
     built-ins below serving the two the runtime models directly. DOESNT_EXIST
     is reserved for a field the transaction genuinely does not have, since to a
     hook that answer is indistinguishable from "this harness cannot say".
+
+    **Inside a failure callback almost nothing is readable.** The host checks
+    presence against the transaction being applied and only then reads the
+    value out of the saved emission:
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1534
+            if (!hookCtx.applyCtx.tx.isFieldPresent(fieldType))
+                return Unexpected(DOESNT_EXIST);
+            auto const& field = hookCtx.emitFailure
+                ? hookCtx.emitFailure->getField(fieldType) : ...
+
+    On a failure the applied transaction is the `ttEMIT_FAILURE`
+    pseudo-transaction, which has two fields and neither is `sfDestination`.
+    `emitFailure` is populated only when `isCallback && wasmParam & 1`
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1076), so the asymmetry is
+    exact: on success the transaction *is* the original emit and everything is
+    there; on failure only the ledger sequence and the transaction hash are.
+
+    This matters more than it looks. A `cbak` that opens by reading
+    `sfDestination` to find whose record to restore takes its early exit on
+    every failure — the restore is unreachable — and a harness that served the
+    field anyway would show the undo working and hide permanently stuck funds.
     """
+    if rt.emit_failure and field_id not in EMIT_FAILURE_FIELDS:
+        return hookapi.DOESNT_EXIST
+
     override = rt.otxn_fields.get(field_id)
     if override is not None:
         return _write_or_return_int64(rt, write_ptr, write_len, override)

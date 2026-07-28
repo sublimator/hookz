@@ -6,6 +6,7 @@ dispatched to Python handlers. Unknown imports get a default no-op handler.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -215,6 +216,12 @@ class HookRuntime:
         # payload bytes. Consulted ahead of the built-ins above, so a
         # transaction can carry whatever field the hook under test reads.
         self.otxn_fields: dict[int, bytes] = {}
+        # True while a *failure* callback is running. The ledger applies a
+        # ttEMIT_FAILURE pseudo-transaction in that case, and field presence is
+        # checked against it rather than against the emission that failed — so
+        # a hook can read only sfLedgerSequence and sfTransactionHash, whatever
+        # the original transaction carried. See `handlers.otxn.otxn_field`.
+        self.emit_failure: bool = False
         # The whole originating transaction, serialized. Set it when a hook
         # slots the transaction and navigates into it (otxn_slot), which needs
         # bytes rather than a field map. Left None, otxn_slot serializes
@@ -337,6 +344,31 @@ class HookRuntime:
                 linker.define_func(mod, name, typ, make_unimpl(name))
 
         return linker
+
+    @contextmanager
+    def callback(self, ctx: int):
+        """Scope a `cbak` invocation, deriving what the ledger would expose.
+
+        `emit_failure` is not something a caller should be trusted to set. The
+        chain derives it — `isCallback && wasmParam & 1`
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1076) — and the failure
+        mode of getting it wrong is silent and one-directional: forget it, and
+        the harness serves fields the ledger would refuse, so a dead restore
+        path looks alive. Deriving it from `ctx` here means a test cannot be
+        wrong about it without being wrong about which callback it is driving.
+
+        Restores on exit, so a runtime reused for a later transaction is not
+        left in callback mode.
+
+            with rt.callback(1):
+                run_export(rt, hook, "cbak", 1)
+        """
+        previous = self.emit_failure
+        self.emit_failure = bool(ctx & 1)
+        try:
+            yield self
+        finally:
+            self.emit_failure = previous
 
     def run(self, hook: Hook | bytes, label: str | None = None, coverage: bool = False) -> HookResult:
         """Execute a hook and return the result.

@@ -438,3 +438,77 @@ class TestArbitraryFields:
         rt.otxn_account = b"\x03" * 20
         assert otxn_field(rt, 100, 20, hookapi.sfAccount) == 20
         assert rt._read_memory(100, 20) == b"\x03" * 20
+
+
+class TestAFailureCallbackSeesAlmostNothing:
+    """`ttEMIT_FAILURE` carries two fields, and a hook reading anything else in
+    a failure callback gets DOESNT_EXIST however present it was on the emission.
+
+    The host checks presence against the transaction being applied and only
+    then reads the value out of the saved emission
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1534), and on a failure the
+    applied transaction is the pseudo-transaction — whose whole format is
+    sfLedgerSequence and sfTransactionHash
+    (xahaud:include/xrpl/protocol/detail/transactions.macro:598).
+
+    Modelling this is not pedantry. A `cbak` that opens by reading
+    `sfDestination` to find whose record to restore takes its early exit on
+    every failure, so the undo is unreachable — and a harness that served the
+    field anyway would show it working and hide permanently stuck funds.
+    """
+
+    def _rt(self):
+        from hookz import hookapi
+        from hookz.runtime import HookRuntime
+
+        rt = HookRuntime()
+        rt.otxn_account = b"\x01" * 20
+        rt.otxn_fields[hookapi.sfDestination] = b"\x02" * 20
+        rt.otxn_fields[hookapi.sfLedgerSequence] = (7).to_bytes(4, "big")
+        return rt
+
+    def _read(self, rt, field_id):
+        from hookz import hookapi
+        from hookz.handlers.otxn import otxn_field
+
+        rt._memory_stub = bytearray(64)
+        return otxn_field(rt, 0, 0, field_id)
+
+    def test_a_success_callback_reads_the_original_transaction(self):
+        from hookz import hookapi
+
+        rt = self._rt()
+        with rt.callback(0):
+            assert self._read(rt, hookapi.sfDestination) != hookapi.DOESNT_EXIST
+
+    def test_a_failure_callback_cannot_read_the_destination(self):
+        from hookz import hookapi
+
+        rt = self._rt()
+        with rt.callback(1):
+            assert self._read(rt, hookapi.sfDestination) == hookapi.DOESNT_EXIST
+
+    def test_the_two_fields_the_failure_does_carry_are_readable(self):
+        from hookz import hookapi
+
+        rt = self._rt()
+        with rt.callback(1):
+            assert self._read(rt, hookapi.sfLedgerSequence) != hookapi.DOESNT_EXIST
+
+    def test_the_mode_is_derived_from_ctx_not_set_by_hand(self):
+        """Forgetting the flag serves fields the ledger would refuse, so it is
+        derived from the callback argument rather than trusted to a caller."""
+        rt = self._rt()
+
+        with rt.callback(0):
+            assert rt.emit_failure is False
+        with rt.callback(1):
+            assert rt.emit_failure is True
+
+    def test_it_is_restored_so_a_reused_runtime_is_not_left_in_callback_mode(self):
+        rt = self._rt()
+
+        with rt.callback(1):
+            pass
+
+        assert rt.emit_failure is False
