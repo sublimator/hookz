@@ -233,20 +233,27 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
         return check
 
     if not parsed.complete:
-        # hookz's parser is not xahaud's deserialiser. When it stops early,
-        # every field after that point looks absent — and reporting those as
-        # rule violations blames the hook for a limitation of this tool. Two
-        # of xahaud's own genesis hooks deliberately write 0x99 padding that
-        # this parser cannot decode and the network plainly accepts.
+        # hookz's parser is not xahaud's deserialiser. When it stops for a
+        # reason upstream would not, every field after that point looks absent
+        # — and reporting those as rule violations blames the hook for a
+        # limitation of this tool. Two of xahaud's own genesis hooks
+        # deliberately write 0x99 padding that this parser once could not
+        # decode and the network plainly accepts.
         #
-        # So: say what is true. The blob could not be fully read, so the
-        # field rules are not applied and nothing is claimed about them. It is
-        # recorded, not raised, because an unreadable emit is a gap in hookz.
+        # So the *absence* of a field is not held against the hook here. What
+        # was read still is: a field that is present and breaks a rule breaks
+        # it whatever follows in the blob, and staying silent about one because
+        # of trailing bytes lets a single unreadable byte excuse the whole
+        # transaction.
         check.undecodable = (
             f"hookz parsed {parsed.bytes_consumed}/{len(txn)} bytes"
             + (f", stopped at {parsed.error}" if parsed.error else "")
-            + " — emission rules not applied")
-        return check
+            + " — rules applied only to the fields recovered")
+
+    def refuse_absent(rule: str, detail: str) -> None:
+        """Refuse for an absent field, unless the parser never got that far."""
+        if parsed.complete:
+            check.refuse(rule, detail)
 
     # pseudo-transactions may not be emitted at all
     if fields.get("TransactionType") in PSEUDO_TX_TYPES:
@@ -258,20 +265,20 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     # meant a transaction with no Account passed.
     account = fields.get("Account")
     if account is None:
-        check.refuse("0-account", "sfAccount is missing")
+        refuse_absent("0-account", "sfAccount is missing")
     elif hook_account is not None and not _same_account(account, hook_account):
         check.refuse("0-account", f"Account is {account}, not the hook account")
 
     # rule 1 — sfSequence present and zero
     if fields.get("Sequence") is None:
-        check.refuse("1-sequence", "sfSequence is missing")
+        refuse_absent("1-sequence", "sfSequence is missing")
     elif fields["Sequence"] != 0:
         check.refuse("1-sequence", f"sfSequence is {fields['Sequence']}, must be 0")
 
     # rule 2 — sfSigningPubKey present and all zero
     spk = fields.get("SigningPubKey")
     if spk is None:
-        check.refuse("2-signingpubkey", "sfSigningPubKey is missing")
+        refuse_absent("2-signingpubkey", "sfSigningPubKey is missing")
     else:
         raw = bytes.fromhex(spk) if isinstance(spk, str) else bytes(spk)
         # size must be 0 or 33, *and* every byte zero — two separate checks
@@ -297,7 +304,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     # rule 3 — sfEmitDetails present
     details = fields.get("EmitDetails")
     if details is None:
-        check.refuse("3-emitdetails", "sfEmitDetails is missing")
+        refuse_absent("3-emitdetails", "sfEmitDetails is missing")
     else:
         missing = [f for f in _EMIT_DETAIL_FIELDS if details.get(f) is None]
         if missing:
@@ -334,7 +341,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     lls = fields.get("LastLedgerSequence")
     fls = fields.get("FirstLedgerSequence")
     if lls is None:
-        check.refuse("5-lastledgerseq", "sfLastLedgerSequence is missing")
+        refuse_absent("5-lastledgerseq", "sfLastLedgerSequence is missing")
     elif ledger_seq is not None:
         if lls < ledger_seq + 1:
             check.refuse("5-lastledgerseq",
@@ -343,7 +350,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
             check.refuse("5-lastledgerseq",
                          f"LastLedgerSequence {lls} exceeds ledger {ledger_seq} + 5")
     if fls is None:
-        check.refuse("6-firstledgerseq", "sfFirstLedgerSequence is missing")
+        refuse_absent("6-firstledgerseq", "sfFirstLedgerSequence is missing")
     elif lls is not None and fls > lls:
         check.refuse("6-firstledgerseq",
                      f"FirstLedgerSequence {fls} is after LastLedgerSequence {lls}")
@@ -351,7 +358,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     # rule 7 — the fee
     fee = fields.get("Fee")
     if fee is None:
-        check.refuse("7-fee", "sfFee is missing")
+        refuse_absent("7-fee", "sfFee is missing")
     elif min_fee is not None:
         try:
             paid = int(fee)

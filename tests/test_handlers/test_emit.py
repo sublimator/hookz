@@ -315,8 +315,9 @@ class TestUndecidedIsRecorded:
 
         rt.validate_emissions = True
         etxn_reserve(rt, 1)
-        # readable enough to parse, not enough to judge
-        blob = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
+        # a Sequence header with two of its four value bytes — readable enough
+        # to parse, and the stop is this parser running out rather than a rule
+        blob = bytes.fromhex("12005f") + bytes.fromhex("2400")
         rt._write_memory(100, blob)
         assert emit(rt, 0, 32, 100, len(blob)) == 32
         assert rt.emission_rejections == []

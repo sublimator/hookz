@@ -59,11 +59,70 @@ class TestIllegalVersusUnreadable:
         check = check_emission(blob)
         assert not check.ok and not check.undecodable
 
+    # A known field header whose value runs off the end of the blob. The stop
+    # is this parser meeting a limit, not a rule — xahaud is given the same
+    # bytes by a different route and there is nothing here it enforces.
+    TRUNCATED = bytes.fromhex("12005f") + bytes.fromhex("2400")
+
+    # TransactionType, then Sequence = 99, then an Amount header with no value
+    TRUNCATED_AFTER_A_BAD_SEQUENCE = bytes.fromhex("12005f24000000636100")
+
     def test_a_partly_readable_blob_still_declines(self):
         """Some fields recovered — this parser may simply be weaker here."""
-        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
-        check = check_emission(half)
+        check = check_emission(self.TRUNCATED)
         assert check.undecodable and check.rejections == []
+
+    def test_a_recovered_field_is_still_judged(self):
+        """Declining to read the rest is not declining to look at what was read.
+
+        A Sequence of 99 breaks rule 1 whatever follows it in the blob. If the
+        undecodable branch skipped the rules outright, appending one byte that
+        this parser cannot read would excuse any violation before it.
+        """
+        check = check_emission(self.TRUNCATED_AFTER_A_BAD_SEQUENCE)
+        assert check.undecodable, "the tail really is unreadable"
+        assert "1-sequence" in _rules(check)
+
+    def test_an_absent_field_is_not_held_against_a_blob_it_never_reached(self):
+        """The other half of the same rule: silence past the stop is not evidence."""
+        check = check_emission(self.TRUNCATED)
+        assert not any(r.detail.endswith("is missing") for r in check.rejections)
+
+    @pytest.mark.parametrize("tail, why", [
+        (b"\xfe", "a header naming no field xahaud knows"),
+        (b"\xf1", "an end-of-array marker inside an object"),
+        (b"\xe1", "an object terminator in a transaction"),
+    ])
+    def test_a_trailing_byte_xahaud_throws_on_is_refused(self, tail, why):
+        """`STObject::set` throws on each of these, so none is a shrug.
+
+        xahaud:src/libxrpl/protocol/STObject.cpp:243 and :253,
+        xahaud:src/libxrpl/protocol/STTx.cpp:76. Left undecodable, any one of
+        them would turn a rule-breaking emit into an accepted one.
+        """
+        check = check_emission(_encode(_valid_tx()) + tail,
+                               hook_account=HOOK_ACCOUNT, ledger_seq=LEDGER)
+        assert not check.ok, why
+        assert "parse" in _rules(check)
+        assert not check.undecodable
+
+    def test_a_duplicate_field_is_refused(self):
+        """xahaud:src/libxrpl/protocol/STObject.cpp:276 — the codec beneath this
+        parser collapses repeats into a dict, where the last one silently wins."""
+        check = check_emission(_encode(_valid_tx()) + bytes.fromhex("2400000000"),
+                               hook_account=HOOK_ACCOUNT, ledger_seq=LEDGER)
+        assert not check.ok
+        assert "parse" in _rules(check)
+
+    def test_a_violation_survives_a_trailing_garbage_byte(self):
+        """The bypass this split exists to close, end to end."""
+        tx = _valid_tx()
+        tx["Sequence"] = 99
+        assert "1-sequence" in _rules(_check(tx)), "control: refused on its own"
+
+        check = check_emission(_encode(tx) + b"\xfe",
+                               hook_account=HOOK_ACCOUNT, ledger_seq=LEDGER)
+        assert not check.ok, "one unreadable byte must not launder a violation"
 
 
 class TestUnreadable:
@@ -75,15 +134,16 @@ class TestUnreadable:
     which is the whole error this module was written to stop making.
     """
 
+    # a Sequence header with two of its four value bytes
+    HALF = bytes.fromhex("12005f") + bytes.fromhex("2400")
+
     def test_a_partly_read_blob_is_recorded_not_rejected(self):
-        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
-        check = check_emission(half)
+        check = check_emission(self.HALF)
         assert check.undecodable
         assert check.rejections == []
 
     def test_it_says_how_far_it_got(self):
-        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
-        assert "bytes" in check_emission(half).undecodable
+        assert "bytes" in check_emission(self.HALF).undecodable
 
     def test_a_readable_blob_is_judged(self):
         """The control — a decodable transaction still gets the rules."""

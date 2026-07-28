@@ -51,12 +51,17 @@ class TestMint:
             + SENDER_ACCID +       # account
             b"\xE1"               # obj end
         )
-        blob_data = b"\xF0\x60" + entry + b"\xF1"
+        array = b"\xF0\x60" + entry + b"\xF1"
 
-        rt._slot_overrides["slot_subfield:1:589831"] = 2  # sfBlob = 0x70017 = 458775... let me check
-        # Actually sfBlob field_id: type=7(VL), field=23? Let me just use the constant
+        # `slot()` on a Blob serializes it with `STBlob::add`, which is
+        # `s.addVL(...)` — so the hook is handed the length prefix as well as
+        # the payload, and the `0x99` overwrites at mint.c:78-85 exist to
+        # blank exactly that prefix. Serving the array without one makes those
+        # overwrites land on the array's own header instead, and the hook then
+        # emits an object followed by a stray end-of-array marker.
+        assert len(array) <= 192, "a longer blob needs a multi-byte VL prefix"
         rt._slot_overrides[f"slot_subfield:1:{hookapi.sfBlob}"] = 2
-        rt._slot_overrides["slot_data:2"] = blob_data
+        rt._slot_overrides["slot_data:2"] = bytes([len(array)]) + array
 
         result = rt.run(hook)
         assert result.accepted
