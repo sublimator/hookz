@@ -120,6 +120,98 @@ _OBJECT_END = (_STI_OBJECT, 1)
 _ARRAY_END = (_STI_ARRAY, 1)
 
 
+
+
+def _unwrap(consumed: bytes, type_code: int) -> bytes:
+    """The contents of a nested object or array, without its terminator."""
+    if type_code == _STI_OBJECT:
+        return consumed[:-1] if consumed[-1:] == b"\xe1" else consumed
+    return consumed[:-1] if consumed[-1:] == b"\xf1" else consumed
+
+def _nested_problem(contents: bytes, depth: int = 1) -> str | None:
+    """The same rules, applied inside an object or array. None if clean.
+
+    `STObject::set` is recursive — it constructs each nested field with
+    `v_.emplace_back(sit, fn, depth + 1)`
+    (xahaud:src/libxrpl/protocol/STObject.cpp:264) — so the unknown-field,
+    duplicate and end-of-array checks run at every level, not just the
+    transaction's own. xrpl-py's reader instead consumes a nested object
+    wholesale and folds repeats into a dict, where the last one wins, so a
+    malformation one level down leaves the outer parse looking clean.
+    """
+    from xrpl.core.binarycodec.definitions import get_field_name_from_header
+    from xrpl.core.binarycodec.definitions.field_header import FieldHeader
+
+    from hookz.handlers.sto import _walk_fields
+
+    if depth > 64:
+        return "object nesting is deeper than any transaction shape"
+
+    seen: set[int] = set()
+    try:
+        fields = list(_walk_fields(contents))
+    except Exception:                                          # noqa: BLE001
+        # the reader could not get through it; the top-level classifier
+        # already decides what an unreadable blob means
+        return None
+
+    for fid, type_code, field_code, _off, _tlen, pay_off, pay_len in fields:
+        if (type_code, field_code) == _ARRAY_END:
+            return "illegal end-of-array marker in object"
+        try:
+            get_field_name_from_header(FieldHeader(type_code, field_code))
+        except KeyError:
+            return f"unknown field in object t={type_code} f={field_code}"
+        if fid in seen:
+            return f"duplicate field detected at depth {depth}"
+        seen.add(fid)
+
+        payload = contents[pay_off:pay_off + pay_len]
+        if type_code == _STI_OBJECT:
+            inner = payload[:-1] if payload[-1:] == bytes([_OBJECT_END[0] << 4
+                                                          | _OBJECT_END[1]]) else payload
+            problem = _nested_problem(inner, depth + 1)
+            if problem:
+                return problem
+        elif type_code == _STI_ARRAY:
+            problem = _array_problem(
+                payload[:-1] if payload[-1:] == b"\xf1" else payload, depth + 1)
+            if problem:
+                return problem
+    return None
+
+
+def _array_problem(body: bytes, depth: int) -> str | None:
+    """The rules as they apply inside an array, where repetition is the point.
+
+    An array holds many elements of one named type — `SignerEntry` appears
+    once per signer — so the duplicate-field check that governs an object
+    would reject every array with more than one entry. `STObject::set` runs
+    that check per object (`getSortedFields` over one object's own fields,
+    xahaud:src/libxrpl/protocol/STObject.cpp:270), and each element is its own
+    object. So: recurse into the elements, do not compare them to each other.
+    """
+    for element in _array_elements(body):
+        problem = _nested_problem(element, depth + 1)
+        if problem:
+            return problem
+    return None
+
+
+def _array_elements(payload: bytes):
+    """Each element of a serialized array, as its object contents."""
+    from hookz.handlers.sto import _walk_fields
+
+    body = payload
+    try:
+        for _fid, tc, _fc, _off, _tl, pay_off, pay_len in _walk_fields(body):
+            if tc != _STI_OBJECT:
+                continue
+            inner = body[pay_off:pay_off + pay_len]
+            yield inner[:-1] if inner[-1:] == b"\xe1" else inner
+    except Exception:                                          # noqa: BLE001
+        return
+
 def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
     """Parse serialized XRPL object bytes into structured fields.
 
@@ -215,8 +307,24 @@ def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
             break
 
         try:
+            payload_start = total_bytes - len(parser)
             value = parser.read_field_value(get_field_instance(field_name))
             json_value = value.to_json()
+
+            # The rules apply at every level, and xrpl-py consumed this whole
+            # field in one step — so anything malformed inside it has to be
+            # checked here rather than by the loop, which will never see those
+            # headers.
+            if ident[0] in (_STI_OBJECT, _STI_ARRAY):
+                consumed = data[payload_start:total_bytes - len(parser)]
+                body = _unwrap(consumed, ident[0])
+                problem = (_array_problem(body, 1) if ident[0] == _STI_ARRAY
+                           else _nested_problem(body, 1))
+                if problem is not None:
+                    result.error = ValueError(problem)
+                    result.error_field = field_name
+                    result.illegal = True
+                    break
 
             if field_name == "TransactionType":
                 json_value = _resolve_tx_type(json_value)

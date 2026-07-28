@@ -537,3 +537,106 @@ class TestEveryReasonIsReported:
         tx["Sequence"] = 42
         rules = _rules(_check(tx))
         assert {"0-account", "1-sequence"} <= rules
+
+
+class TestMalformationInsideANestedObject:
+    """The rules run at every level, not only the transaction's own.
+
+    `STObject::set` recurses — `v_.emplace_back(sit, fn, depth + 1)`
+    (xahaud:src/libxrpl/protocol/STObject.cpp:264) — so a duplicate or an
+    unknown field inside EmitDetails throws exactly as it would at the top.
+    xrpl-py instead consumes a nested object whole and folds repeats into a
+    dict where the last wins, so the outer parse comes back clean and the
+    fourteen rules are applied to a transaction the network would refuse.
+
+    Reported as the third instance of the same hole, one layer deeper than
+    rounds 2 and 3 found it.
+    """
+
+    @staticmethod
+    def _emit_details_span(blob: bytes) -> tuple[int, int]:
+        """(first byte of contents, offset of the closing terminator)."""
+        return blob.find(bytes([0xED])) + 1, blob.rfind(bytes([0xE1]))
+
+    def test_a_duplicate_field_inside_emit_details_is_refused(self):
+        blob = _encode(_valid_tx())
+        start, end = self._emit_details_span(blob)
+        duplicated = blob[:end] + blob[start:start + 6] + blob[end:]
+
+        check = check_emission(duplicated, hook_account=HOOK_ACCOUNT,
+                               ledger_seq=LEDGER)
+
+        assert not check.ok, "xahaud throws Duplicate field detected"
+        assert "parse" in _rules(check)
+
+    def test_the_unmodified_transaction_still_passes(self):
+        """The control — the recursion must not refuse a well-formed nest."""
+        check = _check(_valid_tx())
+
+        assert check.ok, str(check)
+        assert not check.undecodable
+
+    def test_a_nested_duplicate_is_reported_as_illegal_not_undecodable(self):
+        """It is upstream's rule, so it is a refusal rather than a shrug."""
+        from hookz.xrpl.txn_parser import parse_object
+
+        blob = _encode(_valid_tx())
+        start, end = self._emit_details_span(blob)
+        duplicated = blob[:end] + blob[start:start + 6] + blob[end:]
+
+        parsed = parse_object(duplicated, strict=False)
+
+        assert parsed.illegal
+        assert "duplicate" in str(parsed.error).lower()
+
+    def test_the_depth_is_bounded(self):
+        """A malformed blob must not drive the recursion without limit."""
+        from hookz.xrpl.txn_parser import _nested_problem
+
+        assert _nested_problem(b"", depth=65) is not None
+
+
+class TestRepetitionInsideAnArrayIsLegal:
+    """An array holds many elements of one named type, and that is not a
+    duplicate field.
+
+    `STObject::set` runs the duplicate check per object — `getSortedFields`
+    over one object's own fields (xahaud:src/libxrpl/protocol/STObject.cpp:270)
+    — and each array element is its own object. Applying the object rule to
+    the array body rejects every signer list with more than one signer, which
+    is the false-refusal direction and the expensive one.
+    """
+
+    @staticmethod
+    def _signer_list(n: int) -> dict:
+        from hookz.account import to_raddr
+
+        tx = _valid_tx()
+        tx["TransactionType"] = "SignerListSet"
+        tx.pop("Amount", None)
+        tx.pop("Destination", None)
+        tx["SignerQuorum"] = 1
+        tx["SignerEntries"] = [
+            {"SignerEntry": {"Account": to_raddr(bytes([i + 1]) * 20),
+                             "SignerWeight": 1}}
+            for i in range(n)
+        ]
+        return tx
+
+    @pytest.mark.parametrize("n", [1, 2, 5])
+    def test_repeated_elements_are_not_a_duplicate_field(self, n):
+        from hookz.xrpl.txn_parser import parse_object
+
+        parsed = parse_object(_encode(self._signer_list(n)), strict=False)
+
+        assert parsed.complete, str(parsed.error)
+        assert not parsed.illegal
+        assert len(parsed.fields["SignerEntries"]) == n
+
+    def test_a_duplicate_inside_one_element_is_still_caught(self):
+        """The rule still applies within an element, which is an object."""
+        from hookz.xrpl.txn_parser import _nested_problem
+
+        # SignerWeight (0x13 0x01) twice inside one element's contents
+        element = bytes.fromhex("130001") + bytes.fromhex("130001")
+        assert _nested_problem(element, depth=1) is not None
