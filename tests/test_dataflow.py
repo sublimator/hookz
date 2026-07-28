@@ -232,3 +232,91 @@ class TestItRefusesRatherThanDrifts:
         assert 0x0D in BARRIERS, "br_if"
         assert 0x0B in BARRIERS, "end"
         assert 0x04 in BARRIERS, "if"
+
+
+# ---------------------------------------------------------------------------
+# Locals that only ever hold one constant
+# ---------------------------------------------------------------------------
+
+VIA_LOCAL = """
+    #include "hookapi.h"
+    int64_t hook(uint32_t r) {
+        uint8_t kl[34];
+        int slot_no = 11;
+        util_keylet(SBUF(kl), KEYLET_LINE, kl, 20, kl, 20, kl, 20);
+        slot_set(SBUF(kl), slot_no);
+        slot_subfield(slot_no, sfBalance, slot_no);
+        accept(SBUF("ok"), 0);
+        _g(1,1);
+        return 0;
+    }
+"""
+
+
+class TestConstantsReachedThroughALocal:
+    """The compiler puts a slot number in a local; the call site then reads
+    `local.get`, and the constant is one step away rather than on the stack."""
+
+    @staticmethod
+    @pytest.fixture(scope="class")
+    def wasm(tmp_path_factory):
+        src = tmp_path_factory.mktemp("df3") / "l.c"
+        src.write_text(VIA_LOCAL)
+        return compile_hook(src)
+
+    def test_a_slot_number_in_a_local_is_resolved(self, wasm):
+        from hookz.wasm.dataflow import api_calls
+
+        (call,) = [c for c in api_calls(wasm) if c.name == "slot_subfield"]
+
+        assert call.const(0) == 11
+        assert call.const(2) == 11
+
+    def test_it_is_marked_as_inferred_not_read(self, wasm):
+        """Two strengths of evidence, kept apart. A value on the modelled
+        stack was there; one from a local was deduced, and its blind spot is
+        a branch that skips every assignment."""
+        from hookz.wasm.dataflow import ConstFromLocal, api_calls
+
+        (call,) = [c for c in api_calls(wasm) if c.name == "slot_subfield"]
+
+        assert isinstance(call.args[0], ConstFromLocal)
+        assert call.args[0].defs, "the assignment offsets are kept for checking"
+
+    def test_a_parameter_is_never_inferred(self, wasm):
+        """Its initial value comes from the caller, so an assignment inside
+        the function says nothing about what an earlier read saw."""
+        from hookz.wasm.dataflow import constant_locals
+        from hookz.wasm.decode import decode_code_bodies_raw
+
+        start, end = decode_code_bodies_raw(wasm)[0]
+        consts = constant_locals(wasm, start, end, param_count=4)
+
+        assert all(i >= 4 for i in consts)
+
+    def test_a_local_written_twice_with_different_values_is_not_resolved(self):
+        """Soundness floor — two constants means neither is *the* value."""
+        from hookz.wasm.dataflow import constant_locals
+
+        # i32.const 1, local.set 0, i32.const 2, local.set 0, end
+        body = bytes([0x41, 0x01, 0x21, 0x00, 0x41, 0x02, 0x21, 0x00, 0x0B])
+        assert constant_locals(body, 0, len(body), param_count=0) == {}
+
+    def test_a_local_written_once_is_resolved(self):
+        from hookz.wasm.dataflow import constant_locals
+
+        body = bytes([0x41, 0x07, 0x21, 0x00, 0x0B])
+        consts = constant_locals(body, 0, len(body), param_count=0)
+
+        assert consts[0].value == 7
+
+    def test_a_read_before_the_assignment_is_left_alone(self):
+        """A declared local starts at zero, so a read that could precede every
+        assignment did not see the constant."""
+        from hookz.wasm.dataflow import Local, constant_locals, resolve_locals
+
+        body = bytes([0x41, 0x07, 0x21, 0x00, 0x0B])
+        consts = constant_locals(body, 0, len(body), param_count=0)
+
+        assert resolve_locals((Local(0),), consts, at_offset=0) == (Local(0),)
+        assert resolve_locals((Local(0),), consts, at_offset=99)[0].value == 7

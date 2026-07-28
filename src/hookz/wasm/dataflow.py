@@ -381,3 +381,235 @@ def call_sites_over(body: bytes) -> list[CallSite]:
         del stack[max(0, len(stack) - pops):]
         stack.extend(Computed(op) for _ in range(pushes))
     return out
+
+
+# ---------------------------------------------------------------------------
+# Locals that only ever hold one constant
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class FrameSlot:
+    """A value read from `[local + offset]` — a spilled variable.
+
+    An unoptimised build keeps a C local in the stack frame and reloads it at
+    each use, so the constant is one memory round-trip away rather than in a
+    wasm local. Treated the same way: a slot only ever written with one
+    literal can only ever be read as that literal.
+    """
+    base: int
+    offset: int
+
+
+@dataclass(frozen=True)
+class ConstFromLocal:
+    """A constant reached through a local, kept distinct from a direct one.
+
+    `Const` means the value was on the modelled stack at the call. This means
+    it was inferred: every assignment to the local in the whole function stored
+    the same literal. Those are different strengths of evidence and a consumer
+    that cannot tell them apart cannot weigh them, so they are different types.
+
+    Its blind spot is a branch that skips every assignment, leaving the local
+    at the zero it was declared with. `defs` carries the offsets so that is
+    checkable rather than taken on trust.
+    """
+    value: int
+    local: int
+    defs: tuple
+
+
+def constant_locals(wasm: bytes, start: int, end: int,
+                    param_count: int) -> dict[int, ConstFromLocal]:
+    """Locals in one body whose every assignment stores the same literal.
+
+    Parameters are excluded: their initial value comes from the caller, so an
+    assignment inside the function says nothing about what a read before it
+    saw. Declared locals start at zero, which is why a single constant
+    assignment is only evidence when the read follows it — the offsets are
+    returned so a caller can check that.
+    """
+    stores: dict[int, list] = {}
+    cells: dict[tuple, list] = {}
+    stack: list = []
+    for instr in decode_body(wasm, start, end):
+        op = instr.opcode
+        if op in BARRIERS:
+            stack.clear()
+            continue
+        if op in (OP_SET_LOCAL, OP_TEE_LOCAL):
+            index = instr.imm[0]
+            top = stack[-1] if stack else Unknown("branch")
+            stores.setdefault(index, []).append((instr.offset, top))
+            if op == OP_SET_LOCAL and stack:
+                stack.pop()
+            continue
+        effect = _EFFECTS.get(op)
+        if effect is None:
+            if op in (OP_CALL, OP_CALL_INDIRECT):
+                stack.clear()
+                continue
+            raise UnmodelledOpcode(f"opcode 0x{op:02X} at {instr.offset}")
+        pops, pushes = effect
+        popped = stack[-1] if (pops and stack) else None
+        if MEMOP_FIRST + 14 <= op <= MEMOP_LAST and len(stack) >= 2:
+            # a store: [addr, value]
+            addr, value = stack[-2], stack[-1]
+            if isinstance(addr, Local):
+                cells.setdefault((addr.index, instr.imm[1]), []).append(
+                    (instr.offset, value))
+        if len(stack) < pops:
+            stack.clear()
+        else:
+            del stack[len(stack) - pops:]
+        if pushes:
+            if op in (OP_I32_CONST, OP_I64_CONST):
+                stack.append(Const(instr.imm[0]))
+            elif op == OP_GET_LOCAL:
+                stack.append(Local(instr.imm[0]))
+            elif MEMOP_FIRST <= op <= 0x35 and isinstance(popped, Local):
+                stack.append(FrameSlot(popped.index, instr.imm[1]))
+            else:
+                stack.extend(Computed(op) for _ in range(pushes))
+
+    out: dict[int, ConstFromLocal] = {}
+    for index, defs in stores.items():
+        if index < param_count:
+            continue
+        values = {v for _off, v in defs}
+        if len(values) == 1 and isinstance(next(iter(values)), Const):
+            only = next(iter(values))
+            out[index] = ConstFromLocal(
+                value=only.value, local=index,
+                defs=tuple(off for off, _v in defs))
+
+    # A spilled variable — stored to `[frame + N]` and reloaded — is the same
+    # single-assignment argument one level out: a cell only ever written with
+    # one literal can only ever be read as that literal. Unoptimised builds
+    # spill where -O2 keeps things in locals, so without this the analysis
+    # answers well on one build of a hook and poorly on another.
+    slot_consts: dict[tuple, Const] = {}
+    for cell, writes in cells.items():
+        values = {v for _off, v in writes}
+        if len(values) == 1 and isinstance(next(iter(values)), Const):
+            slot_consts[cell] = next(iter(values))
+
+    for index, defs in stores.items():
+        if index < param_count or index in out:
+            continue
+        values = {v for _off, v in defs}
+        if len(values) != 1:
+            continue
+        (only,) = values
+        if isinstance(only, FrameSlot):
+            known = slot_consts.get((only.base, only.offset))
+            if known is not None:
+                out[index] = ConstFromLocal(
+                    value=known.value, local=index,
+                    defs=tuple(off for off, _v in defs)
+                    + tuple(off for off, _v in cells[(only.base, only.offset)]))
+
+    # A compiler will copy a constant between locals — `local.get a;
+    # local.set b` — so b's only assignment is a local, not a literal, and a
+    # single pass leaves it unresolved. Following those to a fixpoint costs
+    # nothing and is the same evidence: b can only ever hold what a holds.
+    # The def offsets accumulate, so `resolve_locals` still requires every
+    # link in the chain to precede the read.
+    changed = True
+    while changed:
+        changed = False
+        for index, defs in stores.items():
+            if index < param_count or index in out:
+                continue
+            values = {v for _off, v in defs}
+            if len(values) != 1:
+                continue
+            (only,) = values
+            source = out.get(only.index) if isinstance(only, Local) else None
+            if source is None:
+                continue
+            out[index] = ConstFromLocal(
+                value=source.value, local=index,
+                defs=tuple(off for off, _v in defs) + source.defs)
+            changed = True
+    return out
+
+
+def resolve_locals(args: tuple, consts: dict[int, ConstFromLocal],
+                   at_offset: int) -> tuple:
+    """Replace `Local` arguments with the constant they can only hold.
+
+    Only where every assignment precedes this call. A read that could run
+    before the local was ever written sees the zero it was declared with, not
+    the literal, so it is left as `Local`.
+    """
+    out = []
+    for a in args:
+        known = consts.get(a.index) if isinstance(a, Local) else None
+        if known is not None and all(d < at_offset for d in known.defs):
+            out.append(known)
+        else:
+            out.append(a)
+    return tuple(out)
+
+
+@dataclass(frozen=True)
+class ApiCall:
+    """A call to an imported host function, with what could be resolved."""
+    offset: int
+    name: str
+    args: tuple
+
+    def const(self, position: int) -> int | None:
+        """The literal at `position`, or None if it was not resolved.
+
+        Accepts either strength of evidence — a value on the modelled stack or
+        one inferred from a single-assignment local — because a caller asking
+        for "the field id" wants the number. Read `args` directly when the
+        difference matters.
+        """
+        if position >= len(self.args):
+            return None
+        a = self.args[position]
+        if isinstance(a, (Const, ConstFromLocal)):
+            return a.value
+        return None
+
+
+def api_calls(wasm: bytes, module=None) -> list[ApiCall]:
+    """Every call to an imported host function, arguments resolved where possible.
+
+    This is the interface worth using: it names the callee, resolves the
+    constants a hook passed, and pushes locals through the single-assignment
+    inference. What it cannot resolve stays `Local` or `Unknown` rather than
+    becoming a plausible number.
+    """
+    from .decode import decode_code_bodies_raw, decode_module
+
+    if module is None:
+        module = decode_module(wasm)
+    names = {i: imp.name for i, imp in enumerate(module.imports)}
+
+    per_body = []
+    for n, (start, end) in enumerate(decode_code_bodies_raw(wasm)):
+        type_idx = module.functions[n] if n < len(module.functions) else 0
+        params = len(module.types[type_idx].params) if module.types else 0
+        per_body.append((start, end, constant_locals(wasm, start, end, params)))
+
+    def locals_at(offset: int) -> dict:
+        for start, end, consts in per_body:
+            if start <= offset < end:
+                return consts
+        return {}
+
+    out: list[ApiCall] = []
+    for site in call_sites(wasm, module):
+        name = names.get(site.func_index)
+        if name is None:
+            continue                        # a call into the hook's own code
+        out.append(ApiCall(
+            offset=site.offset,
+            name=name,
+            args=resolve_locals(site.args, locals_at(site.offset), site.offset),
+        ))
+    return out
