@@ -165,10 +165,43 @@ class TestOtxnId:
 class TestOtxnSlot:
     """otxn_slot: load originating transaction into slot."""
 
-    def test_returns_slot_no(self, rt):
-        assert otxn_slot(rt, 0) == 0
+    def test_returns_the_slot_asked_for(self, rt):
         assert otxn_slot(rt, 5) == 5
         assert otxn_slot(rt, 255) == 255
+
+    def test_slot_zero_allocates(self, rt):
+        """Slot 0 means "pick a free one", so the answer is never 0.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1573.
+        """
+        first = otxn_slot(rt, 0)
+        assert first > 0
+        assert otxn_slot(rt, 0) not in (0, first), "must not hand out the same slot twice"
+
+    def test_a_slot_above_the_maximum_is_invalid(self, rt):
+        """xahaud:include/xrpl/hook/Enum.h:398 — max_slots is 255."""
+        assert otxn_slot(rt, 256) == hookapi.INVALID_ARGUMENT
+
+    def test_the_slot_holds_the_transaction(self, rt):
+        """The point of slotting it: the hook navigates in from here."""
+        from hookz.handlers.slot import slot_subfield
+
+        rt.otxn_account = b"\x07" * 20
+        rt.otxn_type = hookapi.ttINVOKE
+        assert otxn_slot(rt, 3) == 3
+        assert slot_subfield(rt, 3, hookapi.sfAccount, 4) == 4
+
+    def test_the_slot_agrees_with_otxn_field(self, rt):
+        """One transaction, whichever way the hook chooses to read it."""
+        from hookz.handlers.slot import slot, slot_subfield
+
+        rt.otxn_fields[hookapi.sfFlags] = (0x00020000).to_bytes(4, "big")
+        otxn_slot(rt, 1)
+        slot_subfield(rt, 1, hookapi.sfFlags, 2)
+
+        assert slot(rt, 100, 4, 2) == 4
+        assert otxn_field(rt, 200, 4, hookapi.sfFlags) == 4
+        assert rt._read_memory(100, 4) == rt._read_memory(200, 4)
 
 
 # ---------------------------------------------------------------------------

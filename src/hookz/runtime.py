@@ -192,11 +192,15 @@ class HookRuntime:
         self.hook_account: bytes = b"\x00" * 20
         self.otxn_account: bytes = b"\x00" * 20
         self.otxn_type: int = 0
-        # Fields of the originating transaction, by sfCode. Consulted
-        # before the built-ins, so a test can hand the hook any field —
-        # sfFlags is the one that matters, since a hook cannot check a
-        # flag the harness will not serve.
+        # Fields of the originating transaction, by sfCode, as serialized
+        # payload bytes. Consulted ahead of the built-ins above, so a
+        # transaction can carry whatever field the hook under test reads.
         self.otxn_fields: dict[int, bytes] = {}
+        # The whole originating transaction, serialized. Set it when a hook
+        # slots the transaction and navigates into it (otxn_slot), which needs
+        # bytes rather than a field map. Left None, otxn_slot serializes
+        # otxn_fields instead, so the two views agree by construction.
+        self.otxn_blob: bytes | None = None
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []

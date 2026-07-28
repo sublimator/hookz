@@ -11,6 +11,9 @@ if TYPE_CHECKING:
 
 from hookz import hookapi
 
+# xahaud:include/xrpl/hook/Enum.h:398
+MAX_SLOTS = 255
+
 
 def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
                            data: bytes, is_account: bool = False) -> int:
@@ -38,12 +41,11 @@ def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
 def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -> int:
     """A field of the originating transaction.
 
-    `rt.otxn_fields` is consulted first, so a test can give the transaction any
-    field it needs — sfFlags, sfAmount, sfDestination, sfSourceTag. Without it
-    only sfAccount and sfTransactionType existed and everything else returned
-    DOESNT_EXIST, which does not mean "absent" to a hook so much as "this
-    harness cannot say". A guard reading sfFlags could then never fire, and its
-    line showed as untested when it was untestable.
+    `rt.otxn_fields` is consulted first, so a transaction can carry any field a
+    hook reads — sfFlags, sfAmount, sfDestination, sfSourceTag — with the
+    built-ins below serving the two the runtime models directly. DOESNT_EXIST
+    is reserved for a field the transaction genuinely does not have, since to a
+    hook that answer is indistinguishable from "this harness cannot say".
     """
     override = rt.otxn_fields.get(field_id)
     if override is not None:
@@ -156,5 +158,48 @@ def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
     return 32
 
 
+def serialized_otxn(rt: HookRuntime) -> bytes:
+    """The originating transaction as bytes, however the test described it.
+
+    `rt.otxn_blob` wins when set — a test that built a real transaction with
+    `xrpl.core.binarycodec.encode` has said everything there is to say, and
+    re-deriving it here could only lose detail.
+
+    Otherwise it is assembled from the same three places `otxn_field` answers
+    from, so the two cannot disagree about what arrived. A hook that reads
+    sfFlags directly and a hook that slots the transaction and navigates to it
+    see one transaction, not two.
+    """
+    from hookz.xrpl.txn_builder import serialize_fields
+
+    if rt.otxn_blob is not None:
+        return rt.otxn_blob
+    fields = dict(rt.otxn_fields)
+    fields.setdefault(hookapi.sfTransactionType, rt.otxn_type.to_bytes(2, "big"))
+    fields.setdefault(hookapi.sfAccount, rt.otxn_account)
+    return serialize_fields(fields)
+
+
 def otxn_slot(rt: HookRuntime, slot_no: int) -> int:
+    """Emplace the originating transaction into a slot.
+
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1566. The transaction always
+    exists, so the only two failures are a slot number above `max_slots`
+    (xahaud:include/xrpl/hook/Enum.h:398) and having no free slot to allocate
+    when asked for one. Slot 0 means "pick one".
+
+    The slot is populated, not merely reserved: a hook slots the transaction in
+    order to navigate into it, and `slot_subfield`/`slot_count`/`slot_subarray`
+    all read the bytes placed here.
+    """
+    from hookz.handlers.slot import _get_slot_data, _set_slot_data
+
+    if slot_no > MAX_SLOTS:
+        return hookapi.INVALID_ARGUMENT
+    if slot_no == 0:
+        slot_no = next((n for n in range(1, MAX_SLOTS + 1)
+                        if _get_slot_data(rt, n) is None), 0)
+        if slot_no == 0:
+            return hookapi.NO_FREE_SLOTS
+    _set_slot_data(rt, slot_no, serialized_otxn(rt))
     return slot_no

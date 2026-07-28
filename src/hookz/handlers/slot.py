@@ -43,11 +43,24 @@ def _walk_slot_fields(data: bytes):
     yield from _walk_fields(data)
 
 
+# (type 14, field 1) — the byte that closes an STObject.
+_OBJECT_END = 0xE1
+_STI_OBJECT = 0xE
+
+
 def _walk_array_elements(data: bytes):
     """Walk top-level elements in a serialized array.
 
     Handles the outer array wrapper (F0-FF header + F1 end marker) if present,
-    then yields each inner object element.
+    then yields each element as `(index, offset, length)`.
+
+    An element is yielded as the object's *contents* — the fields inside it,
+    with its own name header and closing marker removed. That is the level
+    xahaud exposes: `slot_subarray` sets the slot entry to
+    `parent_obj[array_id]` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2202),
+    an `STObject&`, and `slot_subfield` then asks that object for its own
+    fields (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2251). So a Remit's
+    sfAmounts element answers to `sfAmount`, not to `AmountEntry`.
     """
     start = 0
     end = len(data)
@@ -65,8 +78,16 @@ def _walk_array_elements(data: bytes):
 
     inner = data[start:end]
     from hookz.handlers.sto import _walk_fields
-    for i, (fid, _tc, _fc, offset, total_len, _po, _pl) in enumerate(_walk_fields(inner)):
-        yield i, start + offset, total_len
+    for i, (_fid, tc, _fc, offset, total_len, pay_off, pay_len) in enumerate(
+            _walk_fields(inner)):
+        # Unwrap a named object element down to its fields. Anything else —
+        # an array of bare values — is yielded whole, since there is no
+        # wrapper to remove and inventing one would corrupt it.
+        if (tc == _STI_OBJECT and pay_len > 0
+                and inner[pay_off + pay_len - 1] == _OBJECT_END):
+            yield i, start + pay_off, pay_len - 1
+        else:
+            yield i, start + offset, total_len
 
 
 # ---------------------------------------------------------------------------
