@@ -363,3 +363,45 @@ class TestHookParamMultiHook:
         rt._write_memory(600, hook_hash)
         result = hook_param_set(rt, 0, 256, 500, 1, 600, 32)
         assert result == 256
+
+
+class TestArbitraryFields:
+    """`rt.otxn_fields` — a hook can only check a field the harness will serve.
+
+    Before this, everything but sfAccount and sfTransactionType returned
+    DOESNT_EXIST. A hook guarding on sfFlags — tfPartialPayment, say — could
+    never take its own guard branch, and coverage reported the line untested
+    when it was untestable.
+    """
+
+    def test_a_supplied_field_is_returned(self, rt):
+        rt.otxn_fields[hookapi.sfFlags] = (0x00020000).to_bytes(4, "big")
+        assert otxn_field(rt, 100, 4, hookapi.sfFlags) == 4
+        assert rt._read_memory(100, 4) == b"\x00\x02\x00\x00"
+
+    def test_a_supplied_field_as_int64(self, rt):
+        """write_ptr=0, write_len=0 is the int64 return mode, same as builtins."""
+        rt.otxn_fields[hookapi.sfFlags] = (0x00020000).to_bytes(4, "big")
+        assert otxn_field(rt, 0, 0, hookapi.sfFlags) == 0x00020000
+
+    def test_null_ptr_with_a_write_len_is_invalid(self, rt):
+        """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1891 — asking to both
+        return an int64 and write to memory is rejected, not silently one of
+        them."""
+        rt.otxn_fields[hookapi.sfFlags] = (0x00020000).to_bytes(4, "big")
+        assert otxn_field(rt, 0, 4, hookapi.sfFlags) == hookapi.INVALID_ARGUMENT
+
+    def test_an_unsupplied_field_still_does_not_exist(self, rt):
+        assert otxn_field(rt, 100, 4, hookapi.sfFlags) == hookapi.DOESNT_EXIST
+
+    def test_it_overrides_a_builtin(self, rt):
+        """Explicit beats derived — a test that says so means it."""
+        rt.otxn_account = b"\x01" * 20
+        rt.otxn_fields[hookapi.sfAccount] = b"\x02" * 20
+        assert otxn_field(rt, 100, 20, hookapi.sfAccount) == 20
+        assert rt._read_memory(100, 20) == b"\x02" * 20
+
+    def test_builtins_still_work_untouched(self, rt):
+        rt.otxn_account = b"\x03" * 20
+        assert otxn_field(rt, 100, 20, hookapi.sfAccount) == 20
+        assert rt._read_memory(100, 20) == b"\x03" * 20

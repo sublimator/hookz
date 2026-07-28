@@ -36,6 +36,18 @@ def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
 
 
 def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -> int:
+    """A field of the originating transaction.
+
+    `rt.otxn_fields` is consulted first, so a test can give the transaction any
+    field it needs — sfFlags, sfAmount, sfDestination, sfSourceTag. Without it
+    only sfAccount and sfTransactionType existed and everything else returned
+    DOESNT_EXIST, which does not mean "absent" to a hook so much as "this
+    harness cannot say". A guard reading sfFlags could then never fire, and its
+    line showed as untested when it was untestable.
+    """
+    override = rt.otxn_fields.get(field_id)
+    if override is not None:
+        return _write_or_return_int64(rt, write_ptr, write_len, override)
     if field_id == hookapi.sfAccount:
         data = rt.otxn_account
         return _write_or_return_int64(rt, write_ptr, write_len, data)

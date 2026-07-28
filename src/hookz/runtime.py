@@ -192,6 +192,11 @@ class HookRuntime:
         self.hook_account: bytes = b"\x00" * 20
         self.otxn_account: bytes = b"\x00" * 20
         self.otxn_type: int = 0
+        # Fields of the originating transaction, by sfCode. Consulted
+        # before the built-ins, so a test can hand the hook any field —
+        # sfFlags is the one that matters, since a hook cannot check a
+        # flag the harness will not serve.
+        self.otxn_fields: dict[int, bytes] = {}
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
