@@ -613,3 +613,50 @@ def api_calls(wasm: bytes, module=None) -> list[ApiCall]:
             args=resolve_locals(site.args, locals_at(site.offset), site.offset),
         ))
     return out
+
+
+COVERAGE_IMPORT = "__on_source_line"
+
+
+def calls_by_source_line(wasm: bytes, module=None) -> list[tuple[int, ApiCall]]:
+    """Each host-API call paired with the source line it belongs to.
+
+    An instrumented build calls `__on_source_line(line, col)` ahead of the code
+    for each line, with both as literals, so the most recent one names where
+    every following call came from. That is the join between two things this
+    package already knows separately: which ledger interactions a hook contains
+    (from the binary) and which lines ran (from coverage).
+
+    What the join buys is a different question from line coverage. An uncovered
+    line might be an overflow guard nobody can reach; an uncovered `state_set`
+    is persistence no test has ever exercised, and an uncovered `emit` is a
+    payout nobody has watched leave. Those are worth ranking above line counts.
+
+    Only meaningful on an instrumented module — an unrewritten one has no
+    `__on_source_line` calls and yields nothing rather than guessing.
+    """
+    out: list[tuple[int, ApiCall]] = []
+    current: int | None = None
+    for call in api_calls(wasm, module):
+        if call.name == COVERAGE_IMPORT:
+            line = call.const(0)
+            if line is not None:
+                current = line
+            continue
+        if current is not None:
+            out.append((current, call))
+    return out
+
+
+def unexercised_calls(wasm: bytes, covered_lines: set[int],
+                      module=None) -> list[tuple[int, ApiCall]]:
+    """Host-API calls on lines no test ran, in source order.
+
+    `covered_lines` is whatever the coverage tracker reports as hit. A call
+    whose line never executed is an interaction with the ledger that nothing
+    has checked — which is the shape of gap worth chasing, as opposed to a
+    line count that treats an unreachable overflow guard and an untested
+    payout as the same debt.
+    """
+    return [(line, call) for line, call in calls_by_source_line(wasm, module)
+            if line not in covered_lines]
