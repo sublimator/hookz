@@ -28,6 +28,44 @@ class TestRuleProvenance:
         assert "allSignersWeight < quorum" in c.snippet()
 
 
+class TestIllegalVersusUnreadable:
+    """Two different statements, and conflating them cost a round each way.
+
+    Treating every incomplete parse as a refusal blamed genuine hooks for this
+    parser's limits. Treating every one as "cannot judge" made a single NOP a
+    universal bypass. The split is whether the failure is a rule xahaud itself
+    enforces.
+    """
+
+    VALID = None   # built per-test; see _valid_tx below
+
+    def test_more_than_sixty_four_nops_is_refused(self):
+        """xahaud:src/libxrpl/protocol/STObject.cpp:223 throws, so this is the
+        network's rule and not a shrug."""
+        check = check_emission(_encode(_valid_tx()) + b"\x99" * 64,
+                               hook_account=HOOK_ACCOUNT, ledger_seq=LEDGER)
+        assert not check.ok
+        assert not check.undecodable
+        assert "parse" in _rules(check)
+
+    def test_sixty_three_nops_is_still_judged_normally(self):
+        check = check_emission(_encode(_valid_tx()) + b"\x99" * 63,
+                               hook_account=HOOK_ACCOUNT, ledger_seq=LEDGER)
+        assert check.ok and not check.undecodable
+
+    @pytest.mark.parametrize("blob", [b"\xff" * 10, b"\x01\x02\x03not a txn"])
+    def test_a_blob_with_no_readable_field_is_refused(self, blob):
+        """Not a transaction by anyone's reading."""
+        check = check_emission(blob)
+        assert not check.ok and not check.undecodable
+
+    def test_a_partly_readable_blob_still_declines(self):
+        """Some fields recovered — this parser may simply be weaker here."""
+        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
+        check = check_emission(half)
+        assert check.undecodable and check.rejections == []
+
+
 class TestUnreadable:
     """What hookz cannot decode, it does not judge.
 
@@ -37,14 +75,15 @@ class TestUnreadable:
     which is the whole error this module was written to stop making.
     """
 
-    def test_an_unreadable_blob_is_recorded_not_rejected(self):
-        check = check_emission(b"\x00\x01\x02not a transaction")
+    def test_a_partly_read_blob_is_recorded_not_rejected(self):
+        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
+        check = check_emission(half)
         assert check.undecodable
         assert check.rejections == []
 
     def test_it_says_how_far_it_got(self):
-        check = check_emission(b"\xff" * 8)
-        assert "bytes" in check.undecodable
+        half = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
+        assert "bytes" in check_emission(half).undecodable
 
     def test_a_readable_blob_is_judged(self):
         """The control — a decodable transaction still gets the rules."""
@@ -417,3 +456,24 @@ class TestKnownGapsAreStated:
         import inspect
         from hookz.handlers import emit as handler
         assert "min_fee=None" in inspect.getsource(handler.emit)
+
+
+class TestEveryReasonIsReported:
+    """`check_emission` promises every reason, not the first — untested until
+    a review added an early `return` and no test noticed."""
+
+    def test_two_broken_things_give_two_rules(self):
+        tx = _valid_tx()
+        tx["Sequence"] = 99
+        del tx["Fee"]
+        rules = _rules(_check(tx))
+        assert {"1-sequence", "7-fee"} <= rules
+
+    def test_a_wrong_account_does_not_stop_later_rules(self):
+        from hookz.account import to_raddr
+
+        tx = _valid_tx()
+        tx["Account"] = to_raddr(b"\x0b" * 20)
+        tx["Sequence"] = 42
+        rules = _rules(_check(tx))
+        assert {"0-account", "1-sequence"} <= rules

@@ -226,6 +226,10 @@ class HookRuntime:
         self._has_cbak: bool | None = None
         self.validate_emissions: bool = True
         self.emission_rejections: list = []
+        # Emits hookz could not fully read, so applied no rules to. Distinct
+        # from rejections: an empty rejections list means either 'judged and
+        # clean' or 'never judged', and only this says which.
+        self.emission_undecided: list = []
         self._etxn_reserved: bool = False
         self._etxn_count: int = 0
         self._emit_nonce_counter: int = 0

@@ -156,6 +156,10 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
         if not check.ok:
             rt.emission_rejections.append(check)
             return hookapi.EMISSION_FAILURE
+        if check.undecodable:
+            # accepted, but nothing was verified — say so rather than let the
+            # empty rejections list imply it passed
+            rt.emission_undecided.append(check)
 
     rt.emitted_txns.append(txn_bytes)
     h = hashlib.sha512(b'\x54\x58\x4e\x00' + txn_bytes).digest()[:32]

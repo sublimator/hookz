@@ -178,3 +178,34 @@ class TestCommitResolution:
     def test_resolve_commit_returns_a_full_sha(self, cfg):
         got = ref.resolve_commit(cfg.xahaud_root, ref.XAHAUD_COMMIT[:12])
         assert got == ref.XAHAUD_COMMIT
+
+
+class TestAVacuousPinIsReported:
+    """A pin that cannot fail reads as reproducibility and is not."""
+
+    @pytest.fixture
+    def cfg(self):
+        from hookz.config import load_config
+        c = load_config()
+        if ref.checkout_commit(c.xahaud_root) is None:
+            pytest.skip("configured xahaud_root is not a git checkout")
+        return c
+
+    @pytest.mark.parametrize("rev", ["HEAD", "latest-dev", "main"])
+    def test_a_moving_reference_pins_nothing(self, cfg, rev):
+        import dataclasses
+
+        if ref.resolve_commit(cfg.xahaud_root, rev) is None:
+            pytest.skip(f"{rev} does not exist in this checkout")
+        problems = ref.check_checkout(dataclasses.replace(cfg, xahaud_commit=rev))
+        assert problems and "pins nothing" in problems[0]
+
+    @pytest.mark.parametrize("rev_of", [
+        lambda: ref.XAHAUD_COMMIT,
+        lambda: ref.XAHAUD_COMMIT[:12],
+    ])
+    def test_a_sha_is_a_real_pin(self, cfg, rev_of):
+        import dataclasses
+
+        assert ref.check_checkout(
+            dataclasses.replace(cfg, xahaud_commit=rev_of())) == []

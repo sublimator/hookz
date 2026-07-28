@@ -305,3 +305,20 @@ class TestEmit:
         hash2 = rt._read_memory(0, 32)
 
         assert hash1 != hash2
+
+
+class TestUndecidedIsRecorded:
+    """An empty rejections list means "judged clean" or "never judged"."""
+
+    def test_an_unjudged_emit_is_recorded(self, rt):
+        from hookz.handlers.emit import emit, etxn_reserve
+
+        rt.validate_emissions = True
+        etxn_reserve(rt, 1)
+        # readable enough to parse, not enough to judge
+        blob = bytes.fromhex("12005f22800000002400000000") + b"\xfe\xfd"
+        rt._write_memory(100, blob)
+        assert emit(rt, 0, 32, 100, len(blob)) == 32
+        assert rt.emission_rejections == []
+        assert len(rt.emission_undecided) == 1
+        assert "bytes" in rt.emission_undecided[0].undecodable

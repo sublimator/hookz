@@ -227,6 +227,11 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     parsed = parse_object(txn, strict=False)
     fields = parsed.fields
 
+    if parsed.illegal:
+        # A rule xahaud enforces itself, so this is a refusal and not a shrug.
+        check.refuse("parse", f"not a deserialisable transaction: {parsed.error}")
+        return check
+
     if not parsed.complete:
         # hookz's parser is not xahaud's deserialiser. When it stops early,
         # every field after that point looks absent — and reporting those as

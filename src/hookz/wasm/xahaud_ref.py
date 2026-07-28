@@ -340,7 +340,19 @@ def check_checkout(config=None) -> list[str]:
     if actual != declared:
         return [f"{root} is at {actual[:12]}, but paths.xahaud_commit declares "
                 f"{config.xahaud_commit} ({declared[:12]})"]
+    # "HEAD", a branch name, or a tag that moves resolves to whatever the
+    # checkout is at, so the assertion is vacuous — it can never fail, which
+    # reads as reproducibility and is not.
+    if not _looks_like_a_sha(config.xahaud_commit):
+        return [f"paths.xahaud_commit is {config.xahaud_commit!r}, which resolves "
+                "to whatever the checkout is at — it pins nothing. Use a commit "
+                "SHA if you want the check to be able to fail."]
     return []
+
+
+def _looks_like_a_sha(rev: str) -> bool:
+    """Is this a fixed object name rather than a moving reference?"""
+    return len(rev) >= 7 and all(c in "0123456789abcdefABCDEF" for c in rev)
 
 
 def resolve_commit(root: Path | str, rev: str) -> str | None:

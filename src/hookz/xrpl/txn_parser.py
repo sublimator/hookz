@@ -63,6 +63,16 @@ class ParseResult:
     raw: bytes = b""
     """Original input bytes."""
 
+    illegal: bool = False
+    """True when parsing stopped on a rule xahaud's own deserialiser enforces.
+
+    The distinction matters downstream: an incomplete parse is usually *this*
+    parser being weaker than xahaud's, which is a gap in hookz and not grounds
+    to accuse a hook. But some failures are upstream's rule — more than 64 NOPs
+    throws in STObject::set, and a blob from which not one field can be read is
+    not a transaction by anyone's reading. Those the network would refuse too.
+    """
+
     @property
     def ok(self) -> bool:
         """Alias for complete — did everything parse?"""
@@ -133,8 +143,10 @@ def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
         if parser.peek() == NOP_FIELD_HEADER:
             nops += 1
             if nops >= MAX_NOPS:
-                result.error = ValueError(
-                    f"too many NOPs (>= {MAX_NOPS})")   # xahaud throws here too
+                # xahaud:src/libxrpl/protocol/STObject.cpp:223 throws here, so
+                # this is the network's rule rather than a limit of this parser
+                result.error = ValueError(f"too many NOPs (>= {MAX_NOPS})")
+                result.illegal = True
                 break
             parser.skip(1)
             continue
@@ -156,6 +168,12 @@ def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
     result.bytes_consumed = total_bytes - len(parser)
     result.remaining = data[result.bytes_consumed:]
     result.complete = result.error is None and len(result.remaining) == 0
+    # Not one field recovered means this is not a transaction by anyone's
+    # reading, so xahaud's STTx construction would throw too. Counting bytes
+    # instead would never fire: the parser consumes the field header it chokes
+    # on before it knows it cannot read it.
+    if result.error is not None and not result.fields:
+        result.illegal = True
 
     if strict and not result.complete:
         raise ParseError(result)
