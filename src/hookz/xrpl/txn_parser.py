@@ -88,6 +88,20 @@ class ParseError(Exception):
         )
 
 
+# A field header of type 9 / field 9, which xahaud treats as a no-op: it skips
+# the byte and keeps deserialising rather than failing
+# (xahaud:src/libxrpl/protocol/STObject.cpp:221). Hooks use it to blank out
+# template bytes they do not want — genesis/mint.c writes it over unwanted VL
+# length prefixes.
+#
+# This is a **Xahau** extension. The parsing underneath is xrpl-py's XRPL
+# codec, which knows nothing about it and stops dead on the unknown header, so
+# the skip has to happen here. Do not carry this into an XRPL context: there,
+# a (9,9) header is simply malformed.
+NOP_FIELD_HEADER = 0x99   # BinaryParser.peek() returns an int, despite its type hint
+MAX_NOPS = 64          # xahaud:src/libxrpl/protocol/STObject.cpp:223
+
+
 def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
     """Parse serialized XRPL object bytes into structured fields.
 
@@ -106,9 +120,24 @@ def parse_object(data: bytes, *, strict: bool = True) -> ParseResult:
     result = ParseResult(raw=data)
     total_bytes = len(data)
     parser = BinaryParser(data.hex())
+    nops = 0
 
     while not parser.is_end():
         field_name = None
+        # A field header of (type 9, field 9) is a NOP: xahaud's deserialiser
+        # skips it and keeps going, up to 64 of them
+        # (xahaud:src/libxrpl/protocol/STObject.cpp:221). Hooks use it to blank
+        # out template bytes they do not want — genesis/mint.c writes it over
+        # unwanted VL length prefixes — so a parser that stops here disagrees
+        # with the network about a transaction the network accepts.
+        if parser.peek() == NOP_FIELD_HEADER:
+            nops += 1
+            if nops >= MAX_NOPS:
+                result.error = ValueError(
+                    f"too many NOPs (>= {MAX_NOPS})")   # xahaud throws here too
+                break
+            parser.skip(1)
+            continue
         try:
             field_obj = parser.read_field()
             field_name = field_obj.name

@@ -103,6 +103,7 @@ CITED_FILES = (
     "src/xrpld/app/hook/detail/applyHook.cpp",    # handler behaviour notes
     "src/xrpld/app/hook/applyHook.h",             # hasCallback
     "src/xrpld/app/tx/detail/SetSignerList.cpp",  # emission.py, SignerListSet preflight
+    "src/libxrpl/protocol/STObject.cpp",          # xrpl/txn_parser.py, the (9,9) NOP
 )
 
 

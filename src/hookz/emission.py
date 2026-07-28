@@ -33,7 +33,7 @@ from dataclasses import dataclass, field
 
 from hookz import hookapi
 
-# sfEmitDetails inner fields we need to reach
+# xahaud refuses a generation of this value or above
 _EMIT_GENERATION_MAX = 10
 
 # The rule numbering is xahaud's, kept so a reader can put the two side by side.
@@ -48,7 +48,7 @@ RULES = {
     "2b-ticket": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:603",
     "2c-accounttxnid": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:611",
     "3-emitdetails": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:619",
-    "8-generation": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:642",
+    "8-generation": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:643",
     "4-txnsignature": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:714",
     "5-lastledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:722",
     "6-firstledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:748",
@@ -231,9 +231,11 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     else:
         # rule 8 — generation cannot exceed 10
         generation = details.get("EmitGeneration")
-        if generation is not None and generation > _EMIT_GENERATION_MAX:
+        # >=, not >. The comment upstream says "cannot exceed 10" and the
+        # predicate under it refuses 10 itself.
+        if generation is not None and generation >= _EMIT_GENERATION_MAX:
             check.refuse("8-generation",
-                         f"EmitGeneration {generation} exceeds {_EMIT_GENERATION_MAX}")
+                         f"EmitGeneration {generation} is {_EMIT_GENERATION_MAX} or more")
         # a hook exporting cbak gets sfEmitCallback; one that does not, must not
         # sfEmitCallback is present exactly when the emitting hook exports
         # cbak. `has_callback=None` means the caller cannot tell, and an
