@@ -144,8 +144,26 @@ def manifest(network: str = DEFAULT_NETWORK) -> dict:
 
 
 def enabled_on(network: str = DEFAULT_NETWORK) -> set[str]:
-    """Amendments enabled on `network`, named as hookz names them."""
-    return {to_symbol(n) for n in manifest(network).get("enabled", ())}
+    """Amendments enabled on `network`, named as hookz names them.
+
+    A manifest records `enabled_unstable` when the backends it sampled did not
+    agree about what the ledger has. The merged answer is then whichever
+    reading was more common — on an even split, whichever was seen first — and
+    every hook test runs against it. That is worth one warning rather than a
+    silently authoritative set.
+    """
+    m = manifest(network)
+    unstable = m.get("enabled_unstable") or ()
+    if unstable:
+        import warnings
+        warnings.warn(
+            f"the {network} manifest records disagreement about whether "
+            f"{', '.join(sorted(unstable))} {'is' if len(unstable) == 1 else 'are'} "
+            "enabled, so the set hookz tests against was resolved by majority "
+            f"vote across samples. Regenerate it from a consistent endpoint: "
+            f"x-inspect-net amendments --net {network} --json <path>",
+            RuntimeWarning, stacklevel=2)
+    return {to_symbol(n) for n in m.get("enabled", ())}
 
 
 def provenance(network: str = DEFAULT_NETWORK) -> str:
