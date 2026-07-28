@@ -88,7 +88,7 @@ def _show_function(console, config, name: str) -> int:
             loc = fn.__module__
         console.print(f"\nStatus: [green]✓ implemented[/green] ({loc})\n")
     else:
-        console.print(f"\nStatus: [red]✗ stub[/red] (default no-op handler)\n")
+        console.print("\nStatus: [red]✗ stub[/red] (default no-op handler)\n")
 
     _print_legend(console, config)
 
@@ -119,7 +119,7 @@ def _show_function(console, config, name: str) -> int:
         console.print(f"[yellow]Could not load xahaud source: {e}[/yellow]")
 
     if name not in handlers:
-        console.print(f"\n[dim]To implement: add to src/hookz/handlers/[/dim]")
+        console.print("\n[dim]To implement: add to src/hookz/handlers/[/dim]")
         console.print(f"[dim]  def {name}(rt, ...): ...[/dim]")
 
     return 0
@@ -269,7 +269,7 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
     all_lines = set(opt_counts.keys()) | set(debug_counts.keys())
 
     out = []
-    out.append(f" [bold]debug │ prod │      │[/bold]")
+    out.append(" [bold]debug │ prod │      │[/bold]")
     out.append(f" [dim]──────┼──────┼──────┼{'─' * 60}[/dim]")
 
     for i, line_text in enumerate(src_lines, 1):
@@ -927,7 +927,6 @@ def wce(source, show_source):
     from rich.console import Console
     from hookz.compiler import compile_hook
     from hookz.config import load_config
-    from hookz.wasm.guard import GuardError, BlockInfo
     from hookz.coverage.rewriter import parse_dwarf_locations
 
     console = Console()
@@ -1132,6 +1131,115 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_
 # ---------------------------------------------------------------------------
 # Entry point — referenced in pyproject.toml [project.scripts]
 # ---------------------------------------------------------------------------
+
+@cli.command()
+@click.argument("source", type=click.Path(exists=True))
+@click.option("--all", "show_all", is_flag=True,
+              help="Include arithmetic, tracing and exit calls.")
+@click.option("--source", "show_source", is_flag=True,
+              help="Show the construct each call sits in.")
+def surface(source, show_all, show_source):
+    """What a hook does to the ledger, read out of its binary.
+
+    Every host-API call the compiled hook contains, with the constants the
+    source hid behind macros resolved, attributed back to the line it came
+    from. The C tools cannot see through `sfRewardTime` or a `#define`d
+    offset; the binary has the number.
+    """
+    from rich.console import Console
+
+    from hookz.citations import render, span_for
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+    from hookz.coverage.rewriter import instrument_wasm
+    from hookz.wasm.dataflow import calls_by_source_line
+
+    console = Console()
+    src = Path(source)
+    config = load_config(source_file=src)
+
+    import tempfile
+    wasm = compile_hook(src, config=config)
+    tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
+    try:
+        tmp.write(wasm)
+        tmp.close()
+        instrumented, _locs = instrument_wasm(wasm, tmp.name)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
+
+    calls = calls_by_source_line(instrumented)
+    if not calls:
+        console.print("[red]no instrumentation — nothing to attribute[/red]")
+        return 1
+    if not show_all:
+        calls = [(ln, c) for ln, c in calls if c.name not in _PLUMBING]
+
+    console.print(f"\n[bold]{src.name}[/bold] — {len(calls)} ledger interaction(s)\n")
+    for line, call in calls:
+        args = ", ".join(_pretty(a, call.name, i)
+                         for i, a in enumerate(call.args))
+        console.print(f"  [dim]{line:>5}[/dim]  {call.name}({args})")
+        if show_source:
+            console.print(f"[dim]{render(span_for(src, line), max_lines=12)}[/dim]\n")
+    return 0
+
+
+# Calls that say nothing about a hook's relationship with the ledger.
+_PLUMBING = frozenset({
+    "_g", "trace", "trace_num", "trace_float", "trace_slot", "accept",
+    "rollback", "float_set", "float_int", "float_multiply", "float_divide",
+    "float_compare", "float_sum", "float_sto", "float_mulratio", "float_negate",
+    "util_raddr", "util_accid", "util_sha512h", "otxn_type", "otxn_id",
+    "hookz_dev_u64", "hookz_dev_str", "hookz_dev_check", "__on_source_line",
+})
+
+
+def _pretty(arg, api: str | None = None, position: int | None = None) -> str:
+    """A resolved constant, named only where the name is certain.
+
+    A trailing `*` marks a value inferred from a single-assignment local rather
+    than read off the stack at the call — different strengths of evidence, kept
+    visible.
+    """
+    from hookz.wasm.dataflow import Const, ConstFromLocal
+
+    if not isinstance(arg, (Const, ConstFromLocal)):
+        return "?"
+    mark = "" if isinstance(arg, Const) else "*"
+    return f"{_name_for(arg.value, api, position) or arg.value}{mark}"
+
+
+# Where a small integer means something other than itself. Naming by value
+# alone is how `hook_account(buf, 20)` becomes `hook_account(buf,
+# KEYLET_ESCROW)` — the constant really is 20, and the reading is nonsense.
+# A keylet type is only a keylet type in the argument that takes one.
+_KEYLET_TYPE_ARG = {"util_keylet": 2}
+
+
+def _name_for(value: int, api: str | None = None,
+              position: int | None = None) -> str | None:
+    """A name for a constant, only where the position makes it unambiguous.
+
+    Field ids are safe on value alone: an sfCode is `type << 16 | field`, far
+    outside the range of a length or a slot number. Keylet types are not — they
+    are small integers that collide with every buffer size in the API — so they
+    are named only in the argument that takes one.
+    """
+    from hookz import hookapi
+
+    if value > 0xFFFF:
+        for key, known in vars(hookapi).items():
+            if key.startswith("sf") and known == value:
+                return key
+        return None
+
+    if api is not None and _KEYLET_TYPE_ARG.get(api) == position:
+        for key, known in vars(hookapi).items():
+            if key.startswith("KEYLET_") and known == value:
+                return key
+    return None
+
 
 def main():
     cli(standalone_mode=False)

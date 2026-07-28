@@ -320,3 +320,47 @@ class TestConstantsReachedThroughALocal:
 
         assert resolve_locals((Local(0),), consts, at_offset=0) == (Local(0),)
         assert resolve_locals((Local(0),), consts, at_offset=99)[0].value == 7
+
+
+class TestConstantNamingIsPositionAware:
+    """A small integer means whatever its argument says it means.
+
+    Naming by value alone read `hook_account(buf, 20)` as
+    `hook_account(buf, KEYLET_ESCROW)` — the constant genuinely is 20, and the
+    reading is nonsense. Field ids are safe on value alone because an sfCode is
+    `type << 16 | field` and cannot collide with a length; keylet types are
+    small and collide with everything.
+    """
+
+    def test_a_field_id_is_named_anywhere(self):
+        from hookz import hookapi
+        from hookz.cli.main import _name_for
+
+        assert _name_for(hookapi.sfRewardTime) == "sfRewardTime"
+
+    def test_a_length_is_not_named_as_a_keylet(self):
+        from hookz.cli.main import _name_for
+
+        # KEYLET_ESCROW is 20; so is the width of an account id
+        assert _name_for(20, api="hook_account", position=1) is None
+
+    def test_a_keylet_type_is_named_in_its_own_argument(self):
+        from hookz import hookapi
+        from hookz.cli.main import _name_for
+
+        assert _name_for(hookapi.KEYLET_ACCOUNT,
+                         api="util_keylet", position=2) == "KEYLET_ACCOUNT"
+
+    def test_the_same_value_elsewhere_in_that_call_is_left_alone(self):
+        """`util_keylet(buf, 34, KEYLET_ACCOUNT, acct, 20, ...)` — position 4
+        is a length that happens to equal a keylet constant."""
+        from hookz.cli.main import _name_for
+
+        assert _name_for(20, api="util_keylet", position=4) is None
+
+    def test_inferred_constants_are_marked(self):
+        from hookz.cli.main import _pretty
+        from hookz.wasm.dataflow import Const, ConstFromLocal
+
+        assert _pretty(Const(7)) == "7"
+        assert _pretty(ConstFromLocal(7, local=3, defs=(1,))) == "7*"
