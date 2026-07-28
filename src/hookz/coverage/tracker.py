@@ -99,6 +99,12 @@ class CoverageTracker:
             from hookz.coverage.markers import executable_source_lines
             ast_lines = executable_source_lines(source_path)
             self._executable_lines = dwarf_lines & ast_lines
+            # The same call is where the tracker learns which file it
+            # describes, so it is also where the markers in that file become
+            # readable. Left to the caller, `regions()` is empty for every
+            # tracker the plugin builds and the marked blocks report nothing.
+            if not self._markers:
+                self.load_source_markers(source_path)
         else:
             self._executable_lines = dwarf_lines
 
@@ -154,15 +160,16 @@ class CoverageTracker:
         """
         for m in self._markers:
             if m.name == name:
-                hit = set()
-                total = set()
-                for ln in range(m.region_start, m.region_end + 1):
-                    if ln in self._line_hits:
-                        total.add(ln)
-                        if self._line_hits[ln] > 0:
-                            hit.add(ln)
-                    # Lines with no DWARF entry aren't in total
-                    # (comments, blanks, braces)
+                # The denominator is the executable lines in the span, not the
+                # lines that happened to be hit. Counting only hits makes every
+                # entered region 100% complete and every unentered one 0/0 —
+                # a region can then never report a gap, which is the one thing
+                # it exists to report. Falls back to observed lines when no
+                # DWARF/AST set was supplied, so a bare tracker still works.
+                known = self._executable_lines or set(self._line_hits)
+                total = {ln for ln in range(m.region_start, m.region_end + 1)
+                         if ln in known}
+                hit = {ln for ln in total if self._line_hits.get(ln, 0) > 0}
                 return RegionCoverage(
                     name=name,
                     start_line=m.region_start,
@@ -294,6 +301,43 @@ class CoverageTracker:
             out.append(f"  {ln:>4} {status} {in_total}")
         pct = f" ({rc.coverage_pct:.0f}%)" if rc.lines_total else ""
         out.append(f"  → {len(rc.lines_hit)}/{len(rc.lines_total)} executable lines hit{pct}")
+        return "\n".join(out)
+
+    def regions(self) -> list[RegionCoverage]:
+        """Coverage for every marked region, worst first.
+
+        A flat list of uncovered line numbers says how much is untested but not
+        what. Ranked by how many executable lines nobody reached, this says
+        which blocks to look at — and a region with `not_entered` is a whole
+        piece of behaviour no test has run, which is a different problem from
+        a block whose error exits are unexercised.
+        """
+        seen: set[str] = set()
+        out: list[RegionCoverage] = []
+        for m in self._markers:
+            if m.name in seen:
+                continue
+            seen.add(m.name)
+            out.append(self.region(m.name))
+        return sorted(out, key=lambda r: (-(len(r.lines_total) - len(r.lines_hit)),
+                                          r.start_line))
+
+    def render_regions(self, limit: int | None = None) -> str:
+        """The marked regions as a table, worst first."""
+        rows = self.regions()
+        if not rows:
+            return "  (no //@name or //@@start markers in this source)"
+        shown = rows if limit is None else rows[:limit]
+        out = [f"  {'region':28s} {'lines':>11s}  {'':4s} where"]
+        for r in shown:
+            missing = len(r.lines_total) - len(r.lines_hit)
+            tag = "NONE" if r.not_entered else ("    " if not missing else f"-{missing}")
+            out.append(
+                f"  {r.name:28s} {len(r.lines_hit):>4}/{len(r.lines_total):<6} "
+                f"{tag:>4}  {r.start_line}-{r.end_line}"
+            )
+        if limit is not None and len(rows) > limit:
+            out.append(f"  … {len(rows) - limit} more")
         return "\n".join(out)
 
     def render_markers(self) -> str:

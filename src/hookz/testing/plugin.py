@@ -181,15 +181,33 @@ def pytest_sessionfinish(session, exitstatus):
     console.print()  # newline after last test result
 
     for name, (tracker, source_path) in get_coverage_trackers().items():
+        src_name = source_path.name
+
         if not tracker.lines_hit:
+            # Registered and never run. Skipping printed nothing at all, which
+            # reads as "coverage is not configured for this hook" rather than
+            # "no test has ever executed a line of it".
+            console.print(Panel(
+                f"no test executed any line of {src_name}\n"
+                f"registered as [bold]{name}[/bold] in hookz.toml",
+                title=f"{src_name} coverage — 0%",
+                border_style="red",
+            ))
+            console.print()
             continue
 
-        src_name = source_path.name
         console.print(Panel(
             tracker.summary(),
             title=f"{src_name} coverage",
             border_style="green" if tracker.coverage_pct() > 80 else "yellow",
         ))
+
+        if tracker.regions():
+            console.print(Panel(
+                tracker.render_regions(limit=12),
+                title=f"{src_name} — marked regions, least covered first",
+                border_style="yellow",
+            ))
 
         if tracker.uncovered_lines:
             report = tracker.uncovered_report(source_path, context=1)

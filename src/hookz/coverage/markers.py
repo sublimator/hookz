@@ -1,18 +1,32 @@
-"""Parse //@name markers from C source and map to AST regions via tree-sitter.
+"""Parse coverage markers from C source and map them to source regions.
 
-A marker is a //@name comment at the end of a line in the C source.
-Tree-sitter determines which AST node the marker is attached to,
-giving us a source region (start line, end line) for coverage assertions.
+Two spellings, because they answer different questions.
 
-Example source:
+**`//@name`** — a trailing comment naming one statement. Tree-sitter decides
+which AST node it is attached to, so the region is that node:
+
     for (int i = 0; GUARD(16), ...; ++i) //@gc_loop
     {
         state_set(0, 0, key, key_len); //@gc_delete
     }
 
-Example test:
     assert rt.coverage.region("gc_loop").entered
     assert rt.coverage.marker("gc_delete").hit
+
+**`//@@start name` … `//@@end name`** — a span the author drew, which is what
+you want when the interesting unit is a whole command block rather than one
+statement. The pair names its own bounds, so the region is exactly what was
+bracketed and does not depend on the AST agreeing:
+
+    //@@start refund-path
+    if (is_refund) { ... }
+    //@@end refund-path
+
+    assert rt.coverage.region("refund-path").entered
+
+Pairs match by name, so blocks may nest. Both kinds appear in `region()`, and
+`regions()` reports every one — which turns a flat list of uncovered line
+numbers into "which of these blocks has nobody exercised".
 """
 
 from __future__ import annotations
@@ -28,6 +42,36 @@ C_LANGUAGE = Language(tsc.language())
 
 # Matches //@name at end of line (with optional whitespace)
 _MARKER_RE = re.compile(r"//\s*@(\w+)\s*$")
+
+BLOCK_START = "//@@start"
+BLOCK_END = "//@@end"
+
+
+def _comments(tree):
+    """Every comment token in the file, innermost order irrelevant.
+
+    Markers are read from these rather than from lines of text. tree-sitter has
+    already decided what is a comment, so `//@@start` written inside a string
+    literal, or sitting in the body of a `/* … */`, is not one — and a line
+    scan cannot tell the difference. That is the same mistake as matching C
+    syntax with a pattern, one level down.
+    """
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type == "comment":
+            yield node
+        stack.extend(node.children)
+
+
+def _labelled(node, keyword: str) -> str | None:
+    """`//@@start cmd-add` -> "cmd-add", for a comment node that is one."""
+    text = node.text.decode(errors="replace").strip()
+    if not text.startswith(keyword):
+        return None
+    rest = text[len(keyword):].strip()
+    # exactly one label, so `//@@start a b` is not silently read as `a`
+    return rest if rest and len(rest.split()) == 1 else None
 
 
 @dataclass
@@ -146,24 +190,58 @@ def executable_source_lines(source_path: str | Path) -> set[int]:
     return lines
 
 
-def parse_markers(source_path: str | Path) -> list[MarkerInfo]:
-    """Parse //@name markers from a C source file.
+def parse_block_markers(source_path: str | Path) -> list[MarkerInfo]:
+    """`//@@start name` … `//@@end name` spans, paired by name so they nest.
 
-    Returns a list of MarkerInfo with AST-derived regions.
+    The region is exactly what the author bracketed. An unclosed start, or an
+    end with no start, is dropped: a half-open span would silently run to the
+    end of the file and report every line after it as part of the block.
+    """
+    source_bytes = Path(source_path).read_bytes()
+    tree = Parser(C_LANGUAGE).parse(source_bytes)
+
+    open_at: dict[str, int] = {}
+    out: list[MarkerInfo] = []
+    for node in sorted(_comments(tree), key=lambda n: n.start_point[0]):
+        line = node.start_point[0] + 1
+        name = _labelled(node, BLOCK_START)
+        if name is not None:
+            open_at[name] = line
+            continue
+        name = _labelled(node, BLOCK_END)
+        if name is not None and name in open_at:
+            start = open_at.pop(name)
+            out.append(MarkerInfo(
+                name=name,
+                line=start,
+                region_start=start,
+                region_end=line,
+                node_type="block",
+                context=f"{BLOCK_START} {name}",
+            ))
+    return out
+
+
+def parse_markers(source_path: str | Path) -> list[MarkerInfo]:
+    """Every coverage marker in a C source file, both spellings.
+
+    Returns a list of MarkerInfo with source regions.
     """
     source_path = Path(source_path)
     source_bytes = source_path.read_bytes()
-    source_lines = source_bytes.decode(errors="replace").splitlines()
 
-    # Find all //@name markers
+    blocks = parse_block_markers(source_path)
+
+    # //@name markers, read from comment tokens for the same reason
     raw_markers: list[tuple[int, str]] = []  # (line_no, name)
-    for line_no, line_text in enumerate(source_lines, 1):
-        m = _MARKER_RE.search(line_text)
+    for node in _comments(Parser(C_LANGUAGE).parse(source_bytes)):
+        m = _MARKER_RE.search(node.text.decode(errors="replace").strip())
         if m:
-            raw_markers.append((line_no, m.group(1)))
+            raw_markers.append((node.start_point[0] + 1, m.group(1)))
+    raw_markers.sort()
 
     if not raw_markers:
-        return []
+        return blocks
 
     # Parse with tree-sitter — strip marker comments so they don't affect AST
     parser = Parser(C_LANGUAGE)
@@ -194,4 +272,4 @@ def parse_markers(source_path: str | Path) -> list[MarkerInfo]:
                 context="",
             ))
 
-    return markers
+    return blocks + markers
