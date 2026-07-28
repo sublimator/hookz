@@ -71,6 +71,13 @@ class HookResult:
     # Values the hook observed about itself, one entry per HOOKZ_CHECK.
     checkpoints: list = field(default_factory=list)
     dev_events: list[dict] = field(default_factory=list)
+    # What the hook actually emitted — empty unless it accepted, since a
+    # rolled-back hook's emissions are discarded rather than applied.
+    emitted_txns: list[bytes] = field(default_factory=list)
+    # What it emitted before rolling back. Kept so a test can prove a hook
+    # tried to pay out and then refused, which is a different statement from
+    # never having reached the emit at all.
+    attempted_emissions: list[bytes] = field(default_factory=list)
 
     @property
     def return_msg_str(self) -> str:
@@ -217,6 +224,8 @@ class HookRuntime:
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
         self.emitted_txns: list[bytes] = []
+        # Emissions from a run that rolled back. See the note in `run`.
+        self.attempted_emissions: list[bytes] = []
         self.traces: list = []  # list[Trace] from handlers.core
         # HOOKZ_CHECK recording. `checkpoint_observers` lets a caller react as
         # each one closes — a live model comparison, a log — without the
@@ -405,6 +414,23 @@ class HookRuntime:
             result.error = e
         except Exception as e:
             result.error = e
+
+        # Emitted transactions are held until the hook finishes and applied
+        # only if it succeeded: `finalizeHookResult(hookResult, ctx_,
+        # isTesSuccess(result))` (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2026)
+        # drains the queue under `if (doEmit)`, and the field itself is
+        # commented "etx stored here until accept/rollback"
+        # (xahaud:src/xrpld/app/hook/applyHook.h:149).
+        #
+        # So a hook that rolls back emits nothing. Leaving them here would let
+        # a test assert a payout happened on a run the hook refused. They move
+        # to `attempted_emissions`, because "it tried to pay and then rolled
+        # back" is a thing a test may legitimately want to prove.
+        if not result.accepted and self.emitted_txns:
+            self.attempted_emissions = list(self.emitted_txns)
+            self.emitted_txns = []
+        result.emitted_txns = self.emitted_txns
+        result.attempted_emissions = self.attempted_emissions
 
         result.call_log = self.call_log
 

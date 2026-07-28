@@ -101,7 +101,8 @@ PORTED_FILES = (
 CITED_FILES = (
     "src/xrpld/app/hook/detail/HookAPI.cpp",      # emission.py, the emit rules
     "src/xrpld/app/hook/detail/applyHook.cpp",    # handler behaviour notes
-    "src/xrpld/app/hook/applyHook.h",             # hasCallback
+    "src/xrpld/app/hook/applyHook.h",             # hasCallback, emittedTxn
+    "src/xrpld/app/tx/detail/Transactor.cpp",     # runtime.py, when emits apply
     "src/xrpld/app/tx/detail/SetSignerList.cpp",  # emission.py, SignerListSet preflight
     "src/libxrpl/protocol/STObject.cpp",          # xrpl/txn_parser.py, the (9,9) NOP
     "src/libxrpl/protocol/STTx.cpp",              # emission.py, isPseudoTx
