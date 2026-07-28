@@ -104,6 +104,8 @@ CITED_FILES = (
     "src/xrpld/app/hook/applyHook.h",             # hasCallback
     "src/xrpld/app/tx/detail/SetSignerList.cpp",  # emission.py, SignerListSet preflight
     "src/libxrpl/protocol/STObject.cpp",          # xrpl/txn_parser.py, the (9,9) NOP
+    "src/libxrpl/protocol/STTx.cpp",              # emission.py, isPseudoTx
+    "include/xrpl/protocol/STTx.h",               # emission.py, maxMultiSigners
 )
 
 
@@ -219,7 +221,36 @@ def file_at_pin(root: Path | str, rel_path: str,
     return out.stdout if out.returncode == 0 else None
 
 
-def verify_vendored(xahaud_root: Path | str | None = None) -> list[str]:
+@dataclass(frozen=True)
+class VendorCheck:
+    """Whether the vendored copies were verified, and what came of it.
+
+    `problems` alone cannot answer the question: an empty list means "every
+    file matches the pin" *or* "nothing could be checked", and a caller that
+    treats both as success has exactly the false green light this module
+    exists to prevent. `verified` says which.
+    """
+    verified: tuple[str, ...] = ()
+    problems: tuple[str, ...] = ()
+    reason: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """Something was checked, and all of it matched."""
+        return bool(self.verified) and not self.problems
+
+    def __bool__(self) -> bool:
+        return self.ok
+
+    def __str__(self) -> str:
+        if self.problems:
+            return "; ".join(self.problems)
+        if not self.verified:
+            return f"nothing verified — {self.reason}"
+        return f"{len(self.verified)} file(s) match {XAHAUD_COMMIT[:8]}"
+
+
+def verify_vendored(xahaud_root: Path | str | None = None) -> VendorCheck:
     """Cross-check the vendored copies against the pin, via `git show`.
 
     The vendored tree is the reference every citation resolves against, which
@@ -234,12 +265,22 @@ def verify_vendored(xahaud_root: Path | str | None = None) -> list[str]:
         try:
             from hookz.config import load_config
             xahaud_root = load_config().xahaud_root
-        except Exception:                                  # noqa: BLE001
-            return []
+        except Exception as exc:                           # noqa: BLE001
+            return VendorCheck(reason=f"no configured checkout ({exc})")
     if xahaud_root is None or not Path(xahaud_root).exists():
-        return []
+        return VendorCheck(reason=f"checkout {xahaud_root} does not exist")
 
     vendored = vendored_root()
+    # The config falls back to the vendored tree when no checkout resolves.
+    # That tree lives inside hookz's own repository, so `git show` there
+    # answers about hookz, not xahaud — and every file would "verify" against
+    # itself. Refuse rather than self-certify.
+    if Path(xahaud_root).resolve() == vendored.resolve():
+        return VendorCheck(
+            reason="configured checkout is hookz's own vendored tree, which "
+                   "cannot verify itself")
+
+    verified: list[str] = []
     problems: list[str] = []
     for rel in PORTED_FILES + CITED_FILES:
         theirs = file_at_pin(xahaud_root, rel)
@@ -253,7 +294,12 @@ def verify_vendored(xahaud_root: Path | str | None = None) -> list[str]:
                 f"{rel}: vendored copy differs from {XAHAUD_COMMIT[:8]} — "
                 "re-vendor, or the citations into it are describing "
                 "something that is not upstream")
-    return problems
+        else:
+            verified.append(rel)
+    if not verified and not problems:
+        return VendorCheck(
+            reason=f"{xahaud_root} does not contain {XAHAUD_COMMIT[:8]}")
+    return VendorCheck(verified=tuple(verified), problems=tuple(problems))
 
 
 def check_checkout(config=None) -> list[str]:
@@ -281,10 +327,29 @@ def check_checkout(config=None) -> list[str]:
     actual = checkout_commit(root)
     if actual is None:
         return [f"paths.xahaud_commit is declared but {root} is not a git checkout"]
-    if actual != config.xahaud_commit:
+    # Resolve what the config names rather than comparing strings: a short
+    # hash, a tag or a branch all name a commit perfectly well, and rejecting
+    # `bb244ef77295` for not equalling `bb244ef7729503a0…` is a wrong answer
+    # to a question nobody asked.
+    declared = resolve_commit(root, config.xahaud_commit)
+    if declared is None:
+        return [f"paths.xahaud_commit {config.xahaud_commit!r} does not name a "
+                f"commit in {root}"]
+    if actual != declared:
         return [f"{root} is at {actual[:12]}, but paths.xahaud_commit declares "
-                f"{config.xahaud_commit[:12]}"]
+                f"{config.xahaud_commit} ({declared[:12]})"]
     return []
+
+
+def resolve_commit(root: Path | str, rev: str) -> str | None:
+    """The full SHA a revision names in a checkout, or None if it names none."""
+    import subprocess
+    try:
+        out = subprocess.run(["git", "-C", str(root), "rev-parse", f"{rev}^{{commit}}"],
+                             capture_output=True, text=True, timeout=10)
+    except Exception:                                      # noqa: BLE001
+        return None
+    return out.stdout.strip() or None if out.returncode == 0 else None
 
 
 def check_citations(root: Path | str,

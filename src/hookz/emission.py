@@ -36,6 +36,24 @@ from hookz import hookapi
 # xahaud refuses a generation of this value or above
 _EMIT_GENERATION_MAX = 10
 
+# sfEmitDetails is required to be present *and valid*: all five of these must
+# be there. xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:632
+_EMIT_DETAIL_FIELDS = ("EmitGeneration", "EmitBurden", "EmitParentTxnID",
+                       "EmitNonce", "EmitHookHash")
+
+# A hook may not emit a pseudo-transaction.
+# xahaud:src/libxrpl/protocol/STTx.cpp:686
+PSEUDO_TX_TYPES = frozenset({
+    "EnableAmendment", "SetFee", "UNLModify", "EmitFailure", "UNLReport",
+    "Cron",
+})
+
+# Signer count bounds. 8 unless featureExpandedSignerList is active, then 32 —
+# xahaud:include/xrpl/protocol/STTx.h:56. hookz hardcoded 32, which accepts a
+# list of 9 that the network refuses on an unamended chain.
+MAX_SIGNERS_BASE = 8
+MAX_SIGNERS_EXPANDED = 32
+
 # The rule numbering is xahaud's, kept so a reader can put the two side by side.
 # Each entry is (rule label, citation) — see `wasm/xahaud_ref.check_citations`.
 RULES = {
@@ -97,7 +115,8 @@ class EmissionCheck:
 # ---------------------------------------------------------------------------
 
 def _validate_signer_list_set(fields: dict, account: bytes | None,
-                              check: EmissionCheck) -> None:
+                              check: EmissionCheck,
+                              expanded_signer_list: bool = False) -> None:
     """`SetSignerList::validateQuorumAndSignerEntries`.
 
     xahaud:src/xrpld/app/tx/detail/SetSignerList.cpp:262
@@ -117,9 +136,13 @@ def _validate_signer_list_set(fields: dict, account: bytes | None,
         signers.append((entry.get("Account"), entry.get("SignerWeight", 0)))
 
     # xahaud:src/xrpld/app/tx/detail/SetSignerList.cpp:271 — count bounds
-    if not 1 <= len(signers) <= 32:
+    ceiling = MAX_SIGNERS_EXPANDED if expanded_signer_list else MAX_SIGNERS_BASE
+    if not 1 <= len(signers) <= ceiling:
         check.refuse("preflight",
-                     f"temMALFORMED: {len(signers)} signers is outside 1..32")
+                     f"temMALFORMED: {len(signers)} signers is outside "
+                     f"1..{ceiling}"
+                     + ("" if expanded_signer_list else
+                        " (featureExpandedSignerList inactive)"))
 
     accounts = [a for a, _ in signers]
     if len(accounts) != len(set(accounts)):
@@ -164,7 +187,8 @@ TYPE_VALIDATORS = {
 def check_emission(txn: bytes, *, hook_account: bytes | None = None,
                    ledger_seq: int | None = None,
                    min_fee: int | None = None,
-                   has_callback: bool | None = None) -> EmissionCheck:
+                   has_callback: bool | None = None,
+                   expanded_signer_list: bool = False) -> EmissionCheck:
     """Would xahaud accept this emitted transaction?
 
     Returns every reason it would not, rather than the first — a hook that gets
@@ -192,12 +216,19 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
             + " — emission rules not applied")
         return check
 
-    # rule 0 — the emitting account must be the hook's own
+    # pseudo-transactions may not be emitted at all
+    if fields.get("TransactionType") in PSEUDO_TX_TYPES:
+        check.refuse("pseudo",
+                     f"{fields['TransactionType']} is a pseudo-transaction")
+
+    # rule 0 — the emitting account must be the hook's own. Absent is a
+    # refusal in its own right; skipping the rule when the field is missing
+    # meant a transaction with no Account passed.
     account = fields.get("Account")
-    if hook_account is not None and account is not None:
-        if not _same_account(account, hook_account):
-            check.refuse("0-account",
-                         f"Account is {account}, not the hook account")
+    if account is None:
+        check.refuse("0-account", "sfAccount is missing")
+    elif hook_account is not None and not _same_account(account, hook_account):
+        check.refuse("0-account", f"Account is {account}, not the hook account")
 
     # rule 1 — sfSequence present and zero
     if fields.get("Sequence") is None:
@@ -209,8 +240,15 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     spk = fields.get("SigningPubKey")
     if spk is None:
         check.refuse("2-signingpubkey", "sfSigningPubKey is missing")
-    elif set(bytes.fromhex(spk) if isinstance(spk, str) else spk) not in ({0}, set()):
-        check.refuse("2-signingpubkey", "sfSigningPubKey must be all zero")
+    else:
+        raw = bytes.fromhex(spk) if isinstance(spk, str) else bytes(spk)
+        # size must be 0 or 33, *and* every byte zero — two separate checks
+        # upstream, and only the second was ported
+        if len(raw) not in (0, 33):
+            check.refuse("2-signingpubkey",
+                         f"sfSigningPubKey is {len(raw)} bytes, must be 0 or 33")
+        elif any(raw):
+            check.refuse("2-signingpubkey", "sfSigningPubKey must be all zero")
 
     # rules 2a–2c — nothing that would make it independently signable
     if fields.get("Signers") is not None:
@@ -229,6 +267,11 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     if details is None:
         check.refuse("3-emitdetails", "sfEmitDetails is missing")
     else:
+        missing = [f for f in _EMIT_DETAIL_FIELDS if details.get(f) is None]
+        if missing:
+            check.refuse("3-emitdetails",
+                         f"sfEmitDetails malformed: missing {', '.join(missing)}")
+
         # rule 8 — generation cannot exceed 10
         generation = details.get("EmitGeneration")
         # >=, not >. The comment upstream says "cannot exceed 10" and the
@@ -248,6 +291,12 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
         elif has_callback is False and callback is not None:
             check.refuse("3-emitdetails",
                          "sfEmitCallback is present though the hook exports no cbak")
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:698 — whose callback
+        if (callback is not None and hook_account is not None
+                and not _same_account(callback, hook_account)):
+            check.refuse("3-emitdetails",
+                         f"sfEmitCallback is {callback}, must be the emitting "
+                         "hook's account")
 
     # rules 5 and 6 — the ledger window
     lls = fields.get("LastLedgerSequence")
@@ -282,7 +331,8 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
     # the sliver of preflight we reproduce
     validator = TYPE_VALIDATORS.get(fields.get("TransactionType"))
     if validator is not None:
-        validator(fields, hook_account, check)
+        validator(fields, hook_account, check,
+                  expanded_signer_list=expanded_signer_list)
 
     return check
 

@@ -151,6 +151,7 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
             ledger_seq=rt.ledger_seq_val,
             min_fee=None,          # the mock's fee base is not xahaud's
             has_callback=getattr(rt, "_has_cbak", None),
+            expanded_signer_list="featureExpandedSignerList" in rt.amendments,
         )
         if not check.ok:
             rt.emission_rejections.append(check)
