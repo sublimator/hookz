@@ -38,6 +38,55 @@ class TestNaming:
         assert amd.to_symbol("SomethingNew2099") == "featureSomethingNew2099"
         assert amd.to_symbol("fixSomethingNew2099") == "fixSomethingNew2099"
 
+    def test_layout_does_not_change_the_answer(self):
+        """The regex this replaced demanded `(` immediately after the name.
+
+        features.macro writes `XRPL_FIX    (Name` with alignment padding, so
+        every fix went missing and the fallback rule silently covered for it.
+        tree-sitter does not care where the whitespace is; this asserts that.
+        """
+        from hookz.amendments import _iter_macro_calls, _normalise
+        import tree_sitter_c as tsc
+        from tree_sitter import Language, Parser
+
+        def names(text: str) -> set[str]:
+            tree = Parser(Language(tsc.language())).parse(_normalise(text).encode())
+            return {
+                c.child_by_field_name("arguments").children[1].text.decode()
+                for c in _iter_macro_calls(tree.root_node)
+            }
+
+        tight = ("XRPL_FEATURE(Alpha, Supported::yes, VoteBehavior::DefaultNo)\n"
+                 "XRPL_FIX(Beta, Supported::yes, VoteBehavior::DefaultYes)\n")
+        padded = ("XRPL_FEATURE (Alpha,   Supported::yes,  VoteBehavior::DefaultNo)\n"
+                  "XRPL_FIX     (Beta,    Supported::yes,  VoteBehavior::DefaultYes)\n")
+        assert names(tight) == names(padded) == {"Alpha", "Beta"}
+
+    def test_retired_amendments_are_not_in_the_index(self):
+        """XRPL_RETIRE names things that no longer exist."""
+        index = amd.symbol_index()
+        assert not any(k.startswith("retired") for k in index)
+
+    def test_every_declared_macro_is_accounted_for(self):
+        """Counts, so a parse that silently drops a category fails here.
+
+        Counted a different way than the parser does it, on purpose — a
+        cross-check that agrees with the implementation by construction checks
+        nothing. Invocations start the line; `#if !defined(XRPL_FEATURE)` and
+        its `#error` mention the name without being one, which is why a bare
+        substring count says 108 for 104 amendments.
+        """
+        from hookz.wasm.xahaud_ref import vendored_root
+
+        text = (vendored_root()
+                / "include/xrpl/protocol/detail/features.macro").read_text()
+        declared = sum(
+            1 for line in text.splitlines()
+            if line.startswith(("XRPL_FEATURE", "XRPL_FIX"))
+        )
+        assert declared == 104, "the vendored macro changed; re-check the index"
+        assert len(amd.symbol_index()) == declared
+
     def test_no_feature_is_named_like_a_fix(self):
         """The fallback rule assumes this; the macro is where it is true."""
         for reported, symbol in amd.symbol_index().items():

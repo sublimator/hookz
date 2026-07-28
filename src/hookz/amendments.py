@@ -40,16 +40,16 @@ because "starts with fix" is a guess that holds until someone names a feature
 from __future__ import annotations
 
 import json
-import re
 from functools import lru_cache
 from pathlib import Path
 
-# XRPL_FEATURE(Name, Supported::yes, VoteBehavior::DefaultYes)
-# XRPL_FIX    (Name, ...)   <- note the alignment padding before the paren,
-# which a regex demanding `\(` immediately after the name silently skips. That
-# dropped every fix from the index and left the fallback rule to cover for it —
-# invisible, because the fallback produces the right answer for fixes.
-_MACRO = re.compile(r"^XRPL_(FEATURE|FIX)\s*\(\s*([A-Za-z0-9_]+)", re.M)
+# The invocations we care about. XRPL_RETIRE names amendments that no longer
+# exist, so it is parsed and ignored rather than skipped by pattern.
+_KINDS = {"XRPL_FEATURE": "feature", "XRPL_FIX": "fix"}
+
+# C++ scope resolution is not C. Substituted rather than stripped so the
+# argument still parses as one identifier.
+_CPP_SCOPE = "::"
 
 DEFAULT_NETWORK = "mainnet"
 
@@ -58,24 +58,64 @@ def _data_dir() -> Path:
     return Path(__file__).parent / "data"
 
 
+def _normalise(text: str) -> str:
+    """Turn the macro file into a parseable translation unit.
+
+    Same approach as `wasm.whitelist._normalise`, for the same reason: this is
+    a list of macro invocations, not C, so it is made into C rather than
+    pattern-matched. `Supported::yes` is C++; each invocation needs a
+    terminator; and the whole lot has to sit where expressions are legal.
+    """
+    text = text.replace(_CPP_SCOPE, "_")
+    for macro in _KINDS:
+        text = text.replace(macro, ";" + macro)
+    return "void _hookz_features_tu(void) {" + text + ";}"
+
+
+def _iter_macro_calls(node):
+    """Every XRPL_FEATURE / XRPL_FIX call_expression under `node`."""
+    if node.type == "call_expression":
+        fn = node.child_by_field_name("function")
+        if fn is not None and fn.text.decode() in _KINDS:
+            yield node
+    for child in node.children:
+        yield from _iter_macro_calls(child)
+
+
 @lru_cache(maxsize=1)
 def symbol_index() -> dict[str, str]:
     """Network-reported name -> the symbol hookz and xahaud use for it.
 
-    Built from `features.macro`, so it is the same mapping the node makes
-    rather than a restatement of it.
+    Parsed from `features.macro` with tree-sitter, so it is the same mapping
+    the node makes rather than a restatement of it — and so the answer does not
+    depend on how the file is laid out. The first attempt here was a regex
+    requiring `(` immediately after the macro name; the file writes
+    `XRPL_FIX    (Name` with alignment padding, and every fix went missing.
     """
+    import tree_sitter_c as tsc
+    from tree_sitter import Language, Parser
+
     from hookz.wasm.xahaud_ref import vendored_root
 
     macro = vendored_root() / "include/xrpl/protocol/detail/features.macro"
     if not macro.exists():
         return {}
+
+    source = _normalise(macro.read_text(errors="replace")).encode()
+    tree = Parser(Language(tsc.language())).parse(source)
+
     out: dict[str, str] = {}
-    for kind, name in _MACRO.findall(macro.read_text(errors="replace")):
-        if kind == "FIX":
-            out[f"fix{name}"] = f"fix{name}"
-        else:
-            out[name] = f"feature{name}"
+    for call in _iter_macro_calls(tree.root_node):
+        kind = _KINDS[call.child_by_field_name("function").text.decode()]
+        args = call.child_by_field_name("arguments")
+        named = [c for c in args.children if c.is_named] if args else []
+        if not named:
+            continue
+        name = named[0].text.decode()
+        # a fix is registered with its prefix, a feature bare
+        # (xahaud:src/libxrpl/protocol/Feature.cpp:427)
+        reported = f"fix{name}" if kind == "fix" else name
+        out[reported] = f"{kind}{name}"
     return out
 
 
