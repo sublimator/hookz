@@ -125,3 +125,84 @@ class TestItDegradesRatherThanGuesses:
 
         assert c.snippet().strip() == "}"
         assert "if (new_slot != parent_slot)" in c.context()
+
+
+class TestTheCiteCommand:
+    """`hookz cite` — grep whose unit is the construct.
+
+    The library above was written for citations that already existed. Searching
+    is the other direction and the same problem: a grep hit is the middle of a
+    claim, and forty middles of the same function is not forty answers.
+    """
+
+    @pytest.fixture
+    def tree(self, tmp_path):
+        src = tmp_path / "sample.c"
+        src.write_text(
+            "int add(int a, int b) {\n"
+            "    if (a < 0) {\n"
+            "        return -1;    /* NEEDLE one */\n"
+            "    }\n"
+            "    return a + b;     /* NEEDLE two */\n"
+            "}\n"
+            "\n"
+            "int other(void) {\n"
+            "    return 0;         /* NEEDLE three */\n"
+            "}\n"
+        )
+        return tmp_path
+
+    def _run(self, args):
+        from click.testing import CliRunner
+
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, ["cite", *args])
+
+    def test_hits_in_one_construct_collapse(self, tree):
+        """Two hits inside `add` are one block, not two overlapping excerpts."""
+        result = self._run(["NEEDLE", str(tree)])
+
+        assert result.exit_code == 0
+        assert "3 hit(s) in 2 construct(s)" in result.output
+
+    def test_each_block_names_its_enclosing_symbol(self, tree):
+        result = self._run(["NEEDLE", str(tree), "--names"])
+
+        assert "add" in result.output
+        assert "other" in result.output
+
+    def test_a_hit_is_widened_to_a_construct_not_a_line(self, tree):
+        """The block names the function the hit sits in, so a match is located
+        without a second lookup."""
+        result = self._run(["return -1", str(tree)])
+
+        assert "in add" in result.output
+
+    def test_separate_statements_in_one_function_become_one_block(self, tree):
+        """`merge` folds spans that overlap; two returns do not overlap. Without
+        the symbol grouping these come back as two excerpts of `add` with the
+        marker in a different place."""
+        result = self._run(["NEEDLE", str(tree)])
+
+        assert result.output.count("in add") == 1
+        assert "→     3" in result.output and "→     5" in result.output
+
+    def test_no_match_is_reported_not_crashed(self, tree):
+        result = self._run(["ABSENT_PATTERN", str(tree)])
+
+        assert result.exit_code == 1
+        assert "no match" in result.output
+
+    def test_a_bad_pattern_is_rejected(self, tree):
+        result = self._run(["unclosed(", str(tree)])
+
+        assert result.exit_code == 2
+        assert "bad pattern" in result.output
+
+    def test_the_hit_cap_is_announced_not_silent(self, tree):
+        """A truncated search that looks complete is how you conclude something
+        does not exist."""
+        result = self._run(["NEEDLE", str(tree), "-n", "1"])
+
+        assert "stopped at 1 hits" in result.output

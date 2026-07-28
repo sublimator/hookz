@@ -1185,6 +1185,133 @@ def surface(source, show_all, show_source):
     return 0
 
 
+@cli.command()
+@click.argument("pattern")
+@click.argument("paths", nargs=-1, type=click.Path(exists=True))
+@click.option("--xahaud", is_flag=True,
+              help="Search the configured xahaud checkout instead of PATHS.")
+@click.option("--glob", "globs", multiple=True, metavar="GLOB",
+              help="Restrict to files matching (repeatable). "
+                   "Default: *.c *.h *.cpp *.ipp")
+@click.option("-n", "--max-hits", default=40, show_default=True,
+              help="Stop after this many matching lines.")
+@click.option("-L", "--max-lines", default=24, show_default=True,
+              help="Abridge a construct longer than this.")
+@click.option("--names", is_flag=True,
+              help="List the enclosing symbols only, without source.")
+def cite(pattern, paths, xahaud, globs, max_hits, max_lines, names):
+    """Grep that returns constructs instead of lines.
+
+    A grep hit is a line, and a line is usually not the claim — it is the
+    middle of one. Every hit here is widened to the construct that owns it (the
+    function, the `if`, the declaration) with tree-sitter, and hits that land
+    in the same construct collapse into one block naming all of them.
+
+    So `hookz cite 'temMALFORMED' --xahaud` answers "where is this rejected,
+    and under what condition" rather than handing back forty middles.
+    """
+    import re
+
+    from rich.console import Console
+
+    from hookz.citations import merge, render, span_for
+
+    console = Console()
+    roots = [Path(p) for p in paths]
+    if xahaud:
+        from hookz.config import load_config
+        roots.append(Path(load_config().xahaud_root) / "src")
+    if not roots:
+        roots = [Path.cwd()]
+
+    suffixes = tuple(globs) or ("*.c", "*.h", "*.cpp", "*.ipp")
+    try:
+        rx = re.compile(pattern)
+    except re.error as exc:
+        console.print(f"[red]bad pattern: {exc}[/red]")
+        raise SystemExit(2)
+
+    files: list[Path] = []
+    for root in roots:
+        if root.is_file():
+            files.append(root)
+            continue
+        for pat in suffixes:
+            files.extend(sorted(root.rglob(pat)))
+
+    spans, hits, truncated = [], 0, False
+    for path in files:
+        try:
+            text = path.read_text(errors="replace").splitlines()
+        except OSError:
+            continue
+        for number, line in enumerate(text, 1):
+            if not rx.search(line):
+                continue
+            hits += 1
+            if hits > max_hits:
+                truncated = True
+                break
+            spans.append(span_for(path, number))
+        if truncated:
+            break
+
+    if not spans:
+        console.print(f"[dim]no match for /{pattern}/ in "
+                      f"{len(files)} file(s)[/dim]")
+        raise SystemExit(1)
+
+    blocks = _by_symbol(merge(spans))
+    console.print(f"\n[bold]/{pattern}/[/bold] — {hits} hit(s) in "
+                  f"{len(blocks)} construct(s)\n")
+    for span in blocks:
+        if names:
+            where = span.symbol or span.node_type
+            console.print(f"  [dim]{Path(span.path).name}:{span.start}[/dim]"
+                          f"  {where}  [dim]({len(span.lines)} hit(s))[/dim]")
+        else:
+            console.print(render(span, max_lines=max_lines))
+            console.print()
+
+    if truncated:
+        console.print(f"[yellow]stopped at {max_hits} hits — "
+                      f"narrow the pattern or raise -n[/yellow]")
+    return 0
+
+
+def _by_symbol(spans):
+    """Fold constructs that share an enclosing function into one block.
+
+    `merge` folds spans that physically overlap, which is right for citations
+    but too narrow for a search: two `return`s in one function are two disjoint
+    statements, so they survive as two excerpts of the same function with the
+    marker in a different place. Grouping by symbol gives the answer a reader
+    wants — this function, these lines in it — and `render` abridges the middle
+    so a wide span stays readable.
+
+    Spans with no enclosing symbol (file-scope declarations, macros) are left
+    exactly as `merge` produced them.
+    """
+    from hookz.citations import Span
+
+    grouped: dict[tuple[str, str], Span] = {}
+    out: list[Span] = []
+    for span in spans:
+        if span.symbol is None:
+            out.append(span)
+            continue
+        key = (span.path, span.symbol)
+        first = grouped.get(key)
+        if first is None:
+            grouped[key] = span
+            out.append(span)
+            continue
+        first.start = min(first.start, span.start)
+        first.end = max(first.end, span.end)
+        first.lines = sorted(set(first.lines) | set(span.lines))
+    return out
+
+
 # Calls that say nothing about a hook's relationship with the ledger.
 _PLUMBING = frozenset({
     "_g", "trace", "trace_num", "trace_float", "trace_slot", "accept",
