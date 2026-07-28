@@ -109,6 +109,7 @@ CITED_FILES = (
     "include/xrpl/protocol/STTx.h",               # emission.py, maxMultiSigners
     "src/libxrpl/protocol/Feature.cpp",           # amendments.py, the naming rule
     "include/xrpl/protocol/detail/features.macro",  # amendments.py, the name index
+    "include/xrpl/protocol/detail/sfields.macro",  # xrpl/server_definitions.json
 )
 
 

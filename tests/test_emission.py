@@ -640,3 +640,115 @@ class TestRepetitionInsideAnArrayIsLegal:
         # SignerWeight (0x13 0x01) twice inside one element's contents
         element = bytes.fromhex("130001") + bytes.fromhex("130001")
         assert _nested_problem(element, depth=1) is not None
+
+
+class TestTheFieldTableMatchesThePin:
+    """`illegal` for an unknown field header is only sound while the loaded
+    definitions are the ones xahaud has.
+
+    The table was captured from a node running a feature branch, so it knew
+    four fields the network does not (`ExportedTxn`, `EntropyCount`,
+    `EntropyDigest`, `HookExportCount`) and was missing five it does. The
+    missing five are the expensive direction: hookz called them unknown, which
+    since the nested-rules change means refusing an emit the network accepts.
+    """
+
+    MACRO = "include/xrpl/protocol/detail/sfields.macro"
+
+    @staticmethod
+    def _upstream_fields() -> dict[str, int]:
+        """Field name -> field code, from the vendored macro.
+
+        The code matters: a field at 257 is an SField identity for a whole
+        object and cannot be written as a field header at all, so it can never
+        reach the unknown-field rule even though it is a real SField.
+        """
+        import tree_sitter_c as tsc
+        from tree_sitter import Language, Parser
+
+        from hookz.wasm.xahaud_ref import vendored_root
+
+        kinds = ("UNTYPED_SFIELD", "TYPED_SFIELD")
+        text = (vendored_root() / TestTheFieldTableMatchesThePin.MACRO).read_text()
+        for k in kinds:
+            text = text.replace(k, ";" + k)
+        tree = Parser(Language(tsc.language())).parse(
+            ("void _tu(void){" + text + ";}").encode())
+
+        out: dict[str, int] = {}
+        stack = [tree.root_node]
+        while stack:
+            node = stack.pop()
+            stack.extend(node.children)
+            if node.type != "call_expression":
+                continue
+            fn = node.child_by_field_name("function")
+            if fn is None or fn.text.decode() not in kinds:
+                continue
+            args = [a.text.decode()
+                    for a in node.child_by_field_name("arguments").children
+                    if a.is_named]
+            if not args or not args[0].startswith("sf"):
+                continue
+            # nth is the field code. Anything at 257 is an SField identity for
+            # a whole object — a ledger entry, a transaction — and cannot be
+            # written as a field header at all, so it can never reach the
+            # unknown-field rule. The RPC omits them for the same reason.
+            # the third argument is always the field code; some entries
+            # carry a fourth for serialisation metadata
+            try:
+                out[args[0][2:]] = int(args[2])
+            except (IndexError, ValueError):
+                continue
+        return out
+
+    def test_every_field_xahaud_defines_is_known(self):
+        """The false-refusal direction. A field the network has and hookz does
+        not is an emit refused for a rule xahaud does not have."""
+        from xrpl.core.binarycodec.definitions import get_field_instance
+
+        from hookz.xrpl.xrpl_patch import patch_xahau_definitions
+        patch_xahau_definitions()
+
+        missing = []
+        encodable = {n for n, nth in self._upstream_fields().items() if nth < 256}
+        for name in sorted(encodable):
+            try:
+                get_field_instance(name)
+            except Exception:                                  # noqa: BLE001
+                missing.append(name)
+
+        assert missing == [], (
+            "these are in sfields.macro at the pin; hookz would call an emit "
+            f"carrying one of them illegal: {missing}")
+
+    @pytest.mark.parametrize("name", [
+        "ExportedTxn", "EntropyCount", "EntropyDigest", "HookExportCount",
+    ])
+    def test_feature_branch_fields_are_not_known(self, name):
+        """The false-accept direction, and the tell that the table came from
+        somewhere other than the pin."""
+        from xrpl.core.binarycodec.definitions import get_field_instance
+
+        from hookz.xrpl.xrpl_patch import patch_xahau_definitions
+        patch_xahau_definitions()
+
+        with pytest.raises(Exception):
+            get_field_instance(name)
+
+    def test_the_only_extras_are_codec_sentinels(self):
+        """xrpl-py needs names for the terminators and for RPC-only pseudo
+        fields; those are not protocol fields and are expected to differ."""
+        import json
+        import pathlib
+
+        import hookz.xrpl as pkg
+
+        table = json.loads(
+            (pathlib.Path(pkg.__file__).parent / "server_definitions.json").read_text())
+        extra = {n for n, *_ in table["FIELDS"]} - set(self._upstream_fields())
+
+        assert extra == {
+            "ArrayEndMarker", "ObjectEndMarker", "Generic", "Invalid",
+            "hash", "index", "taker_gets_funded", "taker_pays_funded",
+        }

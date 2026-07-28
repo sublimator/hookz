@@ -41,26 +41,6 @@
       }
     ],
     [
-      "hash",
-      {
-        "isSerialized": false,
-        "isSigningField": false,
-        "isVLEncoded": false,
-        "nth": 257,
-        "type": "Hash256"
-      }
-    ],
-    [
-      "index",
-      {
-        "isSerialized": false,
-        "isSigningField": false,
-        "isVLEncoded": false,
-        "nth": 258,
-        "type": "Hash256"
-      }
-    ],
-    [
       "taker_gets_funded",
       {
         "isSerialized": false,
@@ -207,26 +187,6 @@
         "isSigningField": true,
         "isVLEncoded": false,
         "nth": 22,
-        "type": "UInt16"
-      }
-    ],
-    [
-      "HookExportCount",
-      {
-        "isSerialized": true,
-        "isSigningField": true,
-        "isVLEncoded": false,
-        "nth": 98,
-        "type": "UInt16"
-      }
-    ],
-    [
-      "EntropyCount",
-      {
-        "isSerialized": true,
-        "isSigningField": true,
-        "isVLEncoded": false,
-        "nth": 99,
         "type": "UInt16"
       }
     ],
@@ -1551,32 +1511,22 @@
       }
     ],
     [
-      "EntropyDigest",
-      {
-        "isSerialized": true,
-        "isSigningField": true,
-        "isVLEncoded": false,
-        "nth": 100,
-        "type": "Hash256"
-      }
-    ],
-    [
       "hash",
       {
-        "isSerialized": true,
+        "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 1,
+        "nth": 257,
         "type": "Hash256"
       }
     ],
     [
       "index",
       {
-        "isSerialized": true,
+        "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 2,
+        "nth": 258,
         "type": "Hash256"
       }
     ],
@@ -1867,6 +1817,16 @@
         "isSigningField": true,
         "isVLEncoded": false,
         "nth": 31,
+        "type": "Amount"
+      }
+    ],
+    [
+      "TrustLineRewardAccumulator",
+      {
+        "isSerialized": true,
+        "isSigningField": true,
+        "isVLEncoded": false,
+        "nth": 99,
         "type": "Amount"
       }
     ],
@@ -2177,6 +2137,16 @@
         "isSigningField": true,
         "isVLEncoded": true,
         "nth": 32,
+        "type": "Blob"
+      }
+    ],
+    [
+      "HookName",
+      {
+        "isSerialized": true,
+        "isSigningField": true,
+        "isVLEncoded": true,
+        "nth": 97,
         "type": "Blob"
       }
     ],
@@ -2581,16 +2551,6 @@
       }
     ],
     [
-      "HookDefinition",
-      {
-        "isSerialized": true,
-        "isSigningField": true,
-        "isVLEncoded": false,
-        "nth": 22,
-        "type": "STObject"
-      }
-    ],
-    [
       "HookParameter",
       {
         "isSerialized": true,
@@ -2701,16 +2661,6 @@
       }
     ],
     [
-      "ExportedTxn",
-      {
-        "isSerialized": true,
-        "isSigningField": true,
-        "isVLEncoded": false,
-        "nth": 90,
-        "type": "STObject"
-      }
-    ],
-    [
       "AmountEntry",
       {
         "isSerialized": true,
@@ -2777,6 +2727,26 @@
         "isSigningField": true,
         "isVLEncoded": false,
         "nth": 97,
+        "type": "STObject"
+      }
+    ],
+    [
+      "HighReward",
+      {
+        "isSerialized": true,
+        "isSigningField": true,
+        "isVLEncoded": false,
+        "nth": 98,
+        "type": "STObject"
+      }
+    ],
+    [
+      "LowReward",
+      {
+        "isSerialized": true,
+        "isSigningField": true,
+        "isVLEncoded": false,
+        "nth": 99,
         "type": "STObject"
       }
     ],
@@ -3321,6 +3291,16 @@
       }
     ],
     [
+      "ClaimCurrency",
+      {
+        "isSerialized": true,
+        "isSigningField": true,
+        "isVLEncoded": false,
+        "nth": 5,
+        "type": "Issue"
+      }
+    ],
+    [
       "XChainBridge",
       {
         "isSerialized": true,
@@ -3356,7 +3336,7 @@
         "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 1,
+        "nth": 257,
         "type": "Transaction"
       }
     ],
@@ -3366,7 +3346,7 @@
         "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 1,
+        "nth": 257,
         "type": "LedgerEntry"
       }
     ],
@@ -3376,7 +3356,7 @@
         "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 1,
+        "nth": 257,
         "type": "Validation"
       }
     ],
@@ -3386,7 +3366,7 @@
         "isSerialized": false,
         "isSigningField": false,
         "isVLEncoded": false,
-        "nth": 1,
+        "nth": 257,
         "type": "Metadata"
       }
     ]
@@ -3398,7 +3378,6 @@
     "Any": 0,
     "Bridge": 105,
     "Check": 67,
-    "ConsensusEntropy": 88,
     "Contract": 99,
     "Credential": 129,
     "Cron": 65,
@@ -3674,7 +3653,7 @@
     "telCAN_NOT_QUEUE_FEE": -388,
     "telCAN_NOT_QUEUE_FULL": -387,
     "telCAN_NOT_QUEUE_IMPORT": -381,
-    "telENV_RPC_FAILED": -379,
+    "telENV_RPC_FAILED": -380,
     "telFAILED_PROCESSING": -395,
     "telIMPORT_VL_KEY_NOT_RECOGNISED": -382,
     "telINSUF_FEE_P": -394,
@@ -3683,10 +3662,9 @@
     "telNON_LOCAL_EMITTED_TXN": -383,
     "telNO_DST_PARTIAL": -393,
     "telREQUIRES_NETWORK_ID": -385,
-    "telSHADOW_TICKET_REQUIRED": -380,
     "telWRONG_NETWORK": -386,
-    "temARRAY_EMPTY": -252,
-    "temARRAY_TOO_LARGE": -251,
+    "temARRAY_EMPTY": -251,
+    "temARRAY_TOO_LARGE": -250,
     "temBAD_AMM_TOKENS": -261,
     "temBAD_AMOUNT": -298,
     "temBAD_CURRENCY": -297,
@@ -3710,15 +3688,15 @@
     "temBAD_SIGNER": -272,
     "temBAD_SRC_ACCOUNT": -281,
     "temBAD_TICK_SIZE": -269,
-    "temBAD_TRANSFER_FEE": -250,
+    "temBAD_TRANSFER_FEE": -249,
     "temBAD_TRANSFER_RATE": -280,
     "temBAD_WEIGHT": -270,
     "temCANNOT_PREAUTH_SELF": -267,
     "temDISABLED": -273,
     "temDST_IS_SRC": -279,
     "temDST_NEEDED": -278,
-    "temEMPTY_DID": -253,
-    "temHOOK_DATA_TOO_LARGE": -254,
+    "temEMPTY_DID": -252,
+    "temHOOK_DATA_TOO_LARGE": -253,
     "temINVALID": -277,
     "temINVALID_ACCOUNT_ID": -268,
     "temINVALID_COUNT": -266,
@@ -3735,6 +3713,7 @@
     "temXCHAIN_BRIDGE_BAD_REWARD_AMOUNT": -255,
     "temXCHAIN_BRIDGE_NONDOOR_OWNER": -257,
     "temXCHAIN_EQUAL_DOOR_ACCOUNTS": -260,
+    "temXCHAIN_TOO_MANY_ATTESTATIONS": -254,
     "terFUNDS_SPENT": -98,
     "terINSUF_FEE_B": -97,
     "terLAST": -91,
@@ -3767,7 +3746,6 @@
     "CheckCreate": 16,
     "ClaimReward": 98,
     "Clawback": 30,
-    "ConsensusEntropy": 105,
     "Contract": 9,
     "CredentialAccept": 68,
     "CredentialCreate": 67,
@@ -3782,7 +3760,6 @@
     "EscrowCancel": 4,
     "EscrowCreate": 1,
     "EscrowFinish": 2,
-    "Export": 90,
     "GenesisMint": 96,
     "Import": 97,
     "Invalid": -1,
@@ -3867,9 +3844,10 @@
   },
   "features": {
     "00C1FC4A53E60AB02C864641002B3172F38677E29C26C5406685179B37E1EDAC": {
-      "enabled": true,
+      "enabled": false,
       "name": "RequireFullyCanonicalSig",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "0134BEED89A1A1D8B2663CF9DFCDB9024A060706FDFF147AA4D203749AFD5932": {
       "enabled": false,
@@ -3878,9 +3856,10 @@
       "vetoed": true
     },
     "0285B7E5E08E1A8E4C15636F0591D87F73CB6A7B6452A932AD72BBC8E5D1CBE3": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixNFTokenDirV1",
-      "supported": true
+      "supported": true,
+      "vetoed": "Obsolete"
     },
     "03BDC0099C4E14163ADA272C1B6F6FABB448CC3E51F522F978041E4B57D9158C": {
       "enabled": false,
@@ -3913,9 +3892,10 @@
       "vetoed": "Obsolete"
     },
     "157D2D480E006395B76F948E3E07A45A05FE10230D88A7993C71F97AE4B1F2D1": {
-      "enabled": true,
+      "enabled": false,
       "name": "Checks",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "15D61F0C6DB6A2F86BCF96F1E2444FEC54E705923339EC175BD3E517C8B3FF91": {
       "enabled": false,
@@ -3936,9 +3916,10 @@
       "vetoed": "Obsolete"
     },
     "1F4AFA8FA1BC8827AD4C0F682C03A8B671DCDF6B5C4DE36D44243A684103EF88": {
-      "enabled": true,
+      "enabled": false,
       "name": "HardenedValidations",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "215181D23BF5C173314B5FDB9C872C92DE6CC918483727DE037C0C13E7E6EE9D": {
       "enabled": false,
@@ -3953,9 +3934,10 @@
       "vetoed": false
     },
     "25BA44241B3BD880770BFA4DA21C7180576831855368CBEC6A3154FDE4A7676E": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1781",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "27CD95EE8E1E5A537FF2F89B6CEB7C622E78E9374EBD7DCBEDFAE21CD6F16E0A": {
       "enabled": false,
@@ -3964,9 +3946,10 @@
       "vetoed": false
     },
     "2CD5286D8D687E98B41102BDD797198E81EA41DF7BD104E6561FEB104EFF2561": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixTakerDryOfferRemoval",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "2DC64F1D6FFA1C8ACC79D04AD099154AA6C2665A7AD002C00ED36A8C90ABF1E7": {
       "enabled": false,
@@ -3975,19 +3958,22 @@
       "vetoed": true
     },
     "2E2FB9CF8A44EB80F4694D38AADAE9B8B7ADAFD2F092E10068E61C98C4F092B0": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixUniversalNumber",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "3012E8230864E95A58C60FD61430D7E1B4D3353195F2981DC12B0C7C0950FFAC": {
-      "enabled": true,
+      "enabled": false,
       "name": "FlowCross",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "30CD365592B8EE40489BA01AE2F7555CAC9C983145871DC82A42A31CF5BAE7D9": {
-      "enabled": true,
+      "enabled": false,
       "name": "DeletableAccounts",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "31E0DA76FB8FB527CADCDF0E61CB9C94120966328EFA9DCA202135BAF319C0BA": {
       "enabled": false,
@@ -3996,9 +3982,10 @@
       "vetoed": false
     },
     "32A122F1352A4C7B3A6D790362CC34749C5E57FCE896377BFDC6CCD14F6CD627": {
-      "enabled": true,
+      "enabled": false,
       "name": "NonFungibleTokensV1_1",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "3318EA0CF0755AF15DAC19F2B5C5BCBFF4B78BDD57609ACCAABE2C41309B051A": {
       "enabled": false,
@@ -4007,19 +3994,22 @@
       "vetoed": false
     },
     "36799EA497B1369B170805C078AEFE6188345F9B3E324C21E9CA3FF574E3C3D6": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixNFTokenNegOffer",
-      "supported": true
+      "supported": true,
+      "vetoed": "Obsolete"
     },
     "3C43D9A973AA4443EF3FC38E42DD306160FBFFDAB901CD8BAA15D09F2597EB87": {
-      "enabled": true,
+      "enabled": false,
       "name": "NonFungibleTokensV1",
-      "supported": true
+      "supported": true,
+      "vetoed": "Obsolete"
     },
     "3CBC5C4E630A1B82380295CDA84B32B49DD066602E74E39B85EF64137FA65194": {
-      "enabled": true,
+      "enabled": false,
       "name": "DepositPreauth",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "42426C4D4F1009EE67080A9B7965B44656D7714D104A72F9B4369F97ABF044EE": {
       "enabled": false,
@@ -4034,19 +4024,22 @@
       "vetoed": "Obsolete"
     },
     "42F8B586B357ABBAAAA1C733C3E7D3B75761395340D0CDF600179E8737E22478": {
-      "enabled": true,
+      "enabled": false,
       "name": "BalanceRewards",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "452F5906C46D46F407883344BFDD90E672B672C5E9943DB4891E3A34FEEEB9DB": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixSTAmountCanonicalize",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "47C3002ABA31628447E8E9A8B315FAA935CE30183F9A9B86845E469CA2CDC3DF": {
-      "enabled": true,
+      "enabled": false,
       "name": "DisallowIncoming",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "4B8466415FAB32FFA89D9DCBE166A42340115771DF611A7160F8D7439C87ECD8": {
       "enabled": false,
@@ -4073,9 +4066,10 @@
       "vetoed": true
     },
     "4F46DF03559967AC60F2EB272FEFE3928A7594A45FF774B87A7E540DB0F8F068": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixAmendmentMajorityCalc",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "532651B4FD58DF8922A49BA101AB3E996E5BFBF95A913B3E392504863E63B164": {
       "enabled": false,
@@ -4090,14 +4084,22 @@
       "vetoed": true
     },
     "586480873651E106F1D6339B0C4A8945BA705A777F3F4524626FF1FC07EFE41D": {
-      "enabled": true,
+      "enabled": false,
       "name": "MultiSignReserve",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "58BE9B5968C4DA7C59BA900961828B113E5490699B21877DEF9A31E9D0FE5D5F": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1623",
-      "supported": true
+      "supported": true,
+      "vetoed": false
+    },
+    "5A7EDF552D4015D082B1D4B179E6994C81BD20338EF263AA75E9B29CB702A48F": {
+      "enabled": false,
+      "name": "NamedHooks",
+      "supported": true,
+      "vetoed": true
     },
     "5B8E5D8F3D8687D3CE567FB5BDAED152204D195ED2EAEC346E3AA0607D51752A": {
       "enabled": false,
@@ -4106,14 +4108,16 @@
       "vetoed": false
     },
     "5D08145F0A4983F23AFFFF514E83FAD355C5ABFBB6CAB76FB5BC8519FF5F33BE": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1515",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "621A0B264970359869E3C0363A899909AAB7A887C8B73519E4ECF952D33258A8": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixPayChanRecipientOwnerDir",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "6781F8368C4771B83E8B821D88F580202BCB4228075297B19E4FDC5233F1EFDC": {
       "enabled": false,
@@ -4122,9 +4126,16 @@
       "vetoed": "Obsolete"
     },
     "67A34F2CF55BFC0F93AACD5B281413176FEE195269FA6D95219A2DF738671172": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1513",
-      "supported": true
+      "supported": true,
+      "vetoed": false
+    },
+    "6BA7A8FF26BB2387EE3020CB871A616C8DC15231F4E4207509DB0FA8750199D7": {
+      "enabled": false,
+      "name": "IOURewardClaim",
+      "supported": true,
+      "vetoed": true
     },
     "6C92211186613F9647A89DFFBAB8F94C99D4C7E956D495270789128569177DA1": {
       "enabled": false,
@@ -4133,25 +4144,22 @@
       "vetoed": "Obsolete"
     },
     "6E739F4F8B07BED29FC9FF440DA3C301CD14A180DF45819F658FEC2F7DE31427": {
-      "enabled": true,
+      "enabled": false,
       "name": "XahauGenesis",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "7117E2EC2DBF119CA55181D69819F1999ECEE1A0225A7FD2B9ED47940968479C": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1571",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "717F060C0C237F122F8065781528B1CA047D82B4E787022984F26D7B997E3D9C": {
       "enabled": false,
       "name": "fix20250131",
       "supported": true,
       "vetoed": false
-    },
-    "71A1AAD62669FE2EA9CE005F0C78BDFB659B730D574D7C885F7B008A5AAAB674": {
-      "enabled": true,
-      "name": "ExportRNG",
-      "supported": true
     },
     "726F944886BCDF7433203787E93DD9AA87FAB74DFE3AF4785BA03BEFC97ADA1F": {
       "enabled": false,
@@ -4160,19 +4168,22 @@
       "vetoed": true
     },
     "73761231F7F3D94EC3D8C63D91BDD0D89045C6F71B917D1925C01253515A6669": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixNonFungibleTokensV1_2",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "740352F2412A9909880C23A559FCECEDA3BE2126FED62FC7660D628A06927F11": {
-      "enabled": true,
+      "enabled": false,
       "name": "Flow",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "75A7E01C505DD5A179DFE3E000A9B6F1EDDEB55A12F95579A23E15B15DC8BE5A": {
-      "enabled": true,
+      "enabled": false,
       "name": "ImmediateOfferKilled",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "763C37B352BE8C7A04E810F8E462644C45AFEAD624BF3894A08E5C917CF9FF39": {
       "enabled": false,
@@ -4205,9 +4216,10 @@
       "vetoed": false
     },
     "86E83A7D2ECE3AD5FA87AB2195AE015C950469ABF0B72EAACED318F74886AE90": {
-      "enabled": true,
+      "enabled": false,
       "name": "CryptoConditionsSuite",
-      "supported": true
+      "supported": true,
+      "vetoed": "Obsolete"
     },
     "88693F108C3CD8A967F3F4253A32DEF5E35F9406ACD2A11B88B11D90865763A9": {
       "enabled": false,
@@ -4222,15 +4234,10 @@
       "vetoed": false
     },
     "89308AF3B8B10B7192C4E613E1D2E4D9BA64B2EE2D5232402AE82A6A7220D953": {
-      "enabled": true,
-      "name": "fixQualityUpperBound",
-      "supported": true
-    },
-    "8CC0774A3BF66D1D22E76BBDA8E8A232E6B6313834301B3B23E8601196AE6455": {
       "enabled": false,
-      "name": "AMM",
+      "name": "fixQualityUpperBound",
       "supported": true,
-      "vetoed": true
+      "vetoed": false
     },
     "8EC4304A06AF03BE953EA6EDA494864F6F3F30AA002BABA35869FBB8C6AE5D52": {
       "enabled": false,
@@ -4239,9 +4246,10 @@
       "vetoed": false
     },
     "8F81B066ED20DAECA20DF57187767685EEF3980B228E0667A650BAF24426D3B4": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixCheckThreading",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "9000B5F96F9E129D1CB42F2B07AF4CEFEFBFDF49CFCD8B6FF46E719A3F19B436": {
       "enabled": false,
@@ -4250,14 +4258,16 @@
       "vetoed": true
     },
     "919857E4B902A20216E4819B9BD9FD1FD19A66ECF63151C18A4C48C873DB9578": {
-      "enabled": true,
+      "enabled": false,
       "name": "PaychanAndEscrowForTokens",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "93E516234E35E08CA689FA33A6D38E103881F8DCB53023F728C307AA89D515A7": {
-      "enabled": true,
+      "enabled": false,
       "name": "XRPFees",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "94312150FFBA0E21B46244D7C4C6D66219C53C5F82FB7949F0832A6B56FB9631": {
       "enabled": false,
@@ -4266,9 +4276,10 @@
       "vetoed": true
     },
     "955DF3FA5891195A9DAEFA1DDC6BB244B545DDE1BAA84CBB25D5F12A8DA68A0C": {
-      "enabled": true,
+      "enabled": false,
       "name": "TicketBatch",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "96FD2F293A519AE1DB6F8BED23E4AD9119342DA7CB6BAFD00953D16C54205D8B": {
       "enabled": false,
@@ -4277,24 +4288,40 @@
       "vetoed": true
     },
     "98DECF327BF79997AEC178323AD51A830E457BFC6D454DAF3E46E5EC42DC619F": {
-      "enabled": true,
+      "enabled": false,
       "name": "CheckCashMakesTrustLine",
-      "supported": true
+      "supported": true,
+      "vetoed": false
+    },
+    "99DEA90A03A9EDE1472561AD21781435AF53D6FFFC6C38DB419C61FB777D54AC": {
+      "enabled": false,
+      "name": "fixHookMap",
+      "supported": true,
+      "vetoed": false
+    },
+    "A17DCA7904EC2E62754570D64044CCFA890B66930752E7A8168FE77DBE42EE3A": {
+      "enabled": false,
+      "name": "fixImportIssuer",
+      "supported": true,
+      "vetoed": false
     },
     "AE35ABDEFBDE520372B31C957020B34A7A4A9DC3115A69803A44016477C84D6E": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixNFTokenRemint",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "AF8DF7465C338AE64B1E937D6C8DA138C0D63AD5134A68792BBBE1F63356C422": {
-      "enabled": true,
+      "enabled": false,
       "name": "FlowSortStrands",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "B2A4DB846F0891BF2C76AB2F2ACC8F5B4EC64437135C6E56F3F859DE5FFD5856": {
-      "enabled": true,
+      "enabled": false,
       "name": "ExpandedSignerList",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "B4D44CC3111ADD964E846FC57760C8B50FFCD5A82C86A72756F6B058DDDF96AD": {
       "enabled": false,
@@ -4303,14 +4330,16 @@
       "vetoed": "Obsolete"
     },
     "B4E4F5D2D6FB84DF7399960A732309C9FD530EAE5941838160042833625A6076": {
-      "enabled": true,
+      "enabled": false,
       "name": "NegativeUNL",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "B6B3EEDC0267AB50491FDC450A398AF30DBCD977CECED8BEF2499CAB5DAC19E2": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixRmSmallIncreasedQOffers",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "B9E739B8296B4A1BB29BE990B17D66E21B62A300A909F25AC55C22D6C72E1F9D": {
       "enabled": false,
@@ -4331,9 +4360,10 @@
       "vetoed": false
     },
     "C4483A1896170C66C098DEA5B0E024309C60DC960DE5F01CD7AF986AA3D9AD37": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixMasterKeyAsRegularKey",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "C7981B764EC4439123A86CC7CCBA436E9B3FF73B3F10A0AE51882E404522FC41": {
       "enabled": false,
@@ -4348,9 +4378,10 @@
       "vetoed": false
     },
     "CA7C02118BA27599528543DFE77BA6838D1B0F43B447D4D7F53523CE6A0E9AC2": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1543",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "CC5ABAE4F3EC92E94A59B1908C2BE82D2228B6485C00AFF8F22DF930D89C194E": {
       "enabled": false,
@@ -4358,10 +4389,17 @@
       "supported": true,
       "vetoed": "Obsolete"
     },
+    "CF08E97862F50AAD9EF92DE2BCD32A4A951800125F7D51D2188D3BF03D72DF0C": {
+      "enabled": false,
+      "name": "fixGuardDepth32",
+      "supported": true,
+      "vetoed": true
+    },
     "D686F2538F410C9D0D856788E98E3579595DAF7B38D38887F81ECAC934B06040": {
-      "enabled": true,
+      "enabled": false,
       "name": "HooksUpdate1",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "DAF3A6EB04FA5DC51E8E4F23E9B7022B693EFA636F23F22664746C77B5786B23": {
       "enabled": false,
@@ -4382,9 +4420,10 @@
       "vetoed": true
     },
     "DF8B4536989BDACE3F934F29423848B9F1D76D09BE6A1FCFE7E7F06AA26ABEAD": {
-      "enabled": true,
+      "enabled": false,
       "name": "fixRemoveNFTokenAutoTrustLine",
-      "supported": true
+      "supported": true,
+      "vetoed": true
     },
     "E2E6F2866106419B88C50045ACE96368558C345566AC8F2BDF5A5B5587F0E6FA": {
       "enabled": false,
@@ -4399,14 +4438,16 @@
       "vetoed": false
     },
     "ECE6819DBA5DB528F1A241695F5A9811EF99467CDE22510954FD357780BBD078": {
-      "enabled": true,
+      "enabled": false,
       "name": "Hooks",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "ECF412BE0964EC2E71DCF807EEEA6EA8470D3DB15173D46F28AB6E234860AC32": {
-      "enabled": true,
+      "enabled": false,
       "name": "URIToken",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "EDB4EE4C524E16BDD91D9A529332DED08DCAAA51CC6DC897ACFA1A0ED131C5B6": {
       "enabled": false,
@@ -4421,14 +4462,22 @@
       "vetoed": true
     },
     "F5751842D26FC057B92CAA435ABF4F1428C2BCC4180D18775ADE92CB2643BBA3": {
-      "enabled": true,
+      "enabled": false,
       "name": "Import",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "F64E1EABBE79D55B3BB82020516CEC2C582A98A6BFE20FBE9BB6A0D233418064": {
-      "enabled": true,
+      "enabled": false,
       "name": "DepositAuth",
-      "supported": true
+      "supported": true,
+      "vetoed": false
+    },
+    "F709B3C87FD60822407FCC0217BF965F4B490141427777C4605A84A73DF15D51": {
+      "enabled": false,
+      "name": "fixIOULockedBalanceInvariant",
+      "supported": true,
+      "vetoed": true
     },
     "FA4E4881FDB038DCD8D7DFD850A304546E0B2844CACC3AB97CA41136A03E49F5": {
       "enabled": false,
@@ -4437,9 +4486,10 @@
       "vetoed": true
     },
     "FBD513F1B893AC765B78F250E6FFA6A11B573209D1842ADC787C850696741288": {
-      "enabled": true,
+      "enabled": false,
       "name": "fix1578",
-      "supported": true
+      "supported": true,
+      "vetoed": false
     },
     "FCB9267E0A189F60C4210A6CB3517FF6611C9173E4A30F9DAAB35F63D53942D5": {
       "enabled": false,
@@ -4448,6 +4498,6 @@
       "vetoed": true
     }
   },
-  "hash": "2946CF6AE26B48F659E35DAB3F78C5BB44A24E2B114401829D35A8A76693A4F4",
+  "hash": "9601A39F3AB4E7D5F7891E031900E8FD4C27D8B0EB76F394166A6FD1746E5A97",
   "native_currency_code": "XAH"
 }
