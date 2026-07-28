@@ -129,7 +129,7 @@ class TestTreasuryWithdraw:
 
     def test_successful_withdrawal(self, hook, rt):
         _setup_params(rt, amount_xfl=float_to_xfl(5_000_000.0))
-        rt.params[b"W"] = struct.pack("<q", float_to_xfl(1_000_000.0))  # 1M drops
+        rt.tx_params[b"W"] = struct.pack("<q", float_to_xfl(1_000_000.0))  # 1M drops
         rt.ledger_seq_val = 1000
         result = rt.run(hook)
         assert result.accepted
@@ -140,7 +140,7 @@ class TestTreasuryWithdraw:
 
     def test_withdraw_exceeds_limit(self, hook, rt):
         _setup_params(rt, amount_xfl=float_to_xfl(1_000.0))
-        rt.params[b"W"] = struct.pack("<q", float_to_xfl(5_000.0))  # over limit
+        rt.tx_params[b"W"] = struct.pack("<q", float_to_xfl(5_000.0))  # over limit
         result = rt.run(hook)
         assert result.rejected
         assert b"exceeds" in result.return_msg
@@ -148,7 +148,7 @@ class TestTreasuryWithdraw:
     def test_withdraw_too_soon(self, hook, rt):
         """Withdrawal before ledger cooldown → rejected."""
         _setup_params(rt, ledger_limit=100)
-        rt.params[b"W"] = struct.pack("<q", float_to_xfl(1_000.0))
+        rt.tx_params[b"W"] = struct.pack("<q", float_to_xfl(1_000.0))
         rt.state_db[b"LAST"] = struct.pack("<I", 950)  # released at ledger 950
         rt.ledger_seq_val = 1000  # only 50 ledgers elapsed, need 100
         result = rt.run(hook)
@@ -158,7 +158,7 @@ class TestTreasuryWithdraw:
     def test_withdraw_after_cooldown(self, hook, rt):
         """Withdrawal after cooldown → accepted."""
         _setup_params(rt, ledger_limit=100)
-        rt.params[b"W"] = struct.pack("<q", float_to_xfl(1_000.0))
+        rt.tx_params[b"W"] = struct.pack("<q", float_to_xfl(1_000.0))
         rt.state_db[b"LAST"] = struct.pack("<I", 800)  # released at ledger 800
         rt.ledger_seq_val = 1000  # 200 ledgers elapsed, need 100
         result = rt.run(hook)
@@ -179,7 +179,7 @@ class TestTreasuryClaim:
     def test_first_claim_setup(self, hook, rt):
         """First claim (no sfRewardAccumulator) → setup, emits ClaimReward."""
         _setup_params(rt)
-        rt.params[b"C"] = b"\x01"
+        rt.tx_params[b"C"] = b"\x01"
         # Put hook account in ledger for the claim keylet lookup
         kl, data = account_root("rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh")
         rt.ledger[kl] = data

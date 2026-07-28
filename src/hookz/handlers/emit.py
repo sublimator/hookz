@@ -7,6 +7,7 @@ import struct
 from typing import TYPE_CHECKING
 
 from hookz import hookapi
+from hookz.emission import check_emission
 
 if TYPE_CHECKING:
     from hookz.runtime import HookRuntime
@@ -25,10 +26,24 @@ def etxn_reserve(rt: HookRuntime, count: int) -> int:
 
 
 def etxn_details(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
-    """Build EmitDetails exactly as xahaud does — raw serialized bytes (116 bytes)."""
+    """Build EmitDetails exactly as xahaud does.
+
+    116 bytes, or 138 when the emitting hook exports `cbak` — xahaud appends
+    sfEmitCallback iff `hookCtx.result.hasCallback`, which is
+    "true iff this hook wasm has a cbak function"
+    (xahaud:src/xrpld/app/hook/applyHook.h:166,
+     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914).
+
+    Always writing the short form made every hook with a callback fail its own
+    length check, so hooks had to be tested against a hand-written replacement
+    for this function. It also produced an emit missing a field the ledger
+    requires, which emission validation now catches from the other side.
+    """
     if not rt._etxn_reserved:
         return hookapi.PREREQUISITE_NOT_MET
-    if write_len < 116:
+    has_callback = bool(getattr(rt, "_has_cbak", False))
+    required = 138 if has_callback else 116
+    if write_len < required:
         return hookapi.TOO_SMALL
     buf = bytearray()
     buf.append(0xED)  # sfEmitDetails object start
@@ -53,11 +68,16 @@ def etxn_details(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     buf.append(0x5D)
     buf.extend(b"\x00" * 32)
 
+    # sfEmitCallback — present iff this hook exports cbak
+    if has_callback:
+        buf.extend(b"\x8A\x14")
+        buf.extend(rt.hook_account[:20])
+
     # end object
     buf.append(0xE1)
 
-    assert len(buf) == 116
-    rt._write_memory(write_ptr, bytes(buf[:write_len]))
+    assert len(buf) == required, f"{len(buf)} != {required}"
+    rt._write_memory(write_ptr, bytes(buf))
     return len(buf)
 
 
@@ -119,6 +139,23 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
     if hash_len < 32:
         return hookapi.TOO_SMALL
     txn_bytes = rt._read_memory(txn_ptr, txn_len)
+
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498 applies fourteen rules
+    # and a preflight before it accepts an emitted transaction. Skipping them
+    # made every emit succeed here regardless of its contents — a hook whose
+    # template has a wrong offset passed the suite and is refused on chain.
+    if rt.validate_emissions:
+        check = check_emission(
+            txn_bytes,
+            hook_account=rt.hook_account,
+            ledger_seq=rt.ledger_seq_val,
+            min_fee=None,          # the mock's fee base is not xahaud's
+            has_callback=getattr(rt, "_has_cbak", None),
+        )
+        if not check.ok:
+            rt.emission_rejections.append(check)
+            return hookapi.EMISSION_FAILURE
+
     rt.emitted_txns.append(txn_bytes)
     h = hashlib.sha512(b'\x54\x58\x4e\x00' + txn_bytes).digest()[:32]
     rt._write_memory(hash_ptr, h[:hash_len])

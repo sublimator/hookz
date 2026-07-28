@@ -59,10 +59,22 @@ class HookzConfig:
     # Provenance: maps "section.key" → source description
     sources: dict[str, str] = field(default_factory=dict)
 
+    # Optional commit the configured xahaud checkout is *declared* to be at.
+    # Its presence changes what a mismatch means, which is why it is not
+    # required: without it the checkout is whatever the developer has open and
+    # citation drift is advisory; with it, the checkout is pinned and drift is
+    # an error, because the config asserted something that is not true.
+    xahaud_commit: str | None = None
+
     # Convenience accessors for common paths
     @property
     def xahaud_root(self) -> Path:
         return self.paths.get("xahaud", Path())
+
+    @property
+    def xahaud_pinned(self) -> bool:
+        """Did the config declare which commit the checkout should be at?"""
+        return bool(self.xahaud_commit)
 
     @property
     def wasi_sdk(self) -> Path:
@@ -241,6 +253,8 @@ def _build_config(toml_data: dict, base: Path,
         sources["_searched"] = "; ".join(searched)
 
     paths_cfg = toml_data.get("paths", {})
+    xahaud_commit = paths_cfg.pop("xahaud_commit", None) or os.environ.get(
+        "HOOKZ_XAHAUD_COMMIT")
     compile_cfg = toml_data.get("compile", {})
     coverage_cfg = toml_data.get("coverage", {})
     hooks_cfg = toml_data.get("hooks", {})
@@ -324,5 +338,6 @@ def _build_config(toml_data: dict, base: Path,
         extra_cflags=compile_cfg.get("extra_cflags"),
         exports=compile_cfg.get("exports", ["hook", "cbak"]),
         coverage_threshold=coverage_cfg.get("threshold", 90),
+        xahaud_commit=xahaud_commit,
         sources=sources,
     )

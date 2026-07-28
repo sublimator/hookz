@@ -68,6 +68,48 @@ class HookResult:
     return_code: int = 0
     call_log: list[HostCall] = field(default_factory=list)
     error: Exception | None = None
+    # Values the hook observed about itself, one entry per HOOKZ_CHECK.
+    checkpoints: list = field(default_factory=list)
+    dev_events: list[dict] = field(default_factory=list)
+
+    @property
+    def return_msg_str(self) -> str:
+        """`return_msg` as text, without its trailing NUL.
+
+        The message is bytes, because that is what the hook handed to
+        `accept`/`rollback`. But the thing a test wants to say is
+        `"no listed signers" in result.return_msg_str`, and writing that against
+        the bytes raises TypeError rather than failing — an error where an
+        assertion was intended, which reads as a broken test rather than a
+        broken hook.
+
+        Hooks build these with `SBUF(msg)`, which is `msg, sizeof(msg)`, and
+        `sizeof` a string literal counts its terminator. So every message
+        arrives with a trailing NUL that nobody wants and an equality
+        comparison trips over. It is stripped here rather than in each caller;
+        `return_msg` keeps the bytes exactly as the hook sent them.
+
+        Decoded leniently: a rollback message is a literal from the source, but
+        nothing stops a hook passing arbitrary bytes, and a test should still
+        get to see them.
+        """
+        raw = self.return_msg
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw).decode("utf8", "replace").rstrip("\x00")
+        return (raw or "").rstrip("\x00")
+
+    def checkpoint(self, tag: str):
+        """The single checkpoint with this tag, or None. Raises if repeated."""
+        hits = [c for c in self.checkpoints if c.tag == tag]
+        if not hits:
+            return None
+        if len(hits) > 1:
+            raise ValueError(
+                f"{tag!r} was reached {len(hits)} times; use checkpoints_for()")
+        return hits[0]
+
+    def checkpoints_for(self, tag: str) -> list:
+        return [c for c in self.checkpoints if c.tag == tag]
 
 
 # Amendments enabled by default.
@@ -82,6 +124,9 @@ _BEHAVIORAL_AMENDMENTS: set[str] = {
     "featureDID",
     "featurePriceOracle",
     "featureCron",
+    # VoteBehavior::DefaultYes — validators adopt it unless told otherwise, so
+    # the fixed long-division is the behaviour a hook should expect to meet.
+    "fixFloatDivide",
 }
 
 
@@ -92,6 +137,29 @@ def _get_default_amendments() -> set[str]:
         return _BEHAVIORAL_AMENDMENTS | get_default_amendments()
     except Exception:
         return _BEHAVIORAL_AMENDMENTS.copy()
+
+
+_MODULE_CACHE: dict[bytes, tuple] = {}
+_MODULE_CACHE_LIMIT = 32
+
+
+def _module_for(wasm_bytes: bytes):
+    """(engine, module) for these bytes, compiled once.
+
+    A wasmtime Module is immutable and tied to its Engine, so both are safe to
+    share across runs; only the Store carries per-execution state. Bounded so a
+    suite that compiles many variants (mutation testing) cannot grow without
+    limit.
+    """
+    hit = _MODULE_CACHE.get(wasm_bytes)
+    if hit is not None:
+        return hit
+    engine = wasmtime.Engine()
+    entry = (engine, wasmtime.Module(engine, wasm_bytes))
+    if len(_MODULE_CACHE) >= _MODULE_CACHE_LIMIT:
+        _MODULE_CACHE.pop(next(iter(_MODULE_CACHE)))
+    _MODULE_CACHE[wasm_bytes] = entry
+    return entry
 
 
 class HookRuntime:
@@ -114,7 +182,11 @@ class HookRuntime:
 
     def __init__(self) -> None:
         self.state_db: dict[bytes, bytes] = {}
+        # Two namespaces, as on chain. `params` are the hook's install
+        # parameters (hook_param); `tx_params` are carried by the originating
+        # transaction (otxn_param). A name may appear in both without colliding.
         self.params: dict[bytes, bytes] = {}
+        self.tx_params: dict[bytes, bytes] = {}
         self.hook_account: bytes = b"\x00" * 20
         self.otxn_account: bytes = b"\x00" * 20
         self.otxn_type: int = 0
@@ -123,6 +195,13 @@ class HookRuntime:
         self.call_log: list[HostCall] = []
         self.emitted_txns: list[bytes] = []
         self.traces: list = []  # list[Trace] from handlers.core
+        # HOOKZ_CHECK recording. `checkpoint_observers` lets a caller react as
+        # each one closes — a live model comparison, a log — without the
+        # runtime having to know what any of them are for.
+        self.checkpoints: list = []
+        self.dev_events: list[dict] = []
+        self.checkpoint_observers: list = []
+        self._dev_pending_events: list[dict] = []
         self.coverage = CoverageTracker()
         self._shared_coverage: CoverageTracker | None = None
         self.handlers: dict[str, Callable] = {}
@@ -139,6 +218,12 @@ class HookRuntime:
         self._step_prev_line: int | None = None
 
         # Handler-owned state, populated during execution.
+        # Emitted transactions are validated the way xahaud validates them.
+        # Turn this off only to test a deliberately malformed emit; leaving it
+        # off is how a hook that cannot emit on chain passes a suite here.
+        self._has_cbak: bool | None = None
+        self.validate_emissions: bool = True
+        self.emission_rejections: list = []
         self._etxn_reserved: bool = False
         self._etxn_count: int = 0
         self._emit_nonce_counter: int = 0
@@ -146,10 +231,16 @@ class HookRuntime:
         self._param_overrides: dict[bytes, dict[bytes, bytes]] = {}
 
     def set_param(self, key: int | bytes, value: bytes) -> None:
-        """Set a hook parameter for the next execution."""
+        """Set an install parameter (read by `hook_param`)."""
         if isinstance(key, int):
             key = key.to_bytes(1, "little")
         self.params[key] = value
+
+    def set_tx_param(self, key: int | bytes, value: bytes) -> None:
+        """Set a parameter carried by the originating transaction (`otxn_param`)."""
+        if isinstance(key, int):
+            key = key.to_bytes(1, "little")
+        self.tx_params[key] = value
 
     def _read_memory(self, ptr: int, length: int) -> bytes:
         """Read bytes from WASM linear memory."""
@@ -230,6 +321,13 @@ class HookRuntime:
         result = HookResult()
         self.call_log = []
         self.traces = []
+        self.checkpoints = []
+        self.dev_events = []
+        self._dev_pending_events = []
+        # share the lists so a caller can read checkpoints mid-run via an
+        # observer, and off the result afterwards
+        result.checkpoints = self.checkpoints
+        result.dev_events = self.dev_events
         # Preserve markers if already loaded
         markers = self.coverage._markers
         self.coverage = CoverageTracker()
@@ -239,11 +337,14 @@ class HookRuntime:
             from hookz.coverage.rewriter import instrument_wasm
             wasm_bytes, _locs = instrument_wasm(wasm_bytes)
 
-        engine = wasmtime.Engine()
+        # Compiling the module is the expensive part — a few hundred KB of
+        # wasm costs tens of milliseconds, and a test suite runs the same
+        # bytes hundreds of times. The result depends only on the bytes, so
+        # cache it against them. (Hooks are large because nothing inside one
+        # can be a function, so everything is inlined.)
+        engine, module = _module_for(wasm_bytes)
         store = wasmtime.Store(engine)
         self._store = store
-
-        module = wasmtime.Module(engine, wasm_bytes)
         linker = self._make_host_functions(store, module)
 
         instance = linker.instantiate(store, module)
@@ -254,6 +355,10 @@ class HookRuntime:
             self._memory = memory
 
         # Get hook export
+        # xahaud attaches sfEmitCallback to an emitted transaction exactly
+        # when the emitting hook exports cbak, and refuses the emit if the
+        # two disagree. The module is the only place that is knowable.
+        self._has_cbak = instance.exports(store).get("cbak") is not None
         hook_fn = instance.exports(store).get("hook")
         if hook_fn is None:
             raise RuntimeError("WASM module does not export 'hook'")

@@ -2,7 +2,7 @@
 # Env vars override: HOOKZ_XAHAUD_ROOT, HOOKZ_WASI_SDK, HOOKZ_HOOK_HEADERS
 
 [paths]
-xahaud = "../xahaud-worktrees/xahaud-wasm-coverage"
+xahaud = "../xahaud-worktrees/xahaud-latest-dev"
 wasi_sdk = "~/.local/share/mise/installs/wasi-sdk/32/wasi-sdk"
 hook_headers = "${xahaud}/hook"
 

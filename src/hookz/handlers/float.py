@@ -15,6 +15,11 @@ from hookz.xfl import xfl_mantissa as _xfl_mantissa
 from hookz.xfl import xfl_exponent as _xfl_exponent
 
 
+def _xfl_is_negative(xfl: int) -> bool:
+    """XFL sign lives in bit 62, and set means *positive* (hook_float:is_negative)."""
+    return xfl != 0 and not ((xfl >> 62) & 1)
+
+
 def float_one(rt: HookRuntime) -> int:
     """Return XFL representation of 1.0."""
     return _float_to_xfl(1.0)
@@ -82,17 +87,143 @@ def float_set(rt: HookRuntime, exp: int, mantissa: int) -> int:
     return result
 
 
+# XFL limits, from xahaud hook_float (HookAPI.h)
+_ONE = (1 << 62) | ((0 + 97) << 54) | 1000000000000000   # float_one, XFL 1.0
+_MIN_MANTISSA = 1000000000000000
+_MAX_MANTISSA = 9999999999999999
+_MIN_EXPONENT = -96
+_MAX_EXPONENT = 80
+
+
+def _normalize_xfl(man: int, exp: int, neg: bool = False) -> int | None:
+    """Port of hook_float::normalize_xfl. Returns the XFL, or None on overflow.
+
+    Kept structurally identical to the C++ — including the two off-by-one
+    nudges near the mantissa bounds, which are not equivalent to a plain
+    multiply/divide by ten and do change results at the edges.
+    """
+    if man == 0:
+        return 0
+    if man < 0:
+        man = -man
+        neg = True
+
+    mo = len(str(man)) - 1                      # integer log10
+    adjust = 15 - mo
+    if adjust > 0:
+        if adjust > 18:
+            return 0
+        man *= 10 ** adjust
+        exp -= adjust
+    elif adjust < 0:
+        if -adjust > 18:
+            return None
+        man //= 10 ** (-adjust)
+        exp -= adjust
+
+    if man == 0:
+        return 0
+
+    if man < _MIN_MANTISSA:
+        if man == _MIN_MANTISSA - 1:
+            man += 1
+        else:
+            man *= 10
+            exp -= 1
+
+    if man > _MAX_MANTISSA:
+        if man == _MAX_MANTISSA + 1:
+            man -= 1
+        else:
+            man //= 10
+            exp += 1
+
+    if exp < _MIN_EXPONENT or man == 0:
+        return 0
+    if exp > _MAX_EXPONENT:
+        return None
+
+    return (0 if neg else (1 << 62)) | ((exp + 97) << 54) | man
+
+
 def float_multiply(rt: HookRuntime, a: int, b: int) -> int:
+    """Port of hook_float::float_multiply_internal_parts.
+
+    Exact integer arithmetic on the mantissas, truncating — NOT a float
+    multiply. Going through a Python float rounds to nearest and diverged from
+    the node on 25% of pool-scale operands, by one unit in the last place. Every
+    payout in a hook that routes 64-bit maths through the XFL API (the usual
+    trick to avoid __multi3) inherits that error.
+    """
     if a == 0 or b == 0:
         return 0
-    return _float_to_xfl(_xfl_to_float(a) * _xfl_to_float(b))
+    m1, e1 = _xfl_mantissa(a), _xfl_exponent(a)
+    m2, e2 = _xfl_mantissa(b), _xfl_exponent(b)
+    neg = _xfl_is_negative(a) != _xfl_is_negative(b)
+
+    man_out = (m1 * m2) // 10 ** 15             # truncating, as the node does
+    if man_out >= (1 << 64):
+        return hookapi.XFL_OVERFLOW
+
+    out = _normalize_xfl(man_out, e1 + e2 + 15, neg)
+    return hookapi.XFL_OVERFLOW if out is None else out
 
 
 def float_divide(rt: HookRuntime, a: int, b: int) -> int:
-    fb = _xfl_to_float(b)
-    if fb == 0:
+    """Port of HookAPI::float_divide_internal.
+
+    Long division on the mantissas by repeated subtraction, one decimal digit
+    at a time — not a float divide. `fixFloatDivide` changes the inner loop's
+    comparison from `>` to `>=`, which moves results, so the amendment set
+    decides which behaviour applies.
+    """
+    if b == 0:
         return hookapi.DIVISION_BY_ZERO
-    return _float_to_xfl(_xfl_to_float(a) / fb)
+    if a == 0:
+        return 0
+    if b == _ONE:
+        return a
+
+    man1, exp1 = _xfl_mantissa(a), _xfl_exponent(a)
+    man2, exp2 = _xfl_mantissa(b), _xfl_exponent(b)
+    neg1, neg2 = _xfl_is_negative(a), _xfl_is_negative(b)
+
+    if _normalize_xfl(man1, exp1) == 0:
+        return 0
+
+    # line the divisor up with the dividend, one order at a time
+    while man2 > man1:
+        man2 //= 10
+        exp2 += 1
+    if man2 == 0:
+        return hookapi.DIVISION_BY_ZERO
+    while man2 < man1:
+        if man2 * 10 > man1:
+            break
+        man2 *= 10
+        exp2 -= 1
+
+    has_fix = rt is None or "fixFloatDivide" in getattr(rt, "amendments", ())
+    man3, exp3 = 0, exp1 - exp2
+    while man2 > 0:
+        i = 0
+        if has_fix:
+            while man1 >= man2:
+                man1 -= man2
+                i += 1
+        else:
+            while man1 > man2:
+                man1 -= man2
+                i += 1
+        man3 = man3 * 10 + i
+        man2 //= 10
+        if man2 == 0:
+            break
+        exp3 -= 1
+
+    neg3 = not ((neg1 and neg2) or (not neg1 and not neg2))
+    out = _normalize_xfl(man3, exp3, neg3)
+    return hookapi.XFL_OVERFLOW if out is None else out
 
 
 def float_invert(rt: HookRuntime, a: int) -> int:

@@ -185,8 +185,8 @@ class TestGovernVoting:
         """Non-member trying to vote → rejected."""
         _setup_initialized_rt(rt)
         rt.otxn_account = NON_MEMBER
-        rt.params[b"T"] = b"S\x00"  # topic: seat 0
-        rt.params[b"V"] = MEMBER_0  # vote data
+        rt.tx_params[b"T"] = b"S\x00"  # topic: seat 0
+        rt.tx_params[b"V"] = MEMBER_0  # vote data
 
         result = rt.run(hook)
         assert result.rejected
@@ -196,8 +196,8 @@ class TestGovernVoting:
         """Member votes on a seat topic."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"S\x03"  # topic: seat 3 (empty)
-        rt.params[b"V"] = bytes([0xAA] * 20)  # new member for seat 3
+        rt.tx_params[b"T"] = b"S\x03"  # topic: seat 3 (empty)
+        rt.tx_params[b"V"] = bytes([0xAA] * 20)  # new member for seat 3
 
         result = rt.run(hook)
         assert result.accepted
@@ -216,7 +216,7 @@ class TestGovernVoting:
         """Invalid topic type (not S/H/R)."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"X\x00"
+        rt.tx_params[b"T"] = b"X\x00"
 
         result = rt.run(hook)
         assert result.rejected
@@ -226,8 +226,8 @@ class TestGovernVoting:
         """Seat topic > 19."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"S\x14"  # seat 20
-        rt.params[b"V"] = bytes([0xAA] * 20)
+        rt.tx_params[b"T"] = b"S\x14"  # seat 20
+        rt.tx_params[b"V"] = bytes([0xAA] * 20)
 
         result = rt.run(hook)
         assert result.rejected
@@ -237,8 +237,8 @@ class TestGovernVoting:
         """Hook topic > 10."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"H\x0B"  # hook 11
-        rt.params[b"V"] = bytes([0xAA] * 32)
+        rt.tx_params[b"T"] = b"H\x0B"  # hook 11
+        rt.tx_params[b"V"] = bytes([0xAA] * 32)
 
         result = rt.run(hook)
         assert result.rejected
@@ -248,8 +248,8 @@ class TestGovernVoting:
         """Reward topic must be R or D."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"RX"
-        rt.params[b"V"] = _le_xfl(0.01)
+        rt.tx_params[b"T"] = b"RX"
+        rt.tx_params[b"V"] = _le_xfl(0.01)
 
         result = rt.run(hook)
         assert result.rejected
@@ -259,7 +259,7 @@ class TestGovernVoting:
         """Missing V parameter."""
         _setup_initialized_rt(rt)
         rt.otxn_account = MEMBER_0
-        rt.params[b"T"] = b"S\x00"
+        rt.tx_params[b"T"] = b"S\x00"
         # No V parameter
 
         result = rt.run(hook)
@@ -281,8 +281,8 @@ class TestGovernVoting:
         vote_key[12:32] = MEMBER_0
         rt.state_db[bytes(vote_key)] = vote_data
 
-        rt.params[b"T"] = b"S\x03"
-        rt.params[b"V"] = vote_data
+        rt.tx_params[b"T"] = b"S\x03"
+        rt.tx_params[b"V"] = vote_data
 
         result = rt.run(hook)
         assert result.accepted
@@ -319,8 +319,8 @@ class TestGovernRewardVoting:
 
         # Third member casts the deciding vote
         rt.otxn_account = MEMBER_2
-        rt.params[b"T"] = b"RR"
-        rt.params[b"V"] = new_rate
+        rt.tx_params[b"T"] = b"RR"
+        rt.tx_params[b"V"] = new_rate
 
         result = rt.run(hook)
         assert result.accepted

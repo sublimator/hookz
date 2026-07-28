@@ -62,6 +62,9 @@ def compile_hook(
     config: HookzConfig | None = None,
     debug: bool = True,
     optimize: bool = False,
+    opt_level: str | None = None,
+    export_all: bool = False,
+    extra_flags: tuple[str, ...] = (),
 ) -> bytes:
     """Compile a C hook source to WASM (single-stage, via clang driver).
 
@@ -70,7 +73,12 @@ def compile_hook(
         output: optional output path (otherwise uses temp file)
         config: hookz config (loaded from hookz.toml if None)
         debug: include DWARF debug info (-g)
-        optimize: optimization level (-O2 vs -O0)
+        optimize: -O2 vs -O0; ignored when opt_level is given
+        opt_level: explicit level ("-O3", "-Oz", …), as a pipeline supplies
+        export_all: link with --export-all instead of naming hook/cbak, which
+            roots every function against DCE and so changes what the optimizer
+            sees. The cleaner strips the surplus exports afterwards.
+        extra_flags: appended verbatim, after config.extra_cflags
 
     Returns:
         WASM bytes
@@ -99,7 +107,7 @@ def compile_hook(
 
     if debug:
         cmd.append("-g")
-    cmd.append("-O2" if optimize else "-O0")
+    cmd.append(opt_level or ("-O2" if optimize else "-O0"))
 
     # Sensible defaults for hook compilation — the hook API headers
     # trigger these warnings in every hook
@@ -112,14 +120,19 @@ def compile_hook(
 
     if config.extra_cflags:
         cmd.extend(config.extra_cflags)
+    if extra_flags:
+        cmd.extend(extra_flags)
 
     cmd.extend([
         "-Wl,--allow-undefined",
         "-Wl,--no-entry",
     ])
 
-    for export in (config.exports or ["hook", "cbak"]):
-        cmd.append(f"-Wl,--export={export}")
+    if export_all:
+        cmd.append("-Wl,--export-all")
+    else:
+        for export in (config.exports or ["hook", "cbak"]):
+            cmd.append(f"-Wl,--export={export}")
 
     cmd.extend([
         f"-I{config.hook_headers}",
@@ -128,12 +141,57 @@ def compile_hook(
         "-o", str(out_path),
     ])
 
-    r = subprocess.run(cmd, capture_output=True)
-    if r.returncode != 0:
-        raise RuntimeError(f"Compilation failed:\n{r.stderr.decode()}")
+    try:
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"Compilation failed:\n{r.stderr.decode()}")
 
-    wasm_bytes = out_path.read_bytes()
-    return wasm_bytes
+        wasm_bytes = out_path.read_bytes()
+        return wasm_bytes
+    finally:
+        # Only the temp we made is ours to remove; a caller-supplied output
+        # path is the caller's artifact. Without this every output=None call
+        # leaves a tmp*.wasm behind, once per build.
+        if output is None:
+            out_path.unlink(missing_ok=True)
+
+
+def compile_hook_dev(
+    source: Path,
+    output: Path | None = None,
+    config: HookzConfig | None = None,
+    debug: bool = True,
+    optimize: bool = False,
+    opt_level: str | None = None,
+    export_all: bool = False,
+    extra_flags: tuple[str, ...] = (),
+) -> bytes:
+    """Compile with `hookz:` comment directives unwrapped into real code.
+
+    The source on disk is never modified — directives are rendered into a temp
+    copy, so the file you audit and the file you deploy stay the same bytes.
+    The resulting wasm imports the hookz_dev_* host calls and must not be
+    deployed; use compile_hook() for anything real.
+    """
+    from dataclasses import replace
+    from hookz.dev_directives import render_dev_source
+
+    source = Path(source)
+    if config is None:
+        config = load_config(source_file=source)
+
+    # the temp copy lives elsewhere, so relative #includes still resolve
+    extra_cflags = list(config.extra_cflags or [])
+    extra_cflags.append(f"-I{source.resolve().parent}")
+    dev_config = replace(config, extra_cflags=extra_cflags)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        dev_source = Path(tmpdir) / source.name
+        dev_source.write_text(render_dev_source(source))
+        return compile_hook(dev_source, output=output, config=dev_config,
+                            debug=debug, optimize=optimize,
+                            opt_level=opt_level, export_all=export_all,
+                            extra_flags=extra_flags)
 
 
 def compile_hook_two_stage(

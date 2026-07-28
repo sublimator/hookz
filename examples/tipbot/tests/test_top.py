@@ -55,7 +55,7 @@ def _setup_deposit(rt, snid=1, user_id=42, xah=True, amt_buf=None):
     deposit_param = bytearray(20)
     deposit_param[0] = snid
     struct.pack_into("<Q", deposit_param, 12, user_id)
-    rt.params[b"DEPOSIT"] = bytes(deposit_param)
+    rt.tx_params[b"DEPOSIT"] = bytes(deposit_param)
 
 
 class TestPassthrough:
@@ -96,8 +96,8 @@ class TestValidation:
         rt._slot_overrides["slot_subarray:2:0"] = 3
         rt._slot_overrides["slot_data:3"] = bytes(9)
 
-        rt.params[b"DEPOSIT"] = bytes(20)
-        rt.params[b"WITHDRAW"] = bytes(48)
+        rt.tx_params[b"DEPOSIT"] = bytes(20)
+        rt.tx_params[b"WITHDRAW"] = bytes(48)
         result = rt.run(hook)
         assert result.rejected
         assert b"both DEPOSIT and WITHDRAW" in result.return_msg
@@ -112,7 +112,7 @@ class TestDeposit:
         assert b"Credited" in result.return_msg
 
         # Verify the balance was written to state_db
-        deposit_param = rt.params[b"DEPOSIT"]
+        deposit_param = rt.tx_params[b"DEPOSIT"]
         # Balance key is sha512h of the 60-byte key material
         key_material = bytearray(60)
         key_material[:20] = deposit_param[:20]
@@ -176,7 +176,7 @@ class TestDeposit:
         assert b"at least 10 XAH" in result.return_msg
 
         # No balance should have been created
-        deposit_param = rt.params[b"DEPOSIT"]
+        deposit_param = rt.tx_params[b"DEPOSIT"]
         key_material = bytearray(60)
         key_material[:20] = deposit_param[:20]
         h = hashlib.sha512(bytes(key_material)).digest()[:32]
@@ -208,7 +208,7 @@ class TestDeposit:
         deposit_param = bytearray(20)
         deposit_param[0] = 1   # valid SNID
         deposit_param[1] = 0xAA  # non-zero = looks like accid
-        rt.params[b"DEPOSIT"] = bytes(deposit_param)
+        rt.tx_params[b"DEPOSIT"] = bytes(deposit_param)
         result = rt.run(hook)
         assert result.rejected
         assert b"social network tip account" in result.return_msg
@@ -216,7 +216,7 @@ class TestDeposit:
     def test_deposit_ignores_truncated_balance_and_user_info_state(self, hook, rt):
         """Short reads for the balance/user-info keys are treated as empty state."""
         _setup_deposit(rt, snid=1, user_id=42, xah=True)
-        deposit_param = rt.params[b"DEPOSIT"]
+        deposit_param = rt.tx_params[b"DEPOSIT"]
 
         key_material = bytearray(60)
         key_material[:20] = deposit_param[:20]
@@ -255,7 +255,7 @@ class TestWithdrawal:
         cur = currency or b"\x00" * 20
         iss = issuer or b"\x00" * 20
         withdraw_data = cur + iss + struct.pack("<Q", xfl_amount)
-        rt.params[b"WITHDRAW"] = withdraw_data
+        rt.tx_params[b"WITHDRAW"] = withdraw_data
 
         if currency and issuer:
             bal_key = balance_key_account(account, currency, issuer)
@@ -373,7 +373,7 @@ class TestWithdrawal:
 
     def test_no_balance_rejects(self, hook, rt):
         """Withdraw with no balance entry gets rejected."""
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
         result = rt.run(hook)
         assert result.rejected
         assert b"No such user-currency-issuer" in result.return_msg
@@ -397,7 +397,7 @@ class TestGovernanceEmit:
     def test_withdrawal_with_governance_emits_sethook(self, hook, rt):
         """Pending H entry causes SetHook emit alongside withdrawal."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         # Seed a governance entry: H + position → 64 bytes (hookhash + hookon)
         h_key = b"H" + bytes([0])
@@ -440,7 +440,7 @@ class TestGovernanceEmit:
     def test_withdrawal_without_governance_no_sethook(self, hook, rt):
         """No H entries → only remit emitted, no sethook."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         result = rt.run(hook)
         assert result.accepted
@@ -461,7 +461,7 @@ class TestGovernanceEmit:
     def test_governance_at_position_3_emits_empty_hooks(self, hook, rt):
         """H entry at position 3 emits 3 empty hook objects before the real one."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         # Governance at position 3
         hook_hash = b"\xCC" * 32
@@ -504,7 +504,7 @@ class TestDepositEdgeCases:
         rt._slot_overrides["slot_count:2"] = 2  # wrong: must be 1
         rt._slot_overrides["slot_subarray:2:0"] = 3
         rt._slot_overrides["slot_data:3"] = bytes(9)
-        rt.params[b"DEPOSIT"] = bytes(20)
+        rt.tx_params[b"DEPOSIT"] = bytes(20)
 
         result = rt.run(hook)
         assert result.rejected
@@ -520,7 +520,7 @@ class TestDepositEdgeCases:
         deposit_param = bytearray(20)
         deposit_param[0] = 1
         struct.pack_into("<Q", deposit_param, 12, 42)
-        rt.params[b"DEPOSIT"] = bytes(deposit_param)
+        rt.tx_params[b"DEPOSIT"] = bytes(deposit_param)
 
         result = rt.run(hook)
         assert result.rejected
@@ -548,7 +548,7 @@ class TestIouWithdrawal:
         rt.state_db[ui_key] = bytes([0x01]) + b"\x00" * 31
 
     def _make_iou_withdraw(self, rt, currency, issuer, xfl_amount):
-        rt.params[b"WITHDRAW"] = currency + issuer + struct.pack("<Q", xfl_amount)
+        rt.tx_params[b"WITHDRAW"] = currency + issuer + struct.pack("<Q", xfl_amount)
 
     def test_iou_withdrawal_with_trustline(self, hook, rt):
         """IOU withdrawal succeeds when trustline exists."""
@@ -642,7 +642,7 @@ class TestDepositSanityChecks:
         _setup_deposit(rt, snid=1, user_id=42, xah=True)
 
         # Pre-seed user info with all 256 bits set
-        deposit_param = rt.params[b"DEPOSIT"]
+        deposit_param = rt.tx_params[b"DEPOSIT"]
         ui_key = b"U" + deposit_param
         rt.state_db[ui_key] = b"\xFF" * 32  # all 256 slots taken
 
@@ -658,7 +658,7 @@ class TestWithdrawalSanityChecks:
         """reqxfl <= 0 → rejected (line 376)."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
         # Encode 0 as the XFL amount (8 bytes LE)
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", 0)
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", 0)
 
         result = rt.run(hook)
         assert result.rejected
@@ -673,7 +673,7 @@ class TestWithdrawalSanityChecks:
         ui_key = b"U" + rt.otxn_account[:20]
         rt.state_db[ui_key] = bytes([0x01]) + b"\x00" * 31
 
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         result = rt.run(hook)
         assert result.rejected
@@ -682,7 +682,7 @@ class TestWithdrawalSanityChecks:
     def test_insane_balance_subtraction_rejects(self, hook, rt):
         """float_sum producing insane subtraction result → rejected (line 403)."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         # Mock float_sum to return value >= from_bal (insane for subtraction)
         rt.handlers["float_sum"] = lambda a, b: float_to_xfl(999.0)
@@ -694,7 +694,7 @@ class TestWithdrawalSanityChecks:
     def test_insane_drops_computation_rejects(self, hook, rt):
         """Drops computation that's <= 0 or greater than reqxfl → rejected (line 443)."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         # Mock float_int to return 0 (insane drops)
         rt.handlers["float_int"] = lambda xfl, dec, abs_: 0
@@ -710,7 +710,7 @@ class TestWithdrawalSanityChecks:
     def test_emit_remit_failure_rollback(self, hook, rt):
         """emit() returning negative → rollback (line 474)."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         rt.handlers["emit"] = lambda *a: -1
 
@@ -725,7 +725,7 @@ class TestWithdrawalSanityChecks:
     def test_emit_sethook_failure_rollback(self, hook, rt):
         """SetHook emit() failure → rollback (line 563)."""
         seed_xah_balance(rt, rt.otxn_account, float_to_xfl(100.0))
-        rt.params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
+        rt.tx_params[b"WITHDRAW"] = b"\x00" * 40 + struct.pack("<Q", float_to_xfl(10.0))
 
         # Seed governance entry
         rt.state_db[b"H" + bytes([0])] = b"\xAA" * 32 + b"\xBB" * 32

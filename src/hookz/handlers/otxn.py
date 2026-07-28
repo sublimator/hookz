@@ -46,12 +46,17 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
 
 
 def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread_len: int) -> int:
+    """Read a parameter carried by the originating transaction.
+
+    Separate namespace from the hook's install parameters (`rt.params`), as on
+    chain: the same name may exist in both and they do not collide.
+    """
     key = rt._read_memory(kread_ptr, kread_len)
     if kread_len < 1:
         return hookapi.TOO_SMALL
     if kread_len > 32:
         return hookapi.TOO_BIG
-    val = rt.params.get(key)
+    val = rt.tx_params.get(key)
     if val is None:
         return hookapi.DOESNT_EXIST
     if len(val) > write_len:

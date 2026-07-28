@@ -225,7 +225,18 @@ class TestEtxnFeeBase:
 # ---------------------------------------------------------------------------
 
 class TestEmit:
-    """emit: record an emitted transaction and write its hash."""
+    """emit: record an emitted transaction and write its hash.
+
+    These drive the plumbing — the reserve counter, the returned hash, the
+    recorded blob — with byte strings that are not deserialisable
+    transactions. Emission validation is off for exactly that reason; the
+    rules themselves are covered in tests/test_emission.py, and a hook driving
+    a real emit meets them with validation on.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _plumbing_only(self, rt):
+        rt.validate_emissions = False
 
     def test_prerequisite_not_met(self, rt):
         """Must call etxn_reserve first."""

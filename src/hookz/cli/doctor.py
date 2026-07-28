@@ -36,6 +36,25 @@ def _short(s: str) -> str:
     return s.replace(home, "~") if home in s else s
 
 
+def _report_pin_drift(rep, xahaud_root: Path) -> None:
+    """Compare the configured checkout against the ported xahaud revision.
+
+    Drift is informational, not a failure: a checkout may sit on any branch.
+    It means the guard checker was ported against different C++ than the files
+    present, so `Guard.h:NNN` citations and behaviour may not line up.
+    """
+    from hookz.wasm.xahaud_ref import XAHAUD_COMMIT, XAHAUD_REF, check_drift
+
+    findings = check_drift(xahaud_root)
+    pin = f"{XAHAUD_REF} @ {XAHAUD_COMMIT[:8]}"
+    if not findings:
+        rep.ok("xahaud pin", f"checkout matches ported revision ({pin})")
+        return
+    rep.info("xahaud pin", f"checkout differs from ported revision ({pin})")
+    for f in findings:
+        rep.info("", f"  {f}")
+
+
 def _first_line(cmd: list[str]) -> str | None:
     """Run a command and return the first line of its output, or None."""
     try:
@@ -198,6 +217,7 @@ def _check_config(rep: _Report, cfg, cfg_error: Exception | None) -> None:
         rep.info("xahaud", "vendored xahaud-lite (set paths.xahaud for full source in hookz show)")
     elif cfg.xahaud_root.exists() and cfg.xahaud_root != Path():
         rep.ok("xahaud", f"{_short(str(cfg.xahaud_root))}  [dim]({_short(xahaud_src)})[/dim]")
+        _report_pin_drift(rep, cfg.xahaud_root)
     else:
         rep.optional("xahaud", "no checkout configured (optional — hookz show falls back to vendored headers)")
 

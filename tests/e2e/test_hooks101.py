@@ -111,7 +111,7 @@ class TestStateCounter:
     def test_invoke_by_owner_updates_counter(self, state_counter_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account  # owner
-        rt.params[b"CNT"] = struct.pack(">Q", 42)
+        rt.tx_params[b"CNT"] = struct.pack(">Q", 42)
         # Pre-seed counter at 5 — should be overwritten, not incremented
         rt.state_db[b"CNT"] = struct.pack(">Q", 5)
         result = rt.run(state_counter_hook)
@@ -146,7 +146,7 @@ class TestStateToggle:
     def test_invoke_enable(self, state_toggle_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"TGL"] = b"\x01"
+        rt.tx_params[b"TGL"] = b"\x01"
         result = rt.run(state_toggle_hook)
         assert result.accepted
         assert rt.state_db[b"TGL"] == b"\x01"
@@ -154,14 +154,14 @@ class TestStateToggle:
     def test_invoke_disable(self, state_toggle_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"TGL"] = b"\x00"
+        rt.tx_params[b"TGL"] = b"\x00"
         result = rt.run(state_toggle_hook)
         assert result.accepted
         assert rt.state_db[b"TGL"] == b"\x00"
 
     def test_invoke_non_owner_rejected(self, state_toggle_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
-        rt.params[b"TGL"] = b"\x01"
+        rt.tx_params[b"TGL"] = b"\x01"
         result = rt.run(state_toggle_hook)
         assert result.rejected
 
@@ -236,7 +236,7 @@ class TestMultiIouRemitInvoke:
     def test_set_amt_in(self, multi_iou_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"AMT_IN"] = struct.pack(">Q", 50)
+        rt.tx_params[b"AMT_IN"] = struct.pack(">Q", 50)
         result = rt.run(multi_iou_remit_hook)
         assert result.accepted
         assert b"AMT_IN set" in result.return_msg
@@ -245,7 +245,7 @@ class TestMultiIouRemitInvoke:
     def test_set_acc1(self, multi_iou_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"F_ACC1"] = ACC1
+        rt.tx_params[b"F_ACC1"] = ACC1
         result = rt.run(multi_iou_remit_hook)
         assert result.accepted
         assert b"F_ACC1 set" in result.return_msg
@@ -253,14 +253,14 @@ class TestMultiIouRemitInvoke:
     def test_acc1_cannot_be_hook(self, multi_iou_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"F_ACC1"] = rt.hook_account  # same as hook → rejected
+        rt.tx_params[b"F_ACC1"] = rt.hook_account  # same as hook → rejected
         result = rt.run(multi_iou_remit_hook)
         assert result.rejected
         assert b"cannot match" in result.return_msg
 
     def test_non_owner_rejected(self, multi_iou_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
-        rt.params[b"AMT_IN"] = struct.pack(">Q", 50)
+        rt.tx_params[b"AMT_IN"] = struct.pack(">Q", 50)
         result = rt.run(multi_iou_remit_hook)
         assert result.rejected
         assert b"Only hook owner" in result.return_msg
@@ -368,7 +368,7 @@ class TestMultiUriRemitInvoke:
     def test_set_prefix(self, multi_uri_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"PREFIX"] = b"ipfs://QmHash/"
+        rt.tx_params[b"PREFIX"] = b"ipfs://QmHash/"
         result = rt.run(multi_uri_remit_hook)
         assert result.accepted
         assert rt.state_db[b"PREFIX"] == b"ipfs://QmHash/"
@@ -376,7 +376,7 @@ class TestMultiUriRemitInvoke:
     def test_set_count(self, multi_uri_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"COUNT"] = struct.pack(">Q", 100)
+        rt.tx_params[b"COUNT"] = struct.pack(">Q", 100)
         result = rt.run(multi_uri_remit_hook)
         assert result.accepted
         assert struct.unpack(">Q", rt.state_db[b"COUNT"])[0] == 100
@@ -386,22 +386,20 @@ class TestMultiUriRemitInvoke:
     def test_set_mint_capped_at_5(self, multi_uri_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"MINT"] = struct.pack(">Q", 10)  # over 5
+        rt.tx_params[b"MINT"] = struct.pack(">Q", 10)  # over 5
         result = rt.run(multi_uri_remit_hook)
         assert result.accepted
         assert struct.unpack(">Q", rt.state_db[b"MINT"])[0] == 5
 
     def test_non_owner_rejected(self, multi_uri_remit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
-        rt.params[b"PREFIX"] = b"ipfs://test/"
+        rt.tx_params[b"PREFIX"] = b"ipfs://test/"
         result = rt.run(multi_uri_remit_hook)
         assert result.rejected
         assert b"Only hook owner" in result.return_msg
 
 
 class TestMultiUriRemitPayment:
-    """invoke_multi_uri_remit.c — payments mint sequential URITokens."""
-
     def test_missing_prefix_rejected(self, multi_uri_remit_hook, rt):
         result = rt.run(multi_uri_remit_hook)
         assert result.rejected
@@ -481,7 +479,7 @@ class TestMultiInvokeEmitConfig:
     def test_set_dst1(self, multi_invoke_emit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"DST1"] = DST1
+        rt.tx_params[b"DST1"] = DST1
         result = rt.run(multi_invoke_emit_hook)
         assert result.accepted
         assert rt.state_db[b"DST1"] == DST1
@@ -489,9 +487,9 @@ class TestMultiInvokeEmitConfig:
     def test_set_all_three(self, multi_invoke_emit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"DST1"] = DST1
-        rt.params[b"DST2"] = DST2
-        rt.params[b"DST3"] = DST3
+        rt.tx_params[b"DST1"] = DST1
+        rt.tx_params[b"DST2"] = DST2
+        rt.tx_params[b"DST3"] = DST3
         result = rt.run(multi_invoke_emit_hook)
         assert result.accepted
         assert rt.state_db[b"DST1"] == DST1
@@ -503,7 +501,7 @@ class TestMultiInvokeEmitConfig:
         rt.state_db[b"DST2"] = DST2
         rt.otxn_type = hookapi.ttINVOKE
         rt.otxn_account = rt.hook_account
-        rt.params[b"RSET"] = b"\x01"
+        rt.tx_params[b"RSET"] = b"\x01"
         result = rt.run(multi_invoke_emit_hook)
         assert result.accepted
         assert b"reset" in result.return_msg
@@ -513,7 +511,7 @@ class TestMultiInvokeEmitConfig:
 
     def test_non_owner_rejected(self, multi_invoke_emit_hook, rt):
         rt.otxn_type = hookapi.ttINVOKE
-        rt.params[b"DST1"] = DST1
+        rt.tx_params[b"DST1"] = DST1
         result = rt.run(multi_invoke_emit_hook)
         assert result.rejected
         assert b"Only hook owner" in result.return_msg

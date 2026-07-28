@@ -1,13 +1,18 @@
-"""Pipeline types — typed stage outputs for the hook build pipeline.
+"""The hook build pipeline — named toolchains, and a trace of what each did.
 
-Each stage produces a specific output type. Functions have clear contracts:
-they take the previous stage's output and return their own.
+A hook's build is not an implementation detail: which flags run decides whether
+xahaud's SetHook accepts the binary. The same source compiled two defensible
+ways can differ by 8 levels of block nesting, which is the difference between
+deploying and being rejected outright. So the toolchains are declared here
+rather than assembled inline, each carrying the provenance of its flags, and
+running one returns a BuildTrace recording size/depth/WCE after every stage.
 
-    compiled = compile_hook(source)         → CompileOutput
-    optimized = optimize_hook(compiled)     → OptimizeOutput
-    cleaned = clean_hook(optimized)         → CleanOutput
-    checked = guard_check(cleaned)          → GuardCheckOutput
-    analysis = analyze_wce(checked)         → WceOutput
+    trace = run_pipeline(source)            → BuildTrace
+    trace.wasm                              → the artifact
+    trace.stages                            → what each stage did to it
+
+Stage outputs also have individual types (CompileOutput, CleanOutput, …) for
+callers driving the stages by hand.
 """
 
 from __future__ import annotations
@@ -16,7 +21,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import compiler_ref
 from .guard import GuardResult, BlockInfo
+from .optimize import BUILDBOX, NONE, OptProfile
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +152,265 @@ class LoopInfo:
     iteration_bound: int
     wce: int  # this loop's contribution
     depth: int  # nesting depth
+
+
+# ---------------------------------------------------------------------------
+# Named toolchains
+# ---------------------------------------------------------------------------
+
+@dataclass(frozen=True)
+class CompileSpec:
+    """The clang half of a pipeline."""
+
+    opt_level: str
+    debug: bool = False
+    # xrpl-hooks-compiler links with --export-all and lets the cleaner strip
+    # the surplus. That is not cosmetic: exporting everything roots every
+    # function against DCE, so the optimizer sees a different module than it
+    # does when only hook/cbak are exported.
+    export_all: bool = False
+    extra_flags: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BuildPipeline:
+    """A complete source → deployable-wasm toolchain."""
+
+    name: str
+    summary: str
+    provenance: str
+    compile: CompileSpec
+    opt: OptProfile
+    clean: bool = True
+    # Source-to-source passes applied before clang, each named "module:function"
+    # and taking str -> str. Hooks compile `__LINE__` into the binary, so a
+    # transform that adds or removes a line changes the artifact; this is where
+    # anything that rewrites source has to declare itself and show up in the
+    # trace, rather than happening somewhere on the way in.
+    transforms: tuple[str, ...] = ()
+
+
+# What the official web compiler did when it built the hooks now live on
+# mainnet — `link_c_files()` / `get_clang_options()` / `get_lld_options()` in
+# chooks.ts. The default, because "would xahaud accept this?" is only
+# meaningful against the toolchain people actually deploy from. Provenance and
+# known divergences: hookz.wasm.compiler_ref.
+BUILDBOX_PIPELINE = BuildPipeline(
+    name="buildbox",
+    summary="reproduces the official web compiler (clang -O3 → binaryen → cleaner)",
+    provenance=f"{compiler_ref.COMPILER_SOURCE} @ "
+               f"{compiler_ref.COMPILER_COMMIT[:8]} "
+               f"({compiler_ref.COMPILER_COMMIT_DATE})",
+    compile=CompileSpec(opt_level="-O3", export_all=True),
+    opt=BUILDBOX,
+    # An annotated hook must build to the same bytes as the file it annotates,
+    # or the analysis describes a binary nobody deployed.
+    transforms=("hookz.annotations:strip",),
+)
+
+DEBUG_PIPELINE = BuildPipeline(
+    name="debug",
+    summary="unoptimised, unstripped, uncleaned — for reading, not deploying",
+    provenance="hookz",
+    compile=CompileSpec(opt_level="-O0", debug=True),
+    opt=NONE,
+    clean=False,
+)
+
+BUILD_PIPELINES: dict[str, BuildPipeline] = {
+    p.name: p for p in (BUILDBOX_PIPELINE, DEBUG_PIPELINE)
+}
+
+DEFAULT_PIPELINE = BUILDBOX_PIPELINE
+
+
+def get_pipeline(name: str) -> BuildPipeline:
+    try:
+        return BUILD_PIPELINES[name]
+    except KeyError:
+        known = ", ".join(sorted(BUILD_PIPELINES))
+        raise ValueError(
+            f"unknown build pipeline {name!r} (known: {known})") from None
+
+
+# ---------------------------------------------------------------------------
+# Running one, and recording what it did
+# ---------------------------------------------------------------------------
+
+@dataclass
+class StageMetrics:
+    """What the wasm looked like after one stage."""
+
+    name: str
+    detail: str
+    size: int
+    depth: int | None = None
+    hook_wce: int | None = None
+    cbak_wce: int | None = None
+    # Why depth/WCE are absent, when they are. An un-cleaned module often
+    # cannot be analysed yet; that is information, not an error.
+    note: str = ""
+
+
+@dataclass
+class BuildTrace:
+    """The artifact, plus the story of how each stage changed it."""
+
+    pipeline: BuildPipeline
+    source_path: Path
+    wasm: bytes
+    stages: list[StageMetrics] = field(default_factory=list)
+
+    @property
+    def final(self) -> StageMetrics:
+        return self.stages[-1]
+
+    def format_table(self) -> str:
+        """One line per stage — the view that makes a regression obvious."""
+        rows = [("stage", "detail", "bytes", "depth", "hook WCE")]
+        for s in self.stages:
+            rows.append((
+                s.name,
+                s.detail,
+                f"{s.size:,}",
+                "—" if s.depth is None else str(s.depth),
+                "—" if s.hook_wce is None else f"{s.hook_wce:,}",
+            ))
+        widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+        out = []
+        for n, row in enumerate(rows):
+            out.append("  ".join(c.ljust(w) for c, w in zip(row, widths)).rstrip())
+            if n == 0:
+                out.append("  ".join("-" * w for w in widths))
+        return "\n".join(out)
+
+
+def _resolve_transform(ref: str):
+    """Import a "module:function" source transform.
+
+    Kept deliberately dumb — no registry, no plugin discovery. A pipeline names
+    an import path, and anything importable can be one.
+    """
+    from importlib import import_module
+
+    module_name, _, func_name = ref.partition(":")
+    if not module_name or not func_name:
+        raise ValueError(
+            f"transform {ref!r} must be written 'module:function'")
+    try:
+        module = import_module(module_name)
+    except ImportError as e:
+        raise ValueError(f"transform {ref!r}: cannot import {module_name!r} ({e})") from e
+    fn = getattr(module, func_name, None)
+    if not callable(fn):
+        raise ValueError(f"transform {ref!r}: {module_name}.{func_name} is not callable")
+    return fn
+
+
+def _measure(name: str, detail: str, wasm: bytes) -> StageMetrics:
+    """Size always; depth and WCE when the module can be analysed."""
+    from .guard import analyze_wce
+
+    m = StageMetrics(name=name, detail=detail, size=len(wasm))
+    try:
+        r = analyze_wce(wasm)
+    except Exception as exc:  # a mid-pipeline module need not be analysable
+        m.note = f"not analysable: {type(exc).__name__}: {exc}"
+        return m
+    if r.errors:
+        m.note = "; ".join(r.errors)
+    m.depth = r.max_depth
+    m.hook_wce = r.hook_wce
+    m.cbak_wce = r.cbak_wce
+    return m
+
+
+def run_pipeline(
+    source: Path,
+    pipeline: BuildPipeline | str | None = None,
+    config: Any = None,
+    dev: bool = False,
+) -> BuildTrace:
+    """Build `source` through a named pipeline, recording every stage.
+
+    Args:
+        source: path to the .c hook
+        pipeline: a BuildPipeline, its name, or None for the default
+        config: hookz config (loaded from hookz.toml if None)
+        dev: unwrap `hookz:` directives first — never deployable
+
+    Returns:
+        BuildTrace holding the final wasm and per-stage metrics.
+    """
+    import tempfile
+
+    from hookz.compiler import compile_hook, compile_hook_dev
+    from .clean import clean_hook
+
+    if pipeline is None:
+        pipeline = DEFAULT_PIPELINE
+    elif isinstance(pipeline, str):
+        pipeline = get_pipeline(pipeline)
+
+    source = Path(source)
+    spec = pipeline.compile
+    compile_fn = compile_hook_dev if dev else compile_hook
+
+    # Source transforms run first. A dev build renders `hookz:` directives into
+    # real code, so stripping them here would delete the very thing it is
+    # building — the two passes disagree by design and dev wins.
+    run_transforms = bool(pipeline.transforms) and not dev
+    transform_stage: StageMetrics | None = None
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        compile_from = source
+        if run_transforms:
+            text = original = source.read_text()
+            for ref in pipeline.transforms:
+                text = _resolve_transform(ref)(text)
+            # a sibling temp file, so relative #includes still resolve
+            compile_from = Path(tmpdir) / source.name
+            compile_from.write_text(text)
+            before, after = original.count("\n"), text.count("\n")
+            transform_stage = StageMetrics(
+                name="transform",
+                detail=", ".join(pipeline.transforms),
+                size=len(text),
+                note=f"{before:,} source lines -> {after:,}"
+                     + (" (unchanged)" if before == after else
+                        f", {before - after:,} removed"),
+            )
+
+        wasm = compile_fn(
+            compile_from,
+            None,
+            config,
+            debug=spec.debug,
+            opt_level=spec.opt_level,
+            export_all=spec.export_all,
+            extra_flags=spec.extra_flags,
+        )
+
+    trace = BuildTrace(pipeline=pipeline, source_path=source, wasm=wasm)
+    if transform_stage is not None:
+        trace.stages.append(transform_stage)
+    trace.stages.append(_measure(
+        "compile",
+        f"clang {spec.opt_level}" + (" --export-all" if spec.export_all else ""),
+        wasm,
+    ))
+
+    if pipeline.opt.invocations:
+        wasm = pipeline.opt.run(wasm)
+        trace.stages.append(_measure(
+            "wasm-opt", f"{pipeline.opt.name} profile", wasm))
+
+    if pipeline.clean:
+        wasm = clean_hook(wasm)
+        trace.stages.append(_measure("clean", "hook-cleaner", wasm))
+
+    trace.wasm = wasm
+    return trace
 
 
 # ---------------------------------------------------------------------------

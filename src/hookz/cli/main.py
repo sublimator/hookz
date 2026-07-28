@@ -137,6 +137,59 @@ def _print_guard_result(result) -> None:
     print(f"  Guard function: import #{result.guard_func_idx}")
 
 
+def waiver_options(fn):
+    """--ignore-* flags for the limits xahaud enforces but an audit may not want.
+
+    Each waives one check so the run reaches the next one. Anything waived is
+    reported loudly and marks the result non-deployable.
+    """
+    fn = click.option(
+        "--ignore-depth", is_flag=True,
+        help="Waive the block nesting limit (WCE is then computed at full depth).",
+    )(fn)
+    fn = click.option(
+        "--ignore-wce-overage", is_flag=True,
+        help="Waive the 65,535 instruction budget.",
+    )(fn)
+    fn = click.option(
+        "--ignore-guard-calls", is_flag=True,
+        help="Waive the 1,024 guard-call limit.",
+    )(fn)
+    fn = click.option(
+        "--depth32", is_flag=True,
+        help="Assume fixGuardDepth32 is enabled (nesting limit 32, not 16).",
+    )(fn)
+    return fn
+
+
+def _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls):
+    from hookz.wasm.guard import IGNORE_DEPTH, IGNORE_WCE, IGNORE_GUARD_CALLS
+    selected = set()
+    if ignore_depth:
+        selected.add(IGNORE_DEPTH)
+    if ignore_wce_overage:
+        selected.add(IGNORE_WCE)
+    if ignore_guard_calls:
+        selected.add(IGNORE_GUARD_CALLS)
+    return frozenset(selected)
+
+
+def _rules(depth32: bool) -> int:
+    from hookz.wasm.guard import GUARD_RULE_FIX_20250131, GUARD_RULE_DEPTH_32
+    return GUARD_RULE_FIX_20250131 | (GUARD_RULE_DEPTH_32 if depth32 else 0)
+
+
+def _report_waived(result, log=print) -> None:
+    """A waived limit is a rejection that was asked to keep going. Say so."""
+    if not result.waived:
+        return
+    log("")
+    log("  !! NOT DEPLOYABLE — xahaud would REJECT this hook:")
+    for w in result.waived:
+        log(f"       {w}")
+    log("  !! Waived for analysis only. Do not submit this binary via SetHook.")
+
+
 WASM_MAGIC = b'\x00asm'
 WASM_VERSION = b'\x01\x00\x00\x00'
 
@@ -176,29 +229,6 @@ def _validate_wasm(wasm: bytes, label: str, log) -> None:
     except Exception as e:
         log(f"  SANITY FAIL: {label} failed to decode: {e}")
         sys.exit(1)
-
-
-def _try_optimize(wasm: bytes, log=print) -> bytes:
-    """Run wasm-opt if available, return original bytes if not."""
-    import platform
-    import shutil
-
-    if shutil.which("wasm-opt") is None:
-        system = platform.system()
-        if system == "Darwin":
-            hint = "brew install binaryen"
-        elif system == "Linux":
-            hint = "apt install binaryen  # or your package manager"
-        else:
-            hint = "install binaryen from https://github.com/WebAssembly/binaryen/releases"
-        log(f"  wasm-opt not found — skipping optimization ({hint})")
-        return wasm
-
-    from hookz.wasm.optimize import optimize_hook
-    before = len(wasm)
-    wasm = optimize_hook(wasm)
-    log(f"  Optimized: {before} → {len(wasm)} bytes")
-    return wasm
 
 
 def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result) -> None:
@@ -300,13 +330,20 @@ def _line_from_guard_id(guard_id: int) -> str:
 
 
 def _collect_loops(node, /) -> list[tuple[str, int, int]]:
-    """Collect all loop nodes with (source_location, bound, wce)."""
+    """Collect all loop nodes with (source_location, bound, wce).
+
+    Iterative for the same reason as the guard checker's loop walk: the tree
+    is as deep as the binary nests, and `hookz wce` runs on exactly the hooks
+    that nest too deeply. Recursion here turned an over-depth hook into a
+    RecursionError traceback instead of a report.
+    """
     loops = []
-    if node.is_loop:
-        loc = _line_from_guard_id(node.guard_id)
-        loops.append((loc, node.iteration_bound, node.wce))
-    for child in node.children:
-        loops.extend(_collect_loops(child))
+    stack = [node]
+    while stack:
+        n = stack.pop()
+        if n.is_loop:
+            loops.append((_line_from_guard_id(n.guard_id), n.iteration_bound, n.wce))
+        stack.extend(n.children)
     return loops
 
 
@@ -599,7 +636,13 @@ def debug_compile(source, output):
 @click.argument("source", default="-")
 @click.option("-o", "--output", default=None, help="Output file path (default: stdout for stdin, SOURCE.wasm for files).")
 @click.option("--coverage", is_flag=True, help="Instrument with __on_source_line coverage callbacks.")
-def build(source, output, coverage):
+@click.option("--pipeline", "pipeline_name", default=None,
+              help="Build toolchain to use (default: buildbox). See `hookz pipelines`.")
+@click.option("--explain", is_flag=True,
+              help="Print size/depth/WCE after every stage.")
+@waiver_options
+def build(source, output, coverage, pipeline_name, explain, ignore_depth,
+          ignore_wce_overage, ignore_guard_calls, depth32):
     """Compile, clean, and guard-check a hook.
 
     SOURCE can be a file path or '-' for stdin. Output goes to stdout
@@ -611,6 +654,9 @@ def build(source, output, coverage):
 
     if os.environ.get("HOOKZ_NO_COVERAGE"):
         coverage = False
+
+    ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
+    rules = _rules(depth32)
 
     if source == "-":
         stdin_data = sys.stdin.buffer.read()
@@ -637,44 +683,102 @@ def build(source, output, coverage):
     config = load_config(source_file=source)
 
     if coverage:
-        _build_coverage(source, output, config, stdout_mode)
+        _build_coverage(source, output, config, stdout_mode, ignore, rules)
     else:
-        _build_normal(source, output, config, stdout_mode)
+        _build_normal(source, output, config, stdout_mode, ignore, rules,
+                      pipeline_name=pipeline_name, explain=explain)
 
 
-def _build_normal(source: Path, output, config, stdout_mode: bool = False) -> None:
+@cli.command()
+def pipelines():
+    """List the build toolchains `hookz build --pipeline` accepts.
+
+    Which flags run decides whether xahaud accepts the binary, so each
+    toolchain records where its flags came from.
+    """
+    from rich.console import Console
+    from hookz.wasm.pipeline import BUILD_PIPELINES, DEFAULT_PIPELINE
+
+    console = Console()
+    for name, p in BUILD_PIPELINES.items():
+        mark = "  (default)" if p is DEFAULT_PIPELINE else ""
+        console.print(f"[bold]{name}[/bold]{mark}")
+        console.print(f"  {p.summary}")
+        console.print(f"  [dim]source:[/dim] {p.provenance}")
+        console.print(
+            f"  [dim]clang[/dim] {p.compile.opt_level}"
+            + (" --export-all" if p.compile.export_all else "")
+            + f"  [dim]→ wasm-opt[/dim] {p.opt.name}"
+            + ("  [dim]→ cleaner[/dim]" if p.clean else "")
+        )
+        console.print()
+
+
+def _build_fail(log, output, stdout_mode: bool, message: str) -> None:
+    """Report a build-stage failure and exit without writing an artifact.
+
+    Nothing is written on failure, so a pre-existing file at `output` is a
+    leftover from an earlier build — same path, stale contents, and easy to
+    deploy by mistake. Say so rather than letting it pass for current.
+    """
+    log(f"  {message}")
+    # is_file() not exists(): `-o /dev/null` is a device, not a stale artifact.
+    if not stdout_mode and output is not None and Path(output).is_file():
+        log(f"  NOTE: {output} still holds the previous build — it is now stale.")
+    sys.exit(1)
+
+
+def _build_normal(source: Path, output, config, stdout_mode: bool = False,
+                  ignore: frozenset[str] = frozenset(),
+                  rules_version: int | None = None,
+                  pipeline_name: str | None = None,
+                  explain: bool = False) -> None:
     """Standard production build pipeline."""
-    from hookz.compiler import compile_hook
-    from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards, GuardError
+    from hookz.wasm.clean import CleanError
+    from hookz.wasm.guard import validate_guards, GuardError, GUARD_RULE_FIX_20250131
+    from hookz.wasm.optimize import WasmOptError
+    from hookz.wasm.pipeline import run_pipeline, get_pipeline
+
+    if rules_version is None:
+        rules_version = GUARD_RULE_FIX_20250131
 
     # Status messages go to stderr so stdout is clean for binary output
     log = print if not stdout_mode else lambda *a, **k: print(*a, file=sys.stderr, **k)
 
-    # 1. Compile
-    log(f"Compiling {source.name}...")
-    wasm = compile_hook(source, output if not stdout_mode else None, config, debug=False, optimize=True)
-    log(f"  Compiled: {len(wasm)} bytes")
-
-    # 2. Optimize (if wasm-opt available)
-    wasm = _try_optimize(wasm, log)
-
-    # 3. Clean
     try:
-        cleaned = clean_hook(wasm)
-        log(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
+        pipeline = get_pipeline(pipeline_name) if pipeline_name else None
+    except ValueError as e:
+        _build_fail(log, output, stdout_mode, str(e))
+
+    # Build through the named toolchain. Nothing is written to `output` until
+    # every stage has passed — a later stage can still fail, and an unclean
+    # binary sitting at the output path looks deployable but is not (xahaud
+    # rejects custom sections).
+    try:
+        trace = run_pipeline(source, pipeline, config)
+    except WasmOptError as e:
+        # Not skippable. Dropping the optimizer changes block nesting, so a
+        # build without it reports a depth this toolchain would never deploy.
+        _build_fail(log, output, stdout_mode, f"Optimize FAILED: {e}")
     except CleanError as e:
-        log(f"  Clean FAILED: {e}")
-        sys.exit(1)
+        _build_fail(log, output, stdout_mode, f"Clean FAILED: {e}")
+
+    cleaned = trace.wasm
+    log(f"Built {source.name} via '{trace.pipeline.name}' pipeline "
+        f"({trace.pipeline.summary})")
+    if explain:
+        log("\n".join("  " + l for l in trace.format_table().splitlines()))
+    else:
+        log(f"  {trace.final.size:,} bytes, block depth {trace.final.depth}")
 
     # 4. Guard check
     try:
-        result = validate_guards(cleaned)
+        result = validate_guards(cleaned, rules_version=rules_version, ignore=ignore)
         hook_pct = result.hook_wce / 65535 * 100
-        log(f"  Guard check PASSED (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
+        verdict = "completed WITH WAIVERS" if result.waived else "PASSED"
+        log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
     except GuardError as e:
-        log(f"  Guard check FAILED: {e}")
-        sys.exit(1)
+        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -685,10 +789,15 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False) -> No
     else:
         output.write_bytes(cleaned)
         log(f"  → {output} ({len(cleaned)} bytes)")
-    sys.exit(0)
+    _report_waived(result, log)
+    # Non-zero on waivers: this binary is for analysis, and CI that treats
+    # `hookz build` as a deployability gate must not go green on it.
+    sys.exit(1 if result.waived else 0)
 
 
-def _build_coverage(source: Path, output, config, stdout_mode: bool = False) -> None:
+def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
+                    ignore: frozenset[str] = frozenset(),
+                    rules_version: int | None = None) -> None:
     """Coverage-instrumented build pipeline.
 
     Pipeline: two-stage compile (DWARF) → instrument → clean → guard-check
@@ -696,8 +805,11 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False) -> 
     from hookz.compiler import compile_hook_two_stage
     from hookz.coverage.rewriter import instrument_wasm
     from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards, GuardError
-    from hookz.wasm.whitelist import get_whitelist
+    from hookz.wasm.guard import validate_guards, GuardError, GUARD_RULE_FIX_20250131
+    from hookz.wasm.whitelist import get_import_signatures
+
+    if rules_version is None:
+        rules_version = GUARD_RULE_FIX_20250131
 
     log = print if not stdout_mode else lambda *a, **k: print(*a, file=sys.stderr, **k)
 
@@ -720,18 +832,20 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False) -> 
         cleaned = clean_hook(wasm, coverage_call_idx=0)
         log(f"  Cleaned: {len(wasm)} → {len(cleaned)} bytes")
     except CleanError as e:
-        log(f"  Clean FAILED: {e}")
-        sys.exit(1)
+        _build_fail(log, output, stdout_mode, f"Clean FAILED: {e}")
 
     # 4. Guard check with __on_source_line in the whitelist
     try:
-        coverage_whitelist = get_whitelist() | {"__on_source_line"}
-        result = validate_guards(cleaned, import_whitelist=coverage_whitelist)
+        coverage_whitelist = get_import_signatures(coverage=True)
+        result = validate_guards(
+            cleaned, import_whitelist=coverage_whitelist,
+            rules_version=rules_version, ignore=ignore,
+        )
         hook_pct = result.hook_wce / 65535 * 100
-        log(f"  Guard check PASSED (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
+        verdict = "completed WITH WAIVERS" if result.waived else "PASSED"
+        log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
     except GuardError as e:
-        log(f"  Guard check FAILED: {e}")
-        sys.exit(1)
+        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -742,7 +856,8 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False) -> 
     else:
         output.write_bytes(cleaned)
         log(f"  → {output} ({len(cleaned)} bytes, coverage-instrumented)")
-    sys.exit(0)
+    _report_waived(result, log)
+    sys.exit(1 if result.waived else 0)
 
 
 @cli.command()
@@ -772,24 +887,36 @@ def clean(input_wasm, output):
 
 @cli.command("guard-check")
 @click.argument("hook_wasm", type=click.Path(exists=True))
-def guard_check(hook_wasm):
+@waiver_options
+def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
+                ignore_guard_calls, depth32):
     """Validate guard calls in a hook WASM binary."""
     from hookz.wasm.guard import validate_guards, GuardError
 
     source = Path(hook_wasm)
     wasm = source.read_bytes()
+    ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
 
     try:
-        result = validate_guards(wasm)
+        result = validate_guards(wasm, rules_version=_rules(depth32), ignore=ignore)
     except GuardError as e:
         print(f"Guard check FAILED: {e}")
         if e.codesec >= 0:
             print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
+        # Only suggest a waiver for a limit that actually has one. Structural
+        # failures cannot be waived, and offering a flag there sends the user
+        # looking for an option that will not help.
+        if e.key and e.key not in ignore:
+            print(f"  (--ignore-{e.key} continues past this to reveal the next problem)")
         sys.exit(1)
 
-    print(f"Guard check PASSED: {source.name}")
+    if result.waived:
+        print(f"Guard check completed WITH WAIVERS: {source.name}")
+    else:
+        print(f"Guard check PASSED: {source.name}")
     _print_guard_result(result)
-    sys.exit(0)
+    _report_waived(result)
+    sys.exit(1 if result.waived else 0)
 
 
 @cli.command()
@@ -860,6 +987,19 @@ def wce(source, show_source):
     console.print()
     console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Summary")
     console.print()
+
+    if result.nesting_exceeded:
+        # Not a footnote: xahaud bails at the nesting limit before it ever
+        # weighs the budget, so every WCE figure below is a floor.
+        console.print(
+            "  [bold red]REJECTED by xahaud — block nesting exceeds "
+            "16 levels.[/bold red]"
+        )
+        console.print(
+            "  [red]Flatten your loops and conditions. WCE figures below are "
+            "understated (over-depth blocks count as 0).[/red]"
+        )
+        console.print()
 
     for label, opt_wce, opt_tree, dbg_wce, dbg_tree in [
         ("hook()", result.hook_wce, result.hook_tree,

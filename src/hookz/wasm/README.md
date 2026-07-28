@@ -30,7 +30,7 @@ This package reimplements both in Python, using our own internal types.
 | Guard checker (also) | `xahaud src/xrpld/app/tx/detail/SetHook.cpp` (calls `validateGuards`) | C++ | 2156 |
 | Hook API whitelist | `xahaud include/xrpl/hook/Enum.h` (`getImportWhitelist`) | C++ | 466 |
 | Hook API signatures | `xahaud include/xrpl/hook/hook_api.macro` | C macro | 374 |
-| Genesis hook makefile | `xahaud hook/genesis/makefile` | make | — |
+| Production build flags | [`Xahau/xrpl-hooks-compiler`](https://github.com/Xahau/xrpl-hooks-compiler) `compiler-api/src/chooks.ts` | TypeScript | 403 |
 
 ## How the guard checker works
 
@@ -163,14 +163,17 @@ The result is a binary where every loop has a clean guard pattern at the top, wh
 
 ## Production pipeline
 
-From `xahaud hook/genesis/makefile`:
+From `xrpl-hooks-compiler`, `compiler-api/src/chooks.ts` — the web compiler
+people actually deploy from, and so the definition of what xahaud will accept:
 
 ```bash
-# 1. Compile with size optimization
-wasmcc hook.c -o hook.wasm -Oz -Wl,--allow-undefined -I../
+# 1. Compile and link
+clang -O3 --sysroot=... -xc -Werror=implicit-function-declaration \
+      --no-standard-libraries -nostartfiles \
+      -Wl,--allow-undefined,--no-entry,--export-all hook.c -o hook.wasm
 
-# 2. Optimize aggressively (optional, for size)
-wasm-opt hook.wasm -o hook.wasm --flatten --dce --vacuum -Oz ...
+# 2. Optimize — see hookz.wasm.optimize.BUILDBOX for the full list
+wasm-opt --flatten ... --rereloop ... -O3 -o hook.wasm unopt.wasm
 
 # 3. Clean: strip sections, rewrite guards, fix exports
 hook-cleaner hook.wasm
@@ -179,11 +182,27 @@ hook-cleaner hook.wasm
 guard_checker hook.wasm
 ```
 
+**Step 2 is not optional.** `--rereloop` reruns binaryen's Relooper over the
+control flow and is the only pass that moves block nesting. On a large,
+deeply-nested hook that is worth around 8 levels — enough to decide whether
+`SetHook` accepts the binary at all. A build that skips it reports a depth the
+deployed toolchain never produces, so `hookz build` fails rather than continues
+when `wasm-opt` is missing.
+
+See `hookz.wasm.compiler_ref` for the commit these flags came from, the window
+they applied in, and the ablation behind that claim.
+
 Our hookz equivalent:
 
 ```bash
 # Production build (compile + optimize + clean + guard-check)
 hookz build hook.c
+
+# What each stage did to size, block depth and WCE
+hookz build hook.c --explain
+
+# Available toolchains and where their flags came from
+hookz pipelines
 
 # Individual steps
 hookz clean hook.wasm              # strip sections, rewrite guards

@@ -112,7 +112,7 @@ class TestMemberVote:
     def test_member_submits_vote(self, hook, rt):
         """A member can submit a vote and get 'S' result."""
         seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1)])
-        rt.set_param(0, make_opinion())
+        rt.set_tx_param(0, make_opinion())
 
         result = rt.run(hook)
         assert result.accepted
@@ -131,7 +131,7 @@ class TestMemberVote:
     def test_duplicate_vote_returns_V(self, hook, rt):
         """Same member voting on same post twice gets 'V'."""
         seed_members(rt, [(MEMBER_0, 0), (MEMBER_1, 1), (MEMBER_2, 2)])
-        rt.set_param(0, make_opinion())
+        rt.set_tx_param(0, make_opinion())
 
         r1 = rt.run(hook)
         assert r1.accepted
@@ -141,7 +141,7 @@ class TestMemberVote:
         o_entries_after_first = {k for k in rt.state_db if k[:1] == b"O"}
 
         # Same member, same opinion — should get V
-        rt.set_param(0, make_opinion())
+        rt.set_tx_param(0, make_opinion())
         r2 = rt.run(hook)
         assert r2.accepted
         assert b"V" in r2.return_msg
@@ -161,14 +161,14 @@ class TestMemberVote:
 
         # Member 0 votes → S
         rt.otxn_account = MEMBER_0
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         r1 = rt.run(hook)
         assert r1.accepted
         assert b"S" in r1.return_msg
 
         # Member 1 votes → A (threshold=2 for 3 members)
         rt.otxn_account = MEMBER_1
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         r2 = rt.run(hook)
         assert r2.accepted
         assert b"A" in r2.return_msg
@@ -197,11 +197,11 @@ class TestMemberVote:
 
         # Two votes to action it
         rt.otxn_account = MEMBER_0
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         rt.run(hook)
 
         rt.otxn_account = MEMBER_1
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         rt.run(hook)
 
         # Capture state before third vote
@@ -209,7 +209,7 @@ class TestMemberVote:
 
         # Third member → D
         rt.otxn_account = MEMBER_2
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         r3 = rt.run(hook)
         assert r3.accepted
         assert b"D" in r3.return_msg
@@ -225,8 +225,8 @@ class TestMemberVote:
 
         op_a = make_opinion(post_id=1001)
         op_b = make_opinion(post_id=2002)
-        rt.set_param(0, op_a)
-        rt.set_param(1, op_b)
+        rt.set_tx_param(0, op_a)
+        rt.set_tx_param(1, op_b)
 
         result = rt.run(hook)
         assert result.accepted
@@ -419,11 +419,11 @@ class TestMemberGovernance:
         opinion = self._make_member_opinion(seat=3, account=new_member)
 
         rt.otxn_account = MEMBER_0
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         rt.run(hook)
 
         rt.otxn_account = MEMBER_1
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         second = rt.run(hook)
         assert second.accepted
         assert b"A" in second.return_msg
@@ -435,7 +435,7 @@ class TestMemberGovernance:
 
         snapshot = dict(rt.state_db)
         rt.otxn_account = MEMBER_2
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         third = rt.run(hook)
         assert third.accepted
         assert b"D" in third.return_msg
@@ -460,10 +460,10 @@ class TestHookGovernance:
 
         # Drive through threshold
         rt.otxn_account = MEMBER_0
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         rt.run(hook)
         rt.otxn_account = MEMBER_1
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         result = rt.run(hook)
         assert result.accepted
         assert b"A" in result.return_msg
@@ -491,7 +491,7 @@ class TestHookGovernance:
         op[2:34] = b"\xAA" * 32
         op[34:66] = b"\xBB" * 32
 
-        rt.set_param(0, bytes(op))
+        rt.set_tx_param(0, bytes(op))
         result = rt.run(hook)
         assert result.accepted
 
@@ -514,11 +514,11 @@ class TestHookGovernance:
         opinion = bytes(opinion)
 
         rt.otxn_account = MEMBER_0
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         rt.run(hook)
 
         rt.otxn_account = MEMBER_1
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         second = rt.run(hook)
         assert second.accepted
         assert b"A" in second.return_msg
@@ -530,7 +530,7 @@ class TestHookGovernance:
 
         snapshot = dict(rt.state_db)
         rt.otxn_account = MEMBER_2
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         third = rt.run(hook)
         assert third.accepted
         assert b"D" in third.return_msg
@@ -839,7 +839,7 @@ class TestFinalizedOpinions:
         seed_balance(rt, user_id=99, amount_xfl=float_to_xfl(500.0))
 
         rt.otxn_account = MEMBER_2
-        rt.set_param(0, opinion)
+        rt.set_tx_param(0, opinion)
         r2 = rt.run(hook)
         assert r2.accepted
         assert b"D" in r2.return_msg

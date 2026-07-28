@@ -80,7 +80,7 @@ class TestOtxnParam:
     def test_basic_lookup(self, rt):
         key = b"amount"
         val = b"\x00\x01\x02\x03"
-        rt.params[key] = val
+        rt.tx_params[key] = val
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 128, 200, len(key))
         assert result == len(val)
@@ -93,28 +93,28 @@ class TestOtxnParam:
 
     def test_too_small_when_value_exceeds_write_len(self, rt):
         key = b"k"
-        rt.params[key] = b"longvalue_here"
+        rt.tx_params[key] = b"longvalue_here"
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 4, 200, 1)
         assert result == hookapi.TOO_SMALL
 
     def test_empty_value(self, rt):
         key = b"flag"
-        rt.params[key] = b""
+        rt.tx_params[key] = b""
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 128, 200, len(key))
         assert result == 0
 
     def test_binary_key(self, rt):
         key = b"\x00\x01\x02"
-        rt.params[key] = b"\xFF"
+        rt.tx_params[key] = b"\xFF"
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 128, 200, 3)
         assert result == 1
 
     def test_multiple_params(self, rt):
-        rt.params[b"a"] = b"val_a"
-        rt.params[b"b"] = b"val_b"
+        rt.tx_params[b"a"] = b"val_a"
+        rt.tx_params[b"b"] = b"val_b"
         rt._write_memory(200, b"a")
         assert otxn_param(rt, 0, 128, 200, 1) == 5
         assert rt._read_memory(0, 5) == b"val_a"

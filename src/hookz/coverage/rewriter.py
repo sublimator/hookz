@@ -283,14 +283,22 @@ def instrument_wasm(
     Returns:
         (instrumented_wasm_bytes, source_locations)
     """
+    # Only a temp we created here is ours to remove; a caller-supplied
+    # wasm_path is the caller's file. Without this, every `hookz build
+    # --coverage` leaves a tmp*.wasm behind.
+    our_temp = None
     if wasm_path is None:
         tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
         tmp.write(wasm_bytes)
         tmp.close()
-        wasm_path = tmp.name
+        wasm_path = our_temp = tmp.name
 
     # Parse DWARF
-    locs = parse_dwarf_locations(wasm_path)
+    try:
+        locs = parse_dwarf_locations(wasm_path)
+    finally:
+        if our_temp is not None:
+            Path(our_temp).unlink(missing_ok=True)
     if not locs:
         raise RuntimeError("No DWARF source locations found. Compile with -g.")
 

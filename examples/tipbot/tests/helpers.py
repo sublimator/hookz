@@ -118,10 +118,10 @@ def action_opinion(rt: HookRuntime, hook, opinion: bytes,
     Returns the result of the second (actioning) run.
     """
     rt.otxn_account = voters[0]
-    rt.set_param(0, opinion)
+    rt.set_tx_param(0, opinion)
     rt.run(hook)
     rt.otxn_account = voters[1]
-    rt.set_param(0, opinion)
+    rt.set_tx_param(0, opinion)
     return rt.run(hook)
 
 

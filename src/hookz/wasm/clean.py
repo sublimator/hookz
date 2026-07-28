@@ -1,7 +1,15 @@
 """Hook cleaner — strip sections, rewrite guards, rebuild exports.
 
-Port of hook-cleaner-c/cleaner.c. Transforms a compiler-emitted WASM
-binary into a production-ready Xahau hook by:
+A Python port of hook-cleaner-c. Output has to satisfy the guard checker in
+`guard.py`, so both track the same pinned xahaud revision — see `xahaud_ref`.
+
+Care is required around identity: the cleaner rewrites indices, and an export
+whose index stops pointing at its own body produces a binary that validates
+clean and misbehaves on chain. hook and cbak share the int64_t(uint32_t)
+signature, so guard checking cannot catch a swap between them.
+
+Transforms a compiler-emitted WASM binary into a production-ready Xahau hook
+by:
 
 1. Stripping custom sections, table, start, element sections
 2. Keeping only hook() and cbak() function bodies
@@ -214,17 +222,21 @@ def clean_module(mod: Module, visitor: Visitor | None = None,
     # --- Build exports ---
     new_import_count = len(new_imports)
 
-    # Determine order: if cbak was before hook in original, preserve that
-    cbak_first = cbak_exp is not None and cbak_exp.index < hook_exp.index
-
-    new_exports = []
-    if cbak_first and cbak_exp is not None:
-        new_exports.append(Export(name="cbak", kind=ExportKind.FUNC, index=new_import_count))
-        new_exports.append(Export(name="hook", kind=ExportKind.FUNC, index=new_import_count + 1))
-    else:
-        new_exports.append(Export(name="hook", kind=ExportKind.FUNC, index=new_import_count))
-        if cbak_exp is not None:
-            new_exports.append(Export(name="cbak", kind=ExportKind.FUNC, index=new_import_count + 1))
+    # Indices are fixed by the order the bodies were appended above:
+    # new_code[0] is always hook, new_code[1] (if present) is always cbak.
+    # Only the listing order below follows the original module — an export's
+    # index must keep pointing at its own body. Deriving the index from the
+    # listing order instead swapped the two entry points for any hook whose
+    # C source defines cbak before hook, producing a binary that passes guard
+    # checking (identical signatures) while running each on the other's events.
+    hook_export = Export(name="hook", kind=ExportKind.FUNC, index=new_import_count)
+    new_exports = [hook_export]
+    if cbak_exp is not None:
+        cbak_export = Export(
+            name="cbak", kind=ExportKind.FUNC, index=new_import_count + 1
+        )
+        cbak_first = cbak_exp.index < hook_exp.index
+        new_exports = [cbak_export, hook_export] if cbak_first else [hook_export, cbak_export]
 
     # --- Custom sections ---
     if visitor is None:
