@@ -47,13 +47,27 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG HOOKZ_REPO=https://github.com/sublimator/hookz.git
-ARG HOOKZ_BRANCH=main
+# packaging-fix: origin/main + hatch wheel fix only (no local main audit work).
+# Switch back to main once that fix is merged.
+ARG HOOKZ_BRANCH=packaging-fix
 ARG SCRIPTS_REPO=https://github.com/sublimator/xahaud-scripts.git
 ARG SCRIPTS_BRANCH=main
 ARG XAHAUD_BRANCH=external-env-tests
 ARG WASI_SDK_VERSION=32
 
-# uv + hookz + xahaud-scripts
+# Tools on PATH for external-env-tests (see docs/external-env-tests.md).
+#
+# hookz is NOT the Python unit-test harness used day-to-day for audit suites.
+# Here it is only the CLI xahaud's CMake invokes when your *_test.cpp references
+# a hook source ("file:path/to/hook.c"):
+#   - hookz build-test-hooks  → embeds WASM into *_test_hooks.h for Env tests
+#   - hookz build --coverage  → optional line instrumentation for real xahaud runs
+#   - ships xahaud_lite headers so compile works without a full tree on the host
+# Install from git@main must produce a wheel (hatch packages= already includes
+# xahaud_lite; do not force-include that tree twice or hatchling fails on
+# duplicate paths like hookz/xahaud_lite/hook/error.h).
+#
+# xahaud-scripts provides x-run-tests (conan + cmake + ccache + run the suite).
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 RUN uv tool install "hookz @ git+${HOOKZ_REPO}@${HOOKZ_BRANCH}"

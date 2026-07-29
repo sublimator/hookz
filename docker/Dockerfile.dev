@@ -16,12 +16,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG HOOKZ_REPO=https://github.com/sublimator/hookz.git
-ARG HOOKZ_BRANCH=main
+# See Dockerfile — packaging-fix until hatch fix merges to main.
+ARG HOOKZ_BRANCH=packaging-fix
 ARG SCRIPTS_REPO=https://github.com/sublimator/xahaud-scripts.git
 ARG SCRIPTS_BRANCH=main
 ARG WASI_SDK_VERSION=32
 
-# uv + hookz + xahaud-scripts
+# Same as Dockerfile: hookz is the CLI for external-env-tests CMake
+# (build-test-hooks / optional coverage), not the Python audit harness.
+# xahaud-scripts = x-run-tests. See docs/external-env-tests.md.
+# Wheel install fails if hatch force-includes xahaud_lite on top of packages=.
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
 ENV PATH="/root/.local/bin:${PATH}"
 RUN uv tool install "hookz @ git+${HOOKZ_REPO}@${HOOKZ_BRANCH}"
