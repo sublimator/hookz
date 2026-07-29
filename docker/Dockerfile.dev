@@ -16,8 +16,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG HOOKZ_REPO=https://github.com/sublimator/hookz.git
-# See Dockerfile — packaging-fix until hatch fix merges to main.
-ARG HOOKZ_BRANCH=packaging-fix
+# Keep in sync with Dockerfile — install from main (hatch wheel fix is there).
+ARG HOOKZ_BRANCH=main
 ARG SCRIPTS_REPO=https://github.com/sublimator/xahaud-scripts.git
 ARG SCRIPTS_BRANCH=main
 ARG WASI_SDK_VERSION=32

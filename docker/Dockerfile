@@ -47,9 +47,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 ARG HOOKZ_REPO=https://github.com/sublimator/hookz.git
-# packaging-fix: origin/main + hatch wheel fix only (no local main audit work).
-# Switch back to main once that fix is merged.
-ARG HOOKZ_BRANCH=packaging-fix
+# Install hookz from main (includes hatch wheel fix: no force-include of
+# xahaud_lite on top of packages=["src/hookz"]).
+ARG HOOKZ_BRANCH=main
 ARG SCRIPTS_REPO=https://github.com/sublimator/xahaud-scripts.git
 ARG SCRIPTS_BRANCH=main
 ARG XAHAUD_BRANCH=external-env-tests
