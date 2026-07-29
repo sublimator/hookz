@@ -35,7 +35,10 @@ jobs:
 
       - name: Clone xahaud hook headers (sparse)
         run: |
-          git clone --depth 1 -b dev https://github.com/Xahau/xahaud.git /tmp/xahaud
+          # depth 3 (not 1): tests/test_xahaud_ref.py resolves HEAD~1 / HEAD~2
+          # as deliberate mismatches against the pin. A depth-1 clone has no
+          # parents, so those revs "do not name a commit" and the suite fails.
+          git clone --depth 3 -b dev https://github.com/Xahau/xahaud.git /tmp/xahaud
           echo "HOOKZ_XAHAUD=/tmp/xahaud" >> $GITHUB_ENV
 
       - name: Install dependencies
