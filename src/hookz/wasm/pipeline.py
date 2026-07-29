@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import Any
 
 from . import compiler_ref
-from .guard import GuardResult, BlockInfo
+from .guard import GuardResult
 from .optimize import BUILDBOX, NONE, OptProfile
 
 
@@ -190,14 +190,13 @@ class BuildPipeline:
     transforms: tuple[str, ...] = ()
 
 
-# What the official web compiler did when it built the hooks now live on
-# mainnet — `link_c_files()` / `get_clang_options()` / `get_lld_options()` in
-# chooks.ts. The default, because "would xahaud accept this?" is only
-# meaningful against the toolchain people actually deploy from. Provenance and
-# known divergences: hookz.wasm.compiler_ref.
-BUILDBOX_PIPELINE = BuildPipeline(
-    name="buildbox",
-    summary="reproduces the official web compiler (clang -O3 → binaryen → cleaner)",
+# A local structural approximation using the historical web compiler's flags.
+# It does not call the buildbox and is not byte-identical to it; the local
+# clang, binaryen and cleaner differ. Provenance and known divergences:
+# hookz.wasm.compiler_ref.
+LOCAL_STRUCTURAL_PIPELINE = BuildPipeline(
+    name="local-structural",
+    summary="local structural approximation (clang -O3 → binaryen → cleaner)",
     provenance=f"{compiler_ref.COMPILER_SOURCE} @ "
                f"{compiler_ref.COMPILER_COMMIT[:8]} "
                f"({compiler_ref.COMPILER_COMMIT_DATE})",
@@ -243,17 +242,27 @@ DEBUG_PIPELINE = BuildPipeline(
 )
 
 BUILD_PIPELINES: dict[str, BuildPipeline] = {
-    p.name: p for p in (BUILDBOX_PIPELINE, ANALYSIS_PIPELINE, DEBUG_PIPELINE)
+    p.name: p
+    for p in (LOCAL_STRUCTURAL_PIPELINE, ANALYSIS_PIPELINE, DEBUG_PIPELINE)
 }
 
-DEFAULT_PIPELINE = BUILDBOX_PIPELINE
+# Compatibility for callers that imported the old constant. The object and
+# its public name are local-structural; actual buildbox compilation is selected
+# by the CLI's --buildbox flag.
+BUILDBOX_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
+PIPELINE_ALIASES = {"buildbox": "local-structural"}
+
+DEFAULT_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
 
 
 def get_pipeline(name: str) -> BuildPipeline:
+    name = PIPELINE_ALIASES.get(name, name)
     try:
         return BUILD_PIPELINES[name]
     except KeyError:
-        known = ", ".join(sorted(BUILD_PIPELINES))
+        known = ", ".join(
+            sorted(set(BUILD_PIPELINES) | set(PIPELINE_ALIASES))
+        )
         raise ValueError(
             f"unknown build pipeline {name!r} (known: {known})") from None
 

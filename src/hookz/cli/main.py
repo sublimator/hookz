@@ -266,8 +266,6 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
         console.print("[yellow]Could not read source file[/yellow]")
         return
 
-    all_lines = set(opt_counts.keys()) | set(debug_counts.keys())
-
     out = []
     out.append(" [bold]debug │ prod │      │[/bold]")
     out.append(f" [dim]──────┼──────┼──────┼{'─' * 60}[/dim]")
@@ -637,12 +635,19 @@ def debug_compile(source, output):
 @click.option("-o", "--output", default=None, help="Output file path (default: stdout for stdin, SOURCE.wasm for files).")
 @click.option("--coverage", is_flag=True, help="Instrument with __on_source_line coverage callbacks.")
 @click.option("--pipeline", "pipeline_name", default=None,
-              help="Build toolchain to use (default: buildbox). See `hookz pipelines`.")
+              help="Local build toolchain to use (default: local-structural). See `hookz pipelines`.")
+@click.option("--buildbox", "--build-box", "use_buildbox", is_flag=True,
+              help="Compile through hook-buildbox.xrpl.org; never falls back locally.")
+@click.option("--buildbox-url", default=None, hidden=True,
+              help="Override the buildbox endpoint (or HOOKZ_BUILDBOX_URL).")
+@click.option("--buildbox-options", default="-O3", show_default=True,
+              help="Compiler options sent to the buildbox.")
 @click.option("--explain", is_flag=True,
               help="Print size/depth/WCE after every stage.")
 @waiver_options
-def build(source, output, coverage, pipeline_name, explain, ignore_depth,
-          ignore_wce_overage, ignore_guard_calls, depth32):
+def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
+          buildbox_options, explain, ignore_depth, ignore_wce_overage,
+          ignore_guard_calls, depth32):
     """Compile, clean, and guard-check a hook.
 
     SOURCE can be a file path or '-' for stdin. Output goes to stdout
@@ -654,6 +659,19 @@ def build(source, output, coverage, pipeline_name, explain, ignore_depth,
 
     if os.environ.get("HOOKZ_NO_COVERAGE"):
         coverage = False
+    if os.environ.get("HOOKZ_BUILDBOX") == "1":
+        use_buildbox = True
+
+    if use_buildbox and coverage:
+        raise click.UsageError(
+            "--buildbox produces canonical deployable WASM and cannot be "
+            "combined with --coverage")
+    if use_buildbox and pipeline_name:
+        raise click.UsageError(
+            "--buildbox selects the remote compiler and cannot be combined "
+            "with the local --pipeline option")
+    if buildbox_url and not use_buildbox:
+        raise click.UsageError("--buildbox-url requires --buildbox")
 
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
     rules = _rules(depth32)
@@ -664,9 +682,11 @@ def build(source, output, coverage, pipeline_name, explain, ignore_depth,
         tmp.write(stdin_data)
         tmp.close()
         source = Path(tmp.name)
+        request_filename = "stdin.c"
         stdout_mode = output is None
     else:
         source = Path(source)
+        request_filename = source.name
         if not source.exists():
             print(f"Error: source file '{source}' not found", file=sys.stderr)
             sys.exit(1)
@@ -682,7 +702,13 @@ def build(source, output, coverage, pipeline_name, explain, ignore_depth,
 
     config = load_config(source_file=source)
 
-    if coverage:
+    if use_buildbox:
+        _build_buildbox(
+            source, output, stdout_mode, ignore, rules,
+            endpoint=buildbox_url, options=buildbox_options,
+            request_filename=request_filename,
+        )
+    elif coverage:
         _build_coverage(source, output, config, stdout_mode, ignore, rules)
     else:
         _build_normal(source, output, config, stdout_mode, ignore, rules,
@@ -697,7 +723,11 @@ def pipelines():
     toolchain records where its flags came from.
     """
     from rich.console import Console
-    from hookz.wasm.pipeline import BUILD_PIPELINES, DEFAULT_PIPELINE
+    from hookz.wasm.pipeline import (
+        BUILD_PIPELINES,
+        DEFAULT_PIPELINE,
+        PIPELINE_ALIASES,
+    )
 
     console = Console()
     for name, p in BUILD_PIPELINES.items():
@@ -712,6 +742,11 @@ def pipelines():
             + ("  [dim]→ cleaner[/dim]" if p.clean else "")
         )
         console.print()
+    for alias, target in PIPELINE_ALIASES.items():
+        console.print(
+            f"[dim]legacy alias:[/dim] {alias} → {target} "
+            "(local; not the --buildbox service)"
+        )
 
 
 def _build_fail(log, output, stdout_mode: bool, message: str) -> None:
@@ -767,7 +802,11 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     log(f"Built {source.name} via '{trace.pipeline.name}' pipeline "
         f"({trace.pipeline.summary})")
     if explain:
-        log("\n".join("  " + l for l in trace.format_table().splitlines()))
+        log(
+            "\n".join(
+                "  " + line for line in trace.format_table().splitlines()
+            )
+        )
     else:
         log(f"  {trace.final.size:,} bytes, block depth {trace.final.depth}")
 
@@ -793,6 +832,79 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     # Non-zero on waivers: this binary is for analysis, and CI that treats
     # `hookz build` as a deployability gate must not go green on it.
     sys.exit(1 if result.waived else 0)
+
+
+def _build_buildbox(
+    source: Path,
+    output,
+    stdout_mode: bool = False,
+    ignore: frozenset[str] = frozenset(),
+    rules_version: int | None = None,
+    *,
+    endpoint: str | None = None,
+    options: str = "-O3",
+    request_filename: str | None = None,
+) -> None:
+    """Canonical remote build followed by independent local validation."""
+    from hookz.buildbox import BuildboxError, compile_source
+    from hookz.wasm.guard import (
+        GUARD_RULE_FIX_20250131,
+        GuardError,
+        validate_guards,
+    )
+
+    if rules_version is None:
+        rules_version = GUARD_RULE_FIX_20250131
+
+    log = (
+        print
+        if not stdout_mode
+        else lambda *a, **k: print(*a, file=sys.stderr, **k)
+    )
+
+    try:
+        result = compile_source(
+            source.read_text(),
+            filename=request_filename or source.name,
+            endpoint=endpoint,
+            options=options,
+        )
+    except BuildboxError as exc:
+        _build_fail(log, output, stdout_mode, f"Buildbox FAILED: {exc}")
+
+    wasm = result.wasm
+    log(f"Built {source.name} via canonical buildbox")
+    log(f"  endpoint: {result.endpoint}")
+    log(f"  request sha256: {result.request_sha256}")
+    log(f"  source sha256: {result.source_sha256}")
+    log(f"  wasm sha256: {result.wasm_sha256}")
+    log(f"  attempts: {result.attempts}, bytes: {len(wasm):,}")
+
+    # The service guard-checks the artifact, but a remote success is not
+    # authority over the local consumer. Validate the exact returned bytes
+    # independently before allowing them to reach the output path.
+    try:
+        validation = validate_guards(
+            wasm, rules_version=rules_version, ignore=ignore
+        )
+        verdict = "completed WITH WAIVERS" if validation.waived else "PASSED"
+        log(
+            f"  Local guard check {verdict} "
+            f"(hook WCE={validation.hook_wce:,})"
+        )
+    except GuardError as exc:
+        _build_fail(
+            log, output, stdout_mode, f"Local guard check FAILED: {exc}"
+        )
+
+    _validate_wasm(wasm, source.name, log)
+    if stdout_mode:
+        sys.stdout.buffer.write(wasm)
+    else:
+        output.write_bytes(wasm)
+        log(f"  → {output} ({len(wasm)} bytes)")
+    _report_waived(validation, log)
+    sys.exit(1 if validation.waived else 0)
 
 
 def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
@@ -1063,9 +1175,17 @@ def wce(source, show_source):
 @click.option("--hook-coverage/--no-hook-coverage", default=False,
               help="Compile with coverage instrumentation.")
 @click.option("--no-cache", is_flag=True, help="Bypass compilation cache.")
-@click.option("--compiler", type=click.Choice(["hookz", "wasmcc"], case_sensitive=False),
+@click.option("--compiler", type=click.Choice(["hookz", "wasmcc", "buildbox"], case_sensitive=False),
               default=None, help="Compiler backend (default: wasmcc for SetHook_test, hookz otherwise).")
-def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_raw, hook_coverage, no_cache, compiler):
+@click.option("--buildbox", "--build-box", "use_buildbox", is_flag=True,
+              help="Compile C blocks through the canonical service; no local fallback.")
+@click.option("--buildbox-url", default=None, hidden=True,
+              help="Override the buildbox endpoint (or HOOKZ_BUILDBOX_URL).")
+@click.option("--buildbox-options", default="-O3", show_default=True,
+              help="Compiler options sent to the buildbox.")
+def build_test_hooks(input_file, output, symbol, jobs, force_write,
+                     hooks_c_dir_raw, hook_coverage, no_cache, compiler,
+                     use_buildbox, buildbox_url, buildbox_options):
     """Generate _hooks.h from a C++ test file containing WASM blocks.
 
     Extracts inline hooks (R"[test.hook](...)[test.hook]") and file
@@ -1084,6 +1204,20 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_
 
     if os.environ.get("HOOKZ_NO_COVERAGE"):
         hook_coverage = False
+    if os.environ.get("HOOKZ_BUILDBOX") == "1":
+        use_buildbox = True
+
+    if use_buildbox and compiler not in (None, "buildbox"):
+        raise click.UsageError(
+            "--buildbox cannot be combined with a different --compiler")
+    if buildbox_url and not (use_buildbox or compiler == "buildbox"):
+        raise click.UsageError("--buildbox-url requires --buildbox")
+    if use_buildbox:
+        compiler = "buildbox"
+    if compiler == "buildbox" and hook_coverage:
+        raise click.UsageError(
+            "--buildbox produces canonical deployable WASM and cannot be "
+            "combined with --hook-coverage")
 
     _logging.basicConfig(
         level=_logging.INFO,
@@ -1121,6 +1255,8 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write, hooks_c_dir_
             output_file=Path(output) if output else None,
             symbol_name=symbol,
             compiler=compiler,
+            buildbox_endpoint=buildbox_url,
+            buildbox_options=buildbox_options,
         )
         builder.build()
     except RuntimeError as e:

@@ -51,10 +51,9 @@ class OptProfile:
         return wasm
 
 
-# The flag list the official web compiler ran when it built the hooks currently
-# live on Xahau mainnet — `get_optimization_options()` in chooks.ts. Full
-# provenance, the window it applies to, and the ablation behind the note below
-# are in hookz.wasm.compiler_ref.
+# A historical flag list from `get_optimization_options()` in chooks.ts, run
+# here with local binaryen. Full provenance, its time window, and the known
+# toolchain divergences are in hookz.wasm.compiler_ref.
 #
 # --rereloop is load-bearing and the reason this profile exists. It reruns
 # binaryen's Relooper over the control flow, and it is the only pass here that
@@ -66,9 +65,9 @@ class OptProfile:
 # can exceed xahaud's limit of 16, at which point SetHook refuses the install.
 # Match the reference toolchain rather than reasoning about the direction.
 # --rereloop requires flat IR, so --flatten must precede it.
-BUILDBOX = OptProfile(
-    name="buildbox",
-    summary="matches the official web compiler that built the live mainnet hooks",
+LOCAL_STRUCTURAL = OptProfile(
+    name="local-structural",
+    summary="historical web-compiler flags run with local binaryen",
     provenance=f"{_ref.COMPILER_SOURCE} @ {_ref.COMPILER_COMMIT[:8]} "
                f"({_ref.COMPILER_COMMIT_DATE}) `get_optimization_options()`",
     invocations=((
@@ -114,17 +113,22 @@ NONE = OptProfile(
 )
 
 OPT_PROFILES: dict[str, OptProfile] = {
-    p.name: p for p in (BUILDBOX, SIZE, NONE)
+    p.name: p for p in (LOCAL_STRUCTURAL, SIZE, NONE)
 }
 
-DEFAULT_OPT_PROFILE = BUILDBOX
+# Compatibility for callers that imported or selected the old name.
+BUILDBOX = LOCAL_STRUCTURAL
+OPT_PROFILE_ALIASES = {"buildbox": "local-structural"}
+
+DEFAULT_OPT_PROFILE = LOCAL_STRUCTURAL
 
 
 def get_opt_profile(name: str) -> OptProfile:
+    name = OPT_PROFILE_ALIASES.get(name, name)
     try:
         return OPT_PROFILES[name]
     except KeyError:
-        known = ", ".join(sorted(OPT_PROFILES))
+        known = ", ".join(sorted(set(OPT_PROFILES) | set(OPT_PROFILE_ALIASES)))
         raise WasmOptError(
             f"unknown wasm-opt profile {name!r} (known: {known})") from None
 

@@ -8,8 +8,9 @@ between installing and being rejected outright.
 
 So the flags are not ours to choose. They are copied from the official web
 compiler, and this module records exactly which revision they were copied from.
-`hookz.wasm.optimize.BUILDBOX` and `hookz.wasm.pipeline.BUILDBOX_PIPELINE` are
-the flags; this is the citation.
+`hookz.wasm.optimize.BUILDBOX` and
+`hookz.wasm.pipeline.LOCAL_STRUCTURAL_PIPELINE` are the local approximation;
+this is the citation. Actual service compilation is `hookz build --buildbox`.
 
 PIN
 ---

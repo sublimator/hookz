@@ -18,11 +18,22 @@ from hookz.config import load_config
 from hookz.wasm.clean import clean_hook
 from hookz.wasm.guard import analyze_wce
 from hookz.wasm.optimize import (
-    BUILDBOX, NONE, OPT_PROFILES, OptProfile, WasmOptError, get_opt_profile,
+    BUILDBOX,
+    LOCAL_STRUCTURAL,
+    NONE,
+    OPT_PROFILES,
+    OptProfile,
+    WasmOptError,
+    get_opt_profile,
 )
 from hookz.wasm.pipeline import (
-    BUILD_PIPELINES, BUILDBOX_PIPELINE, DEBUG_PIPELINE, DEFAULT_PIPELINE,
-    get_pipeline, run_pipeline,
+    BUILD_PIPELINES,
+    BUILDBOX_PIPELINE,
+    DEBUG_PIPELINE,
+    DEFAULT_PIPELINE,
+    LOCAL_STRUCTURAL_PIPELINE,
+    get_pipeline,
+    run_pipeline,
 )
 
 HOOKS = Path(__file__).parent / "e2e" / "hooks"
@@ -135,6 +146,8 @@ class TestProfileRegistry:
 
     def test_lookup_by_name(self):
         assert get_opt_profile("buildbox") is BUILDBOX
+        assert get_opt_profile("local-structural") is LOCAL_STRUCTURAL
+        assert BUILDBOX.name == "local-structural"
 
     def test_unknown_name_lists_the_known_ones(self):
         with pytest.raises(WasmOptError, match="buildbox"):
@@ -149,8 +162,8 @@ class TestProfileRegistry:
 # ---------------------------------------------------------------------------
 
 class TestRunPipeline:
-    def test_buildbox_is_the_default(self):
-        assert DEFAULT_PIPELINE is BUILDBOX_PIPELINE
+    def test_local_structural_is_the_default(self):
+        assert DEFAULT_PIPELINE is LOCAL_STRUCTURAL_PIPELINE
 
     def test_records_every_stage_in_order(self):
         trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
@@ -181,8 +194,14 @@ class TestRunPipeline:
         trace = run_pipeline(GOVERN, DEBUG_PIPELINE)
         assert [s.name for s in trace.stages] == ["compile"]
 
-    def test_accepts_a_pipeline_by_name(self):
+    def test_accepts_canonical_local_pipeline_name(self):
+        assert run_pipeline(
+            GOVERN, "local-structural"
+        ).pipeline is LOCAL_STRUCTURAL_PIPELINE
+
+    def test_old_buildbox_name_is_a_local_compatibility_alias(self):
         assert run_pipeline(GOVERN, "buildbox").pipeline is BUILDBOX_PIPELINE
+        assert BUILDBOX_PIPELINE.name == "local-structural"
 
     def test_unknown_pipeline_lists_the_known_ones(self):
         with pytest.raises(ValueError, match="buildbox"):

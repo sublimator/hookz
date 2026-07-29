@@ -117,10 +117,10 @@ class TestVerify:
 class TestPipelineIntegration:
     """The transform is declared by the pipeline, not wired in behind it."""
 
-    def test_buildbox_declares_the_strip(self):
-        from hookz.wasm.pipeline import BUILDBOX_PIPELINE
+    def test_local_structural_pipeline_declares_the_strip(self):
+        from hookz.wasm.pipeline import LOCAL_STRUCTURAL_PIPELINE
 
-        assert "hookz.annotations:strip" in BUILDBOX_PIPELINE.transforms
+        assert "hookz.annotations:strip" in LOCAL_STRUCTURAL_PIPELINE.transforms
 
     def test_transforms_resolve_by_import_path(self):
         from hookz.wasm.pipeline import _resolve_transform

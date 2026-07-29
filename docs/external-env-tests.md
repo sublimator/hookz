@@ -23,6 +23,16 @@ At build time, CMake:
 
 Your tests and hooks live in your repo. xahaud is just the engine.
 
+By default, `build-test-hooks` compiles locally. For report or CI proofs that
+must embed artifacts from the public Xahau compiler, pass `--buildbox`
+(`--build-box` is equivalent). Remote mode records the endpoint, request hash,
+source hash, and WASM hash in the generated output, retries transient failures,
+and never falls back locally.
+
+xahaud's CMake invocation does not need a new argument channel: set
+`HOOKZ_BUILDBOX=1` in its environment and the `build-test-hooks` subprocess
+selects remote mode. Forward that variable into Docker explicitly.
+
 ## What you get
 
 Beyond the CMake mechanism, the branch adds test-writing quality of life:

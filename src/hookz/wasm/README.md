@@ -161,10 +161,16 @@ When it detects this pattern (two `i32.const` values followed by `call _g` follo
 
 The result is a binary where every loop has a clean guard pattern at the top, which the guard checker can then validate.
 
-## Production pipeline
+## Canonical and local production pipelines
 
-From `xrpl-hooks-compiler`, `compiler-api/src/chooks.ts` — the web compiler
-people actually deploy from, and so the definition of what xahaud will accept:
+The canonical network service is implemented by `xrpl-hooks-compiler`,
+`compiler-api/src/chooks.ts`. Call it directly through hookz:
+
+```bash
+hookz build hook.c --buildbox
+```
+
+The historical service profile copied into hookz used:
 
 ```bash
 # 1. Compile and link
@@ -182,12 +188,13 @@ hook-cleaner hook.wasm
 guard_checker hook.wasm
 ```
 
-**Step 2 is not optional.** `--rereloop` reruns binaryen's Relooper over the
+For that historical local profile, **step 2 is not optional.** `--rereloop`
+reruns binaryen's Relooper over the
 control flow and is the only pass that moves block nesting. On a large,
 deeply-nested hook that is worth around 8 levels — enough to decide whether
 `SetHook` accepts the binary at all. A build that skips it reports a depth the
-deployed toolchain never produces, so `hookz build` fails rather than continues
-when `wasm-opt` is missing.
+declared profile never produces, so the local pipeline fails rather than
+continues when `wasm-opt` is missing.
 
 See `hookz.wasm.compiler_ref` for the commit these flags came from, the window
 they applied in, and the ablation behind that claim.
@@ -195,8 +202,11 @@ they applied in, and the ablation behind that claim.
 Our hookz equivalent:
 
 ```bash
-# Production build (compile + optimize + clean + guard-check)
+# Local structural build (compile + optimize + clean + guard-check)
 hookz build hook.c
+
+# Actual canonical build service, followed by local validation
+hookz build hook.c --buildbox
 
 # What each stage did to size, block depth and WCE
 hookz build hook.c --explain
@@ -213,7 +223,7 @@ hookz wce hook.c                   # per-loop breakdown
 hookz wce --source hook.c          # annotated source with per-line cost
 ```
 
-### hookz build pipeline
+### hookz local build pipeline
 
 ```
 source.c

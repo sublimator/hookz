@@ -123,7 +123,8 @@ uv run hookz test
 ```
 hookz doctor                         Check install: toolchain, config, smoke test
 hookz test [pytest args...]          Run tests
-hookz build hook.c                   Production build (compile + optimize + clean + guard-check)
+hookz build hook.c                   Local structural build + validation
+hookz build hook.c --buildbox        Canonical remote build + local validation
 hookz wce hook.c                     WCE budget analysis with per-loop breakdown
 hookz wce --source hook.c            Annotated source with per-line WCE cost
 hookz guard-check hook.wasm          Validate guard calls and show WCE
@@ -137,7 +138,8 @@ hookz debug-compile hook.c           Debug build for testing (not for deployment
 
 ## Production builds
 
-`hookz build` produces deployment-ready WASM from C source in one command:
+`hookz build` uses the local `local-structural` pipeline and produces
+deployment-ready WASM from C source in one command:
 
 ```bash
 hookz build reward.c
@@ -150,6 +152,35 @@ hookz build reward.c
 ```
 
 The cleaner (Python port of [hook-cleaner-c](https://github.com/RichardAH/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
+
+For the artifact produced by the public Xahau compiler, select the actual
+network service explicitly:
+
+```bash
+hookz build reward.c --buildbox
+hookz build-test-hooks Reward_test.cpp --buildbox
+```
+
+`--build-box` is an equivalent spelling. Remote mode strips hookz audit
+annotations, sends the exact source to
+[`hook-buildbox.xrpl.org`](https://hook-buildbox.xrpl.org), records request and
+WASM SHA-256 identities, and independently guard-checks the returned bytes.
+It never falls back to a local compiler and does not use the persistent build
+cache.
+
+Transient network failures, HTTP 408/425/429, and selected 5xx responses are
+retried with bounded exponential backoff. The default is two attempts locally
+and four when `CI` is set. Override with:
+
+```bash
+HOOKZ_BUILDBOX_ATTEMPTS=3       # 1..10
+HOOKZ_BUILDBOX_TIMEOUT=180      # seconds per request
+HOOKZ_BUILDBOX_URL=https://...  # alternate compatible endpoint
+HOOKZ_BUILDBOX=1                # select remote mode in CMake/CI pipelines
+```
+
+`hookz build --pipeline buildbox` remains a temporary compatibility alias for
+the **local** `local-structural` pipeline. It does not call the service.
 
 ## WCE analysis
 
@@ -256,7 +287,7 @@ This compiles your test files (~10s) and runs them against real xahaud. See [exa
 
 ### How it works
 
-You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Your tests and hooks stay in your repo — xahaud is just the engine.
+You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Pass `--buildbox` through that invocation when the generated header must contain canonical-service artifacts rather than local builds. Your tests and hooks stay in your repo — xahaud is just the engine.
 
 On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch) — 12 files, +502/−36, applies cleanly onto current `dev`. The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
 

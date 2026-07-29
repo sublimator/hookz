@@ -47,6 +47,11 @@ jobs:
       - name: Run framework tests
         run: uv run pytest tests/ -v --tb=short
 
+      - name: Sanity-check canonical buildbox
+        env:
+          HOOKZ_LIVE_BUILDBOX: "1"
+        run: uv run pytest tests/test_buildbox_live.py -v --tb=short
+
       - name: Run e2e tests
         working-directory: tests/e2e
         run: uv run hookz test -v --tb=short
