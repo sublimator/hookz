@@ -29,9 +29,11 @@ must embed artifacts from the public Xahau compiler, pass `--buildbox`
 source hash, and WASM hash in the generated output, retries transient failures,
 and never falls back locally.
 
-xahaud's CMake invocation does not need a new argument channel: set
-`HOOKZ_BUILDBOX=1` in its environment and the `build-test-hooks` subprocess
-selects remote mode. Forward that variable into Docker explicitly.
+xahaud's CMake invocation recognizes `HOOKZ_BUILDBOX=1`, passes `--buildbox`
+explicitly, and makes hook-header generation an always-run target. This
+prevents an existing locally generated header from satisfying an
+`OUTPUT`-cached build after the compiler mode changes. Forward the variable
+into Docker explicitly.
 
 ## What you get
 
@@ -60,9 +62,7 @@ The Docker image fetches it from GitHub at image build time, so images are
 only as fresh as the branch. `origin/dev` was merged into the branch on
 2026-07-05, so it carries dev plus the env-tests changes and nothing else.
 
-The full change is small — 12 files, +502/−36, and about a hundred lines of
-it is the CMake mechanism; the rest is optional coverage and logging
-support. It's vendored in this repo as
+The change is vendored in this repo as
 [`patches/xahaud-external-env-tests.patch`](../patches/xahaud-external-env-tests.patch),
 generated as the branch's diff against `origin/dev`, so it applies cleanly
 to a current `dev` checkout:
@@ -95,12 +95,15 @@ options (`-DFOO=value`) or environment variables (`FOO=value`), or both:
 | `HOOKS_COVERAGE` | `ON` | set = enabled | Instrument hooks with coverage callbacks |
 | `HOOKS_TEST_ONLY` | `ON` | set = enabled | Exclude built-in `*_test.cpp` from `src/test/` |
 | `HOOKS_FORCE_RECOMPILE` | `ON` | set = enabled | Bypass dependency tracking and bytecode cache |
+| `HOOKZ_BUILDBOX` | `ON` | `1` | Use the canonical service and always regenerate hook headers |
 
-**Note:** Boolean env vars are existence-checked — setting them to any
-value (even `0`) enables the feature. Use `unset VAR` to disable.
+**Note:** The `HOOKS_*` Boolean env vars are existence-checked — setting them
+to any value (even `0`) enables the feature. `HOOKZ_BUILDBOX` is stricter:
+its environment value must be `1`.
 
-CMake runs `hookz build-test-hooks` per test file, tracks `.c`/`.h`
-dependencies, and only recompiles when sources change.
+CMake runs `hookz build-test-hooks` per test file. Local mode tracks `.c`/`.h`
+dependencies and recompiles when sources change; buildbox mode deliberately
+runs every time.
 
 ### Enum.h: `__on_source_line` whitelist
 

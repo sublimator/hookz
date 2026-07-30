@@ -287,12 +287,12 @@ This compiles your test files (~10s) and runs them against real xahaud. See [exa
 
 ### How it works
 
-You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Pass `--buildbox` through that invocation when the generated header must contain canonical-service artifacts rather than local builds. Your tests and hooks stay in your repo — xahaud is just the engine.
+You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_BUILDBOX=1` when the generated header must contain canonical-service artifacts rather than local builds; the integration makes that mode always regenerate the header so an older local artifact cannot satisfy the build. Your tests and hooks stay in your repo — xahaud is just the engine.
 
-On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch) — 12 files, +502/−36, applies cleanly onto current `dev`. The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
+On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch). The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
 
 ```cmake
-# cmake/RippledCore.cmake (condensed — see the patch for the full ~110 lines)
+# cmake/RippledCore.cmake (condensed — see the patch for the full block)
 file(GLOB EXTERNAL_HOOK_TESTS CONFIGURE_DEPENDS "${HOOKS_TEST_DIR}/*_test.cpp")
 
 # hookz compiles the hooks each test references → generates <test>_hooks.h

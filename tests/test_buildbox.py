@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from types import SimpleNamespace
+from urllib.error import HTTPError
 
 import pytest
 from click.testing import CliRunner
@@ -118,6 +119,12 @@ class TestRetryPolicy:
                 "HOOKZ_BUILDBOX_ATTEMPTS": "many",
             })
 
+    @pytest.mark.parametrize("value", ["nan", "inf", "-inf", "0"])
+    def test_timeout_must_be_finite_and_positive(self, value, monkeypatch):
+        monkeypatch.setenv("HOOKZ_BUILDBOX_TIMEOUT", value)
+        with pytest.raises(buildbox.BuildboxError, match="finite number"):
+            buildbox.timeout_from_environment()
+
 
 class TestCompileSource:
     def test_returns_artifact_and_provenance(self, monkeypatch):
@@ -222,6 +229,60 @@ class TestCompileSource:
             buildbox.compile_source(
                 SOURCE, retry_policy=buildbox.RetryPolicy(2), sleep=lambda _: None
             )
+
+    def test_malformed_tasks_field_is_retried(self, monkeypatch):
+        malformed = buildbox._Response(
+            200,
+            json.dumps({
+                "success": True,
+                "output": "AGFzbQEAAAA=",
+                "tasks": None,
+            }).encode(),
+            {},
+        )
+        replies = iter([malformed, response()])
+        monkeypatch.setattr(buildbox, "_post", lambda *args: next(replies))
+
+        result = buildbox.compile_source(
+            SOURCE,
+            retry_policy=buildbox.RetryPolicy(2),
+            sleep=lambda _: None,
+        )
+
+        assert result.attempts == 2
+        assert result.wasm == WASM
+
+    def test_http_error_body_read_failure_uses_retry_boundary(
+        self, monkeypatch
+    ):
+        calls = 0
+
+        class BrokenBody:
+            def read(self, _limit):
+                raise TimeoutError("body stalled")
+
+            def close(self):
+                pass
+
+        def fail(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            raise HTTPError(
+                buildbox.DEFAULT_ENDPOINT,
+                503,
+                "Service Unavailable",
+                {},
+                BrokenBody(),
+            )
+
+        monkeypatch.setattr(buildbox, "urlopen", fail)
+        with pytest.raises(buildbox.BuildboxUnavailable, match="2 attempt"):
+            buildbox.compile_source(
+                SOURCE,
+                retry_policy=buildbox.RetryPolicy(2),
+                sleep=lambda _: None,
+            )
+        assert calls == 2
 
 
 class TestBuildCommand:
@@ -344,6 +405,58 @@ class TestBuildCommand:
 
 
 class TestBuildTestHooks:
+    def test_traversal_never_reaches_remote_compiler(
+        self, tmp_path, monkeypatch
+    ):
+        hooks = tmp_path / "hooks"
+        hooks.mkdir()
+        (tmp_path / "secret.c").write_text(SOURCE)
+        test_file = tmp_path / "Proof_test.cpp"
+        test_file.write_text('auto hook = "file:audit/../secret.c";\n')
+        calls = []
+        monkeypatch.setattr(
+            buildbox,
+            "compile_source",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        builder = HookBuilder(
+            test_file,
+            compiler="buildbox",
+            hooks_c_dirs={"audit": hooks},
+            cache_dir=tmp_path / "cache",
+        )
+
+        with pytest.raises(RuntimeError, match="escapes domain"):
+            builder.build()
+        assert calls == []
+
+    def test_symlink_escape_never_reaches_remote_compiler(
+        self, tmp_path, monkeypatch
+    ):
+        hooks = tmp_path / "hooks"
+        hooks.mkdir()
+        secret = tmp_path / "secret.c"
+        secret.write_text(SOURCE)
+        (hooks / "linked.c").symlink_to(secret)
+        test_file = tmp_path / "Proof_test.cpp"
+        test_file.write_text('auto hook = "file:audit/linked.c";\n')
+        calls = []
+        monkeypatch.setattr(
+            buildbox,
+            "compile_source",
+            lambda *args, **kwargs: calls.append((args, kwargs)),
+        )
+        builder = HookBuilder(
+            test_file,
+            compiler="buildbox",
+            hooks_c_dirs={"audit": hooks},
+            cache_dir=tmp_path / "cache",
+        )
+
+        with pytest.raises(RuntimeError, match="escapes domain"):
+            builder.build()
+        assert calls == []
+
     def test_remote_artifact_is_guard_checked(self, monkeypatch):
         checked = []
         monkeypatch.setattr(

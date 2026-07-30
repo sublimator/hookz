@@ -93,10 +93,20 @@ class SourceExtractor:
                 f"Available: {available}"
             )
 
-        file_path = self.hooks_c_dirs[domain] / path
-        if not file_path.exists():
+        root = self.hooks_c_dirs[domain].resolve()
+        if not root.is_dir():
             raise RuntimeError(
-                f"Hook file not found: {file_path} "
+                f'Hook source domain "{domain}" is not a directory: {root}'
+            )
+
+        file_path = (root / path).resolve()
+        if not file_path.is_relative_to(root):
+            raise RuntimeError(
+                f'Hook file escapes domain "{domain}": file:{ref}'
+            )
+        if file_path.suffix != ".c" or not file_path.is_file():
+            raise RuntimeError(
+                f"Hook file is not a regular .c source: {file_path} "
                 f'(referenced as "file:{ref}" at line {line_number})'
             )
 

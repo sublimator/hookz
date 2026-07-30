@@ -13,10 +13,12 @@ import binascii
 import hashlib
 import json
 import logging
+import math
 import os
 import socket
 import time
 from dataclasses import dataclass
+from http.client import HTTPException
 from pathlib import Path
 from typing import Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -136,8 +138,10 @@ def timeout_from_environment() -> float:
         raise BuildboxError(
             "HOOKZ_BUILDBOX_TIMEOUT must be a number of seconds"
         ) from exc
-    if timeout <= 0:
-        raise BuildboxError("HOOKZ_BUILDBOX_TIMEOUT must be greater than zero")
+    if not math.isfinite(timeout) or timeout <= 0:
+        raise BuildboxError(
+            "HOOKZ_BUILDBOX_TIMEOUT must be a finite number greater than zero"
+        )
     return timeout
 
 
@@ -222,7 +226,18 @@ def _post(endpoint: str, body: bytes, timeout: float) -> _Response:
                 headers=dict(response.headers.items()),
             )
     except HTTPError as exc:
-        body_bytes = exc.read(MAX_RESPONSE_BYTES + 1)
+        try:
+            body_bytes = exc.read(MAX_RESPONSE_BYTES + 1)
+        except (
+            TimeoutError,
+            socket.timeout,
+            OSError,
+            HTTPException,
+        ) as read_exc:
+            raise _TransientFailure(
+                f"HTTP {exc.code} response read failed: "
+                f"{type(read_exc).__name__}: {read_exc}"
+            ) from read_exc
         if len(body_bytes) > MAX_RESPONSE_BYTES:
             raise _TransientFailure(
                 f"HTTP {exc.code} response exceeded "
@@ -233,7 +248,13 @@ def _post(endpoint: str, body: bytes, timeout: float) -> _Response:
             body=body_bytes,
             headers=dict(exc.headers.items()) if exc.headers else {},
         )
-    except (URLError, TimeoutError, socket.timeout, OSError) as exc:
+    except (
+        URLError,
+        TimeoutError,
+        socket.timeout,
+        OSError,
+        HTTPException,
+    ) as exc:
         raise _TransientFailure(f"{type(exc).__name__}: {exc}") from exc
 
 
@@ -270,6 +291,8 @@ def _decode_success(response: _Response) -> tuple[bytes, tuple[dict, ...]]:
         raise _TransientFailure("JSON response is not an object")
 
     tasks_value = data.get("tasks", [])
+    if not isinstance(tasks_value, list):
+        raise _TransientFailure("JSON response field 'tasks' is not a list")
     tasks = tuple(task for task in tasks_value if isinstance(task, dict))
     if data.get("success") is not True:
         details = []
