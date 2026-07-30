@@ -18,6 +18,7 @@ on:
 
 env:
   # Real tag — :latest is not published. Bump when xahaud/base changes.
+  # (Cannot use env.* inside jobs.*.env; pin is duplicated in IMAGE below.)
   DEFAULT_IMAGE: gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f
   TIPBOT: ${{ github.workspace }}/examples/tipbot
 
@@ -26,7 +27,8 @@ jobs:
     name: Run hook tests in xahaud
     runs-on: ubuntu-latest
     env:
-      IMAGE: ${{ github.event.inputs.image != '' && github.event.inputs.image || env.DEFAULT_IMAGE }}
+      # Job env cannot reference env.DEFAULT_IMAGE (GHA context rules).
+      IMAGE: ${{ github.event.inputs.image || 'gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f' }}
     steps:
       - uses: actions/checkout@v7
         with:
