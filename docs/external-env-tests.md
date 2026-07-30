@@ -35,6 +35,25 @@ prevents an existing locally generated header from satisfying an
 `OUTPUT`-cached build after the compiler mode changes. Forward the variable
 into Docker explicitly.
 
+### Swapping hookz inside a frozen image
+
+The public image bakes a default hookz, but the expensive part is xahaud.
+The container entrypoint can reinstall hookz before tests run:
+
+| Env | Effect |
+|---|---|
+| *(unset)* | use baked hookz |
+| `HOOKZ_SPEC=hookz @ /path` | install from a mounted tree (CI / local worktree; preferred) |
+| `HOOKZ_REF=main` / `<sha>` | `uv tool install --force hookz @ git+$HOOKZ_REPO@$REF` (needs network) |
+| `HOOKZ_REPO=...` | git base for `HOOKZ_REF` (default public hookz; strip trailing `/` and `.git`) |
+
+`HOOKZ_SPEC` wins over `HOOKZ_REF`. After a refresh, `~/.cache/hookz-builds`
+is cleared so a long-lived container cannot reuse bytecode for the wrong tip.
+
+If the image’s baked entrypoint predates this helper, mount the repo’s
+`docker/entrypoint.sh` over `/entrypoint.sh` (and `chmod +x` it). hookz CI
+does that and sets `HOOKZ_SPEC=hookz @ /hookz-src` with the workspace mounted.
+
 ## What you get
 
 Beyond the CMake mechanism, the branch adds test-writing quality of life:

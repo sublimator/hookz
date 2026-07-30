@@ -1,5 +1,9 @@
 name: xahaud integration tests
 
+# Frozen xahaud image + this checkout's hookz.
+# The image carries the expensive binary/ccache; hookz is installed from the
+# workspace mount so Env tests exercise the branch under review (no :latest).
+
 on:
   push:
     branches: [main]
@@ -8,12 +12,13 @@ on:
   workflow_dispatch:
     inputs:
       image:
-        description: "Docker image to test (default: latest)"
+        description: "Docker image (default: DEFAULT_IMAGE below)"
         required: false
         default: ""
 
 env:
-  DEFAULT_IMAGE: gcr.io/hookz-public/hookz-xahaud:latest
+  # Real tag — :latest is not published. Bump when xahaud/base changes.
+  DEFAULT_IMAGE: gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f
   TIPBOT: ${{ github.workspace }}/examples/tipbot
 
 jobs:
@@ -21,7 +26,7 @@ jobs:
     name: Run hook tests in xahaud
     runs-on: ubuntu-latest
     env:
-      IMAGE: ${{ github.event.inputs.image || 'gcr.io/hookz-public/hookz-xahaud:latest' }}
+      IMAGE: ${{ github.event.inputs.image != '' && github.event.inputs.image || env.DEFAULT_IMAGE }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -29,15 +34,22 @@ jobs:
 
       - name: Pull xahaud image
         run: |
-          echo "Using image: ${{ env.IMAGE }}"
-          docker pull ${{ env.IMAGE }}
+          echo "Using image: $IMAGE"
+          docker pull "$IMAGE"
 
-      - name: Run tipbot tests
+      - name: Run tipbot Env tests (this checkout's hookz)
         run: |
+          # Mount checkout entrypoint (supports HOOKZ_SPEC) even if the image
+          # was baked before the refresh helper. Ensure +x for exec-form ENTRYPOINT.
+          chmod +x "${{ github.workspace }}/docker/entrypoint.sh"
           docker run --rm \
-            -v ${{ env.TIPBOT }}/env-tests:/tests \
-            -v ${{ env.TIPBOT }}/hooks:/hooks/tipbot \
+            -v "${{ env.TIPBOT }}/env-tests:/tests" \
+            -v "${{ env.TIPBOT }}/hooks:/hooks/tipbot" \
+            -v "${{ github.workspace }}:/hookz-src:ro" \
+            -v "${{ github.workspace }}/docker/entrypoint.sh:/entrypoint.sh:ro" \
             -e HOOKS_TEST_DIR=/tests \
             -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
-            ${{ env.IMAGE }} \
+            -e HOOKZ_SPEC="hookz @ /hookz-src" \
+            -e TESTENV_LOGGING="HooksTrace=trace,View=debug" \
+            "$IMAGE" \
             "ripple.app.TipBot,ripple.app.TipBotClaude"

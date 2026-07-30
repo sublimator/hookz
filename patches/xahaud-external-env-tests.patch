@@ -125,17 +125,17 @@ index 2d593599c..aa76c634f 100644
  
    target_link_libraries(rippled
 diff --git a/include/xrpl/basics/Log.h b/include/xrpl/basics/Log.h
-index 13128bfea..5b41e0d9e 100644
+index 13128bfea..d055cba6b 100644
 --- a/include/xrpl/basics/Log.h
 +++ b/include/xrpl/basics/Log.h
-@@ -27,6 +27,7 @@
+@@ -25,6 +25,7 @@
+ #include <boost/beast/core/string.hpp>
+ #include <boost/filesystem.hpp>
  #include <fstream>
++#include <functional>
  #include <map>
  #include <memory>
-+#include <functional>
  #include <mutex>
- #include <utility>
- 
 @@ -165,6 +166,7 @@ private:
      beast::severities::Severity thresh_;
      File file_;
@@ -207,10 +207,10 @@ index 9dbce0f33..46dd71e32 100644
  
      return whitelist;
 diff --git a/include/xrpl/hook/Guard.h b/include/xrpl/hook/Guard.h
-index 53d9f010f..c99618c0f 100644
+index 53d9f010f..bbe488d50 100644
 --- a/include/xrpl/hook/Guard.h
 +++ b/include/xrpl/hook/Guard.h
-@@ -1383,21 +1383,52 @@ validateGuards(
+@@ -1383,21 +1383,51 @@ validateGuards(
                  int result_count = parseLeb128(wasm, i, &i);
                  CHECK_SHORT_HOOK();
  
@@ -240,8 +240,7 @@ index 53d9f010f..c99618c0f 100644
 +                {
 +                    // For whitelisted imports, check expected return count.
 +                    // void_t (0x00) means 0 return values.
-+                    uint8_t expected_return =
-+                        (*first_signature).get()[0];
++                    uint8_t expected_return = (*first_signature).get()[0];
 +                    int expected_result_count =
 +                        (expected_return == 0x00U) ? 0 : 1;
 +                    if (result_count != expected_result_count)
@@ -250,8 +249,8 @@ index 53d9f010f..c99618c0f 100644
 +                            << "Malformed transaction. "
 +                            << "Hook API: " << *first_name
 +                            << " has wrong return count "
-+                            << "(expected " << expected_result_count
-+                            << ", got " << result_count << ")."
++                            << "(expected " << expected_result_count << ", got "
++                            << result_count << ")."
 +                            << "\n";
 +                        return {};
 +                    }
@@ -276,17 +275,49 @@ index 53d9f010f..c99618c0f 100644
                  {
                      int result_type = parseLeb128(wasm, i, &i);
 diff --git a/include/xrpl/hook/Macro.h b/include/xrpl/hook/Macro.h
-index 45e6a8db9..643750f8b 100644
+index 45e6a8db9..36ef0b1f8 100644
 --- a/include/xrpl/hook/Macro.h
 +++ b/include/xrpl/hook/Macro.h
-@@ -157,6 +157,7 @@
-         [[maybe_unused]] ApplyContext& applyCtx = hookCtx.applyCtx;  \
-         [[maybe_unused]] auto& view = applyCtx.view();               \
-         [[maybe_unused]] auto j = applyCtx.app.journal("View");      \
+@@ -150,22 +150,23 @@
+         WasmEdge_CallingFrameContext const& frameCtx __VA_OPT__(               \
+             COMMA __VA_ARGS__))
+ 
+-#define HOOK_SETUP()                                                 \
+-    using enum hook_api::hook_return_code;                           \
+-    try                                                              \
+-    {                                                                \
+-        [[maybe_unused]] ApplyContext& applyCtx = hookCtx.applyCtx;  \
+-        [[maybe_unused]] auto& view = applyCtx.view();               \
+-        [[maybe_unused]] auto j = applyCtx.app.journal("View");      \
+-        [[maybe_unused]] WasmEdge_MemoryInstanceContext* memoryCtx = \
+-            WasmEdge_CallingFrameGetMemoryInstance(&frameCtx, 0);    \
+-        [[maybe_unused]] unsigned char* memory =                     \
+-            WasmEdge_MemoryInstanceGetPointer(memoryCtx, 0, 0);      \
+-        [[maybe_unused]] const uint64_t memory_length =              \
+-            WasmEdge_MemoryInstanceGetPageSize(memoryCtx) *          \
+-            WasmEdge_kPageSize;                                      \
+-        [[maybe_unused]] auto& api = hookCtx.api();                  \
+-        if (!memoryCtx || !memory || !memory_length)                 \
++#define HOOK_SETUP()                                                   \
++    using enum hook_api::hook_return_code;                             \
++    try                                                                \
++    {                                                                  \
++        [[maybe_unused]] ApplyContext& applyCtx = hookCtx.applyCtx;    \
++        [[maybe_unused]] auto& view = applyCtx.view();                 \
++        [[maybe_unused]] auto j = applyCtx.app.journal("View");        \
 +        [[maybe_unused]] auto jh = applyCtx.app.journal("HooksTrace"); \
-         [[maybe_unused]] WasmEdge_MemoryInstanceContext* memoryCtx = \
-             WasmEdge_CallingFrameGetMemoryInstance(&frameCtx, 0);    \
-         [[maybe_unused]] unsigned char* memory =                     \
++        [[maybe_unused]] WasmEdge_MemoryInstanceContext* memoryCtx =   \
++            WasmEdge_CallingFrameGetMemoryInstance(&frameCtx, 0);      \
++        [[maybe_unused]] unsigned char* memory =                       \
++            WasmEdge_MemoryInstanceGetPointer(memoryCtx, 0, 0);        \
++        [[maybe_unused]] const uint64_t memory_length =                \
++            WasmEdge_MemoryInstanceGetPageSize(memoryCtx) *            \
++            WasmEdge_kPageSize;                                        \
++        [[maybe_unused]] auto& api = hookCtx.api();                    \
++        if (!memoryCtx || !memory || !memory_length)                   \
+             return INTERNAL_ERROR;
+ 
+ #define HOOK_TEARDOWN()                                        \
 diff --git a/src/libxrpl/basics/Log.cpp b/src/libxrpl/basics/Log.cpp
 index 8e687d66f..3dbdbed63 100644
 --- a/src/libxrpl/basics/Log.cpp
@@ -690,7 +721,7 @@ index df553d2ea..6fd3514c4 100644
              WasmEdge_TableInstanceCreate(tableType);
          WasmEdge_ModuleInstanceAddTable(importObj, tableName, hostTable);
 diff --git a/src/xrpld/app/hook/detail/applyHook.cpp b/src/xrpld/app/hook/detail/applyHook.cpp
-index 14855b73c..ac664fc4c 100644
+index 14855b73c..4ac9728f3 100644
 --- a/src/xrpld/app/hook/detail/applyHook.cpp
 +++ b/src/xrpld/app/hook/detail/applyHook.cpp
 @@ -1111,7 +1111,7 @@ DEFINE_HOOK_FUNCTION(
@@ -710,10 +741,10 @@ index 14855b73c..ac664fc4c 100644
 -                      << std::string_view(
 -                             (const char*)memory + read_ptr, read_len)
 -                      << ": " << number;
-+            JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: "
-+                             << std::string_view(
-+                                    (const char*)memory + read_ptr, read_len)
-+                             << ": " << number;
++            JLOG(jh.trace())
++                << "HookTrace[" << HC_ACC() << "]: "
++                << std::string_view((const char*)memory + read_ptr, read_len)
++                << ": " << number;
  
              return 0ULL;
          }
@@ -733,18 +764,19 @@ index 14855b73c..ac664fc4c 100644
          return 0ULL;
  
      if (mread_len > 128)
-@@ -1214,8 +1214,8 @@ DEFINE_HOOK_FUNCTION(
+@@ -1214,8 +1214,9 @@ DEFINE_HOOK_FUNCTION(
  
      if (out_len > 0)
      {
 -        j.trace() << "HookTrace[" << HC_ACC() << "]: "
 -                  << std::string_view((const char*)output_storage, out_len);
 +        JLOG(jh.trace()) << "HookTrace[" << HC_ACC() << "]: "
-+                         << std::string_view((const char*)output_storage, out_len);
++                         << std::string_view(
++                                (const char*)output_storage, out_len);
      }
  
      return 0ULL;
-@@ -3403,7 +3403,7 @@ DEFINE_HOOK_FUNCTION(
+@@ -3403,7 +3404,7 @@ DEFINE_HOOK_FUNCTION(
      if (NOT_IN_BOUNDS(read_ptr, read_len, memory_length))
          return OUT_OF_BOUNDS;
  
@@ -753,7 +785,7 @@ index 14855b73c..ac664fc4c 100644
          return 0ULL;
  
      if (read_len > 128)
-@@ -3420,8 +3420,8 @@ DEFINE_HOOK_FUNCTION(
+@@ -3420,8 +3421,8 @@ DEFINE_HOOK_FUNCTION(
  
      if (float1 == 0)
      {
@@ -764,7 +796,7 @@ index 14855b73c..ac664fc4c 100644
          return 0ULL;
      }
  
-@@ -3432,14 +3432,14 @@ DEFINE_HOOK_FUNCTION(
+@@ -3432,14 +3433,14 @@ DEFINE_HOOK_FUNCTION(
          man.value() > maxMantissa || exp.value() < minExponent ||
          exp.value() > maxExponent)
      {

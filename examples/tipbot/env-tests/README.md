@@ -9,17 +9,25 @@ real guard validation.
 The easiest way to run these tests is with the pre-built Docker image:
 
 ```bash
+# Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
+IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f
+REPO_ROOT="$(cd ../.. && pwd)"
 docker run --rm \
   -v ./env-tests:/tests \
   -v ./hooks:/hooks/tipbot \
+  -v "$REPO_ROOT/docker/entrypoint.sh:/entrypoint.sh:ro" \
+  -v "$REPO_ROOT:/hookz-src:ro" \
   -e HOOKS_TEST_DIR=/tests \
   -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
-  gcr.io/hookz-public/hookz-xahaud:latest \
+  -e HOOKZ_SPEC="hookz @ /hookz-src" \
+  "$IMAGE" \
   "ripple.app.TipBot,ripple.app.TipBotClaude"
 ```
 
 This pulls a public image with xahaud pre-compiled (+ccache primed),
-compiles only your test files (~10s), and runs the tests.
+installs hookz from the mounted checkout, compiles only your test files
+(~10s), and runs them. Mounting `entrypoint.sh` is required until the
+published image bakes the refresh helper.
 
 The image is built on [Google Cloud Build](../../docker/cloudbuild.yaml)
 and published to `gcr.io/hookz-public/hookz-xahaud`.
@@ -27,7 +35,8 @@ and published to `gcr.io/hookz-public/hookz-xahaud`.
 ## CI
 
 The [xahaud integration workflow](../../../.github/workflows/xahaud-integration.yml)
-runs these tests automatically on push/PR to main.
+runs these tests on push/PR to main with the same mount + `HOOKZ_SPEC`
+pattern so Env suites exercise **this** hookz tree.
 
 ## Included test files
 

@@ -274,16 +274,22 @@ No local xahaud build required — a public image ships with xahaud pre-compiled
 
 ```bash
 cd examples/tipbot
+# Pin lives in .github/workflows/xahaud-integration.yml (DEFAULT_IMAGE).
+IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f
+# Mount this repo's entrypoint if the image predates HOOKZ_REF/HOOKZ_SPEC.
 docker run --rm \
   -v ./env-tests:/tests \
   -v ./hooks:/hooks/tipbot \
+  -v "$(pwd)/../../docker/entrypoint.sh:/entrypoint.sh:ro" \
+  -v "$(pwd)/../..:/hookz-src:ro" \
   -e HOOKS_TEST_DIR=/tests \
   -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
-  gcr.io/hookz-public/hookz-xahaud:latest \
+  -e HOOKZ_SPEC="hookz @ /hookz-src" \
+  "$IMAGE" \
   "ripple.app.TipBot,ripple.app.TipBotClaude"
 ```
 
-This compiles your test files (~10s) and runs them against real xahaud. See [examples/tipbot/env-tests](examples/tipbot/env-tests/README.md) for the full example. The same tests run in CI on every push ([xahaud-integration.yml](.github/workflows/xahaud-integration.yml)); the image is built on Cloud Build from [docker/](docker/).
+This compiles your test files (~10s) and runs them against real xahaud. See [examples/tipbot/env-tests](examples/tipbot/env-tests/README.md). CI uses the same pattern: frozen image + **this checkout’s** hookz via `HOOKZ_SPEC` ([xahaud-integration.yml](.github/workflows/xahaud-integration.yml)).
 
 ### How it works
 

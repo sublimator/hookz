@@ -20,6 +20,14 @@
 #     -e HOOKS_TEST_DIR=/tests \
 #     hookz-xahaud "ripple.app.TipBot"
 #
+# Refresh hookz without rebuilding the image (entrypoint; needs network):
+#   docker run -e HOOKZ_REF=main ...
+#   docker run -e HOOKZ_REF=<sha> ...
+#   docker run -e HOOKZ_SPEC='hookz @ git+https://github.com/sublimator/hookz.git@branch' ...
+#   docker run -e HOOKZ_REPO=https://github.com/other/hookz.git -e HOOKZ_REF=...
+# Unset HOOKZ_REF/HOOKZ_SPEC → use the hookz baked into the image.
+# CI mounts this entrypoint from the checkout so old images still refresh.
+#
 # ccache layout:
 #   /ccache-primed  — read-only file backend baked into image (from reshare)
 #   /ccache         — writable local cache (CCACHE_DIR), mountable volume
