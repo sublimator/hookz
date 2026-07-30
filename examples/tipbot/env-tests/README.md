@@ -10,7 +10,7 @@ The easiest way to run these tests is with the pre-built Docker image:
 
 ```bash
 # Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
-IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-d3e4477f
+IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-cc80be0c
 REPO_ROOT="$(cd ../.. && pwd)"
 docker run --rm \
   -v ./env-tests:/tests \
