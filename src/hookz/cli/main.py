@@ -71,6 +71,7 @@ def _show_list(console, config) -> int:
 def _show_function(console, config, name: str) -> int:
     """Show detailed info for a single function."""
     from rich.panel import Panel
+    from rich.text import Text
     from hookz.handlers import collect_handlers
     from hookz.xrpl.xahaud import XahaudRepo
 
@@ -92,7 +93,7 @@ def _show_function(console, config, name: str) -> int:
 
     _print_legend(console, config)
 
-    # xahaud source
+    # xahaud source — Text so C brackets are not Rich markup
     try:
         repo = XahaudRepo(str(config.xahaud_root))
 
@@ -101,16 +102,19 @@ def _show_function(console, config, name: str) -> int:
 
         wrapper = repo.find_hook_function(name)
         if wrapper:
-            console.print(Panel(wrapper, title=f"Wrapper ({wrapper_path})", border_style="dim"))
+            console.print(Panel(
+                Text(wrapper), title=f"Wrapper ({wrapper_path})", border_style="dim"))
 
         impl = repo.find_api_method(name)
         if impl:
-            console.print(Panel(impl, title=f"Implementation ({impl_path})", border_style="blue"))
+            console.print(Panel(
+                Text(impl), title=f"Implementation ({impl_path})", border_style="blue"))
 
         test_path = "$XAHAUD/src/test/app/SetHook_test.cpp"
         test_code = repo.find_test_function(name)
         if test_code:
-            console.print(Panel(test_code, title=f"Test ({test_path})", border_style="green"))
+            console.print(Panel(
+                Text(test_code), title=f"Test ({test_path})", border_style="green"))
 
         if not wrapper and not impl and not test_code:
             console.print(f"[dim]No xahaud source found for '{name}'[/dim]")
@@ -232,7 +236,12 @@ def _validate_wasm(wasm: bytes, label: str, log) -> None:
 
 
 def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result) -> None:
-    """Print source code with dual-column WCE: debug vs optimized."""
+    """Print an explicitly non-authoritative source-attribution aid.
+
+    These rows come from DWARF-friendly analysis twins. They are useful for
+    navigation, but are neither instruction ownership nor WCE in the exact
+    artifact reported above them.
+    """
     from rich.panel import Panel
 
     # Count instructions per line for both builds
@@ -266,8 +275,12 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
         console.print("[yellow]Could not read source file[/yellow]")
         return
 
+    from rich.markup import escape
+
     out = []
-    out.append(" [bold]debug │ prod │      │[/bold]")
+    # Column labels stay 5 wide, like the counts under them; which binaries
+    # these came from is spelled out in the caption below the panel.
+    out.append(" [bold]debug │   -Oz │      │[/bold]")
     out.append(f" [dim]──────┼──────┼──────┼{'─' * 60}[/dim]")
 
     for i, line_text in enumerate(src_lines, 1):
@@ -284,36 +297,50 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
 
         ln_col = f"{i:>4}"
         sep = "│"
+        # C source can contain [i], [bold], etc. — escape before markup join
+        safe = escape(line_text)
 
         if i in loop_lines:
             stripped = line_text.lstrip()
             indent = line_text[:len(line_text) - len(stripped)]
-            out.append(f" [bold red]{d_col}[/bold red] {sep} [bold red]{o_col}[/bold red] {sep} [bold]{ln_col}[/bold] {sep} {indent}[red]►[/red] {stripped}")
+            out.append(
+                f" [bold red]{d_col}[/bold red] {sep} [bold red]{o_col}[/bold red] "
+                f"{sep} [bold]{ln_col}[/bold] {sep} {indent}[red]►[/red] {escape(stripped)}"
+            )
         elif d > 0 and o == 0:
-            out.append(f" [dim]{d_col}[/dim] {sep} [red] ELIM[/red] {sep} [dim]{ln_col}[/dim] {sep} [dim strike]{line_text}[/dim strike]")
+            out.append(
+                f" [dim]{d_col}[/dim] {sep} [red] ELIM[/red] {sep} "
+                f"[dim]{ln_col}[/dim] {sep} [dim strike]{safe}[/dim strike]"
+            )
         elif o > 0 and d > 0 and o < d:
-            out.append(f" {d_col} {sep} [green]{o_col}[/green] {sep} {ln_col} {sep} {line_text}")
+            out.append(f" {d_col} {sep} [green]{o_col}[/green] {sep} {ln_col} {sep} {safe}")
         elif o > 0:
-            out.append(f" {d_col} {sep} {o_col} {sep} {ln_col} {sep} {line_text}")
+            out.append(f" {d_col} {sep} {o_col} {sep} {ln_col} {sep} {safe}")
         else:
-            out.append(f" {d_col} {sep} {o_col} {sep} [dim]{ln_col}[/dim] {sep} [dim]{line_text}[/dim]")
+            out.append(f" {d_col} {sep} {o_col} {sep} [dim]{ln_col}[/dim] {sep} [dim]{safe}[/dim]")
 
     console.print(Panel(
         "\n".join(out),
-        title=f"{source.name} — instructions per line (debug vs prod)",
+        title=f"{source.name} — analysis-twin DWARF rows (not artifact WCE)",
         border_style="blue",
     ))
     console.print(
-        "  [dim]debug = -O0 instrs │ prod = -Oz instrs │ ELIM = removed by optimizer"
-        " │ Loop totals (above) are exact.[/dim]"
+        "  [yellow]Secondary estimate only:[/yellow] debug/-Oz are DWARF row "
+        "counts from different binaries. ELIM means absent from the -Oz twin, "
+        "not a measured saving in the exact artifact."
     )
 
 
-def _line_from_guard_id(guard_id: int) -> str:
+def _line_from_guard_id(guard_id: int, line_map: dict[int, int] | None = None) -> str:
     """Extract source line from guard ID.
 
     The _g() macro encodes line as: (1 << 31) + __LINE__
     So the line number is guard_id & 0x7FFFFFFF, but only if bit 31 is set.
+
+    line_map maps the artifact's line numbers back into the annotated file,
+    and is passed only when the build that produced the artifact stripped
+    annotations first. Applying it to an unstripped build's ids would move
+    every citation onto unrelated code.
     """
     if guard_id < 0:
         # Signed: undo two's complement
@@ -323,11 +350,30 @@ def _line_from_guard_id(guard_id: int) -> str:
     else:
         line = guard_id  # raw line number
     if 0 < line < 100000:
+        mapped = (line_map or {}).get(line)
+        if mapped is not None and mapped != line:
+            return f"line {mapped} (artifact {line})"
         return f"line {line}"
     return f"guard 0x{guard_id & 0xFFFFFFFF:08X}"
 
 
-def _collect_loops(node, /) -> list[tuple[str, int, int]]:
+def _annotated_line_map(source: Path) -> dict[int, int]:
+    """Published line -> annotated line, built once per report.
+
+    annotated_line() rebuilds and linearly scans the whole map per lookup;
+    a hook with twenty loops re-read and re-parsed the file twenty times.
+    """
+    from hookz.annotations import line_map
+
+    return {
+        published: annotated
+        for annotated, published in line_map(source.read_text()).items()
+    }
+
+
+def _collect_loops(
+    node, /, line_map: dict[int, int] | None = None
+) -> list[tuple[str, int, int]]:
     """Collect all loop nodes with (source_location, bound, wce).
 
     Iterative for the same reason as the guard checker's loop walk: the tree
@@ -340,7 +386,11 @@ def _collect_loops(node, /) -> list[tuple[str, int, int]]:
     while stack:
         n = stack.pop()
         if n.is_loop:
-            loops.append((_line_from_guard_id(n.guard_id), n.iteration_bound, n.wce))
+            loops.append((
+                _line_from_guard_id(n.guard_id, line_map),
+                n.iteration_bound,
+                n.wce,
+            ))
         stack.extend(n.children)
     return loops
 
@@ -1032,127 +1082,191 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
 
 
 @cli.command()
-@click.argument("source", type=click.Path(exists=True))
-@click.option("--source", "-s", "show_source", is_flag=True, help="Show annotated source with instruction counts.")
-def wce(source, show_source):
-    """Analyze WCE budget usage with source line mapping."""
+@click.argument("input_path", type=click.Path(exists=True, path_type=Path))
+@click.option(
+    "--source", "-s", "show_source", is_flag=True,
+    help="Append a secondary DWARF analysis-twin source view (not artifact WCE).",
+)
+@click.option(
+    "--loops", "show_loops", is_flag=True,
+    help="Show partial guard-line loop mapping; subtree rows overlap.",
+)
+@click.option(
+    "--pipeline", "pipeline_name", default=None,
+    help="Local production-like pipeline for C input (default: local-structural).",
+)
+@click.option(
+    "--buildbox", "--build-box", "use_buildbox", is_flag=True,
+    help="Compile C through hook-buildbox.xrpl.org, then weigh its exact result.",
+)
+@click.option("--buildbox-url", default=None, hidden=True)
+@click.option("--buildbox-options", default="-O3", show_default=True)
+def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
+        buildbox_url, buildbox_options):
+    """Weigh exact WASM, or build C production-style and weigh the result.
+
+    WCE belongs to the final WASM artifact. Source/DWARF mapping is a separate,
+    explicitly secondary view because the mapping build can have a radically
+    different control-flow tree.
+    """
+    import hashlib
+    import os
+
     from rich.console import Console
-    from hookz.compiler import compile_hook
     from hookz.config import load_config
-    from hookz.coverage.rewriter import parse_dwarf_locations
+    from hookz.wasm.guard import GuardError, analyze_wce, validate_guards
 
     console = Console()
-    source = Path(source)
-    config = load_config()
+    source: Path | None = input_path if input_path.suffix.lower() == ".c" else None
+    is_wasm = input_path.suffix.lower() == ".wasm"
 
-    # Two-stage compile: clang -c -g -Oz -> wasm-ld (preserves DWARF on optimized code)
-    from hookz.compiler import compile_hook_two_stage
-    from hookz.wasm.clean import clean_hook_detailed
-    from hookz.wasm.visitor import KeepDebugVisitor
-    from hookz.wasm.guard import analyze_wce
+    # The env switch selects a compiler, and a .wasm input has already been
+    # compiled. CI sets it once for a whole build; weighing a prebuilt artifact
+    # in that same job must not become a usage error.
+    if os.environ.get("HOOKZ_BUILDBOX") == "1" and not is_wasm:
+        use_buildbox = True
+    if use_buildbox and pipeline_name:
+        raise click.UsageError(
+            "--buildbox selects the remote compiler and cannot be combined "
+            "with --pipeline"
+        )
+    if buildbox_url and not use_buildbox:
+        raise click.UsageError("--buildbox-url requires --buildbox")
+    if not is_wasm and source is None:
+        raise click.UsageError("INPUT_PATH must end in .c or .wasm")
+    if is_wasm and (use_buildbox or pipeline_name):
+        raise click.UsageError(
+            "a .wasm input is already the artifact; compiler selection only "
+            "applies to .c input"
+        )
+    if is_wasm and show_source:
+        raise click.UsageError(
+            "a standalone .wasm has no verified source twin; exact guard-line "
+            "ids remain visible without --source"
+        )
 
+    trace = None
+    analysis_config = None
+    # A guard id is a __LINE__ from whatever file clang saw. Only a build that
+    # strips annotations first emits published line numbers, so only those can
+    # be located back in the annotated source — see hookz.annotations.line_map,
+    # which exists because the two numberings differ by hundreds of lines and
+    # neither says which file it belongs to.
+    stripped_before_compile = False
+    if is_wasm:
+        wasm = input_path.read_bytes()
+        if not wasm.startswith(WASM_MAGIC + WASM_VERSION):
+            raise click.ClickException(f"{input_path} is not a WebAssembly 1 module")
+        provenance = f"provided artifact: {input_path}"
+    elif use_buildbox:
+        from hookz.buildbox import BuildboxError, compile_source
+
+        try:
+            remote = compile_source(
+                source.read_text(),
+                filename=source.name,
+                endpoint=buildbox_url,
+                options=buildbox_options,
+            )
+        except BuildboxError as exc:
+            raise click.ClickException(f"buildbox failed: {exc}") from exc
+        wasm = remote.wasm
+        provenance = (
+            f"canonical buildbox result: {remote.endpoint}; "
+            f"request {remote.request_sha256}"
+        )
+        analysis_config = load_config(source_file=source)
+        stripped_before_compile = True  # buildbox strips before it sends
+    else:
+        from hookz.wasm.clean import CleanError
+        from hookz.wasm.optimize import WasmOptError
+        from hookz.wasm.pipeline import (
+            STRIP_ANNOTATIONS, get_pipeline, run_pipeline,
+        )
+
+        try:
+            pipeline = get_pipeline(pipeline_name) if pipeline_name else None
+            analysis_config = load_config(source_file=source)
+            trace = run_pipeline(source, pipeline, analysis_config)
+        except (ValueError, CleanError, WasmOptError) as exc:
+            raise click.ClickException(f"local pipeline failed: {exc}") from exc
+        wasm = trace.wasm
+        stripped_before_compile = STRIP_ANNOTATIONS in trace.pipeline.transforms
+        provenance = (
+            f"local '{trace.pipeline.name}' result: {trace.pipeline.summary}; "
+            "production-like approximation, not buildbox provenance"
+        )
+
+    digest = hashlib.sha256(wasm).hexdigest()
     try:
-        wasm = compile_hook_two_stage(source, config, opt_level="-Oz")
-        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, optimized with DWARF)[/dim]")
-    except Exception as e:
-        # Fall back to single-stage debug build
-        console.print(f"[dim]Two-stage compile failed ({e}), falling back to debug build[/dim]")
-        wasm = compile_hook(source, config=config, debug=True, optimize=False)
-        console.print(f"[dim]Compiled {source.name} ({len(wasm)} bytes, debug build)[/dim]")
+        result = validate_guards(wasm)
+        rejected = None
+    except GuardError as exc:
+        # Keep the exact artifact report useful after a failed deployability
+        # verdict. Best-effort totals can be understated at excessive depth,
+        # so the rejection remains the headline.
+        result = analyze_wce(wasm)
+        rejected = str(exc)
 
-    # Clean with DWARF preserved (rewrite guards, keep .debug_line)
-    try:
-        clean_result = clean_hook_detailed(wasm, visitor=KeepDebugVisitor())
-        cleaned = clean_result.wasm
-    except Exception:
-        cleaned = wasm
+    console.print()
+    console.print(f"[bold]{input_path.name}[/bold] — exact-artifact WCE")
+    console.print(f"  [dim]sha256:[/dim] {digest}")
+    console.print(f"  [dim]bytes:[/dim] {len(wasm):,}")
+    console.print(f"  [dim]provenance:[/dim] {provenance}")
+    if trace is not None:
+        console.print()
+        console.print(trace.format_table())
+    console.print()
+    if rejected is None:
+        console.print("  [bold green]DEPLOYABILITY: PASSED[/bold green]")
+    else:
+        console.print("  [bold red]DEPLOYABILITY: REJECTED[/bold red]")
+        console.print(f"  [red]{rejected}[/red]")
+        if result.nesting_exceeded:
+            console.print(
+                "  [red]WCE below is a floor because over-depth blocks are "
+                "not counted.[/red]"
+            )
+    console.print()
 
-    # Parse DWARF from cleaned binary (addresses match the cleaned code)
-    try:
-        dwarf_locs = parse_dwarf_locations(cleaned)
-    except Exception:
-        dwarf_locs = []
-
-    # Analyze WCE on cleaned binary
-    result = analyze_wce(cleaned)
+    line_map = (
+        _annotated_line_map(source)
+        if show_loops and source is not None and stripped_before_compile
+        else None
+    )
 
     max_wce = 65535
-
-    # Also compile debug build for comparison
-    debug_result = None
-    debug_dwarf_locs = []
-    try:
-        debug_wasm = compile_hook(source, config=config, debug=True, optimize=False)
-        from hookz.wasm.clean import clean_hook_detailed as _clean_d
-        debug_cleaned = _clean_d(debug_wasm, visitor=KeepDebugVisitor()).wasm
-        debug_dwarf_locs = parse_dwarf_locations(debug_cleaned)
-        debug_result = analyze_wce(debug_cleaned)
-    except Exception:
-        pass
-
-    # Source view first (if requested)
-    if show_source and source.suffix == ".c":
-        _print_annotated_source(console, source, dwarf_locs, debug_dwarf_locs, result)
-
-    # Then summary at the end
-    console.print()
-    console.print(f"[bold]{source.name}[/bold] — Worst-Case Execution Summary")
-    console.print()
-
-    if result.nesting_exceeded:
-        # Not a footnote: xahaud bails at the nesting limit before it ever
-        # weighs the budget, so every WCE figure below is a floor.
-        console.print(
-            "  [bold red]REJECTED by xahaud — block nesting exceeds "
-            "16 levels.[/bold red]"
-        )
-        console.print(
-            "  [red]Flatten your loops and conditions. WCE figures below are "
-            "understated (over-depth blocks count as 0).[/red]"
-        )
-        console.print()
-
-    for label, opt_wce, opt_tree, dbg_wce, dbg_tree in [
-        ("hook()", result.hook_wce, result.hook_tree,
-         debug_result.hook_wce if debug_result else 0,
-         debug_result.hook_tree if debug_result else None),
-        ("cbak()", result.cbak_wce, result.cbak_tree,
-         debug_result.cbak_wce if debug_result else 0,
-         debug_result.cbak_tree if debug_result else None),
-    ]:
-        if opt_tree is None:
+    for label, exact_wce, tree in (
+        ("hook()", result.hook_wce, result.hook_tree),
+        ("cbak()", result.cbak_wce, result.cbak_tree),
+    ):
+        if label == "cbak()" and result.cbak_func_idx is None:
+            # No cbak export. Printing "cbak() WCE: 0" for it reads as a
+            # callback that costs nothing rather than one that isn't there.
             continue
-        pct = opt_wce / max_wce * 100
-        bar_filled = int(pct / 5)
-        bar = "█" * bar_filled + "░" * (20 - bar_filled)
-        savings = ""
-        if dbg_wce and dbg_wce > opt_wce:
-            saved_pct = (1 - opt_wce / dbg_wce) * 100
-            savings = f"  [green]({saved_pct:.0f}% smaller than debug)[/green]"
-        console.print(f"  [bold]{label}[/bold] WCE: {opt_wce:,} / {max_wce:,} ({pct:.1f}%)  {bar}{savings}")
-        console.print()
-
-        # Dual-column loop breakdown
-        opt_loops = _collect_loops(opt_tree)
-        dbg_loops = _collect_loops(dbg_tree) if dbg_tree else []
-
-        if not opt_loops:
-            console.print("    [dim]No loops found[/dim]")
-            continue
-
-        # Build lookup by line for debug loops
-        dbg_loop_by_line: dict[str, int] = {loc: wce for loc, _, wce in dbg_loops}
-
-        console.print(f"    [bold]{'':>20s}  {'':>10s}  {'debug':>8s}  {'prod':>8s}[/bold]")
-        opt_loops.sort(key=lambda x: x[2], reverse=True)
-        for loc, bound, loop_wce in opt_loops:
-            loop_pct = loop_wce / max(opt_wce, 1) * 100
-            lbar_filled = int(loop_pct / 5)
-            lbar = "█" * lbar_filled + "░" * (20 - lbar_filled)
-            dbg_wce_str = f"{dbg_loop_by_line.get(loc, 0):>6,}" if loc in dbg_loop_by_line else "     —"
+        pct = exact_wce / max_wce * 100
+        console.print(
+            f"  [bold]{label}[/bold] WCE: {exact_wce:,} / {max_wce:,} "
+            f"({pct:.1f}%)"
+        )
+        loops = (
+            _collect_loops(tree, line_map)
+            if show_loops and tree is not None
+            else []
+        )
+        if loops:
             console.print(
-                f"    {loc:>20s}  GUARD({bound:<5d})  {dbg_wce_str}  {loop_wce:>6,}  {lbar}  {loop_pct:4.1f}%"
+                "    [yellow]partial mapping:[/yellow] guard ids identify "
+                "source lines, but loop subtree costs overlap and are not "
+                "additive"
             )
+            for loc, bound, loop_wce in sorted(
+                loops, key=lambda item: item[2], reverse=True
+            ):
+                console.print(
+                    f"    {loc:>20s}  GUARD({bound:<5d})  "
+                    f"subtree WCE {loop_wce:>7,}"
+                )
         console.print()
 
     if result.errors:
@@ -1161,7 +1275,40 @@ def wce(source, show_source):
             console.print(f"    [dim]{err}[/dim]")
         console.print()
 
-    sys.exit(0)
+    if show_source and source is not None:
+        from hookz.compiler import compile_hook, compile_hook_two_stage
+        from hookz.coverage.rewriter import parse_dwarf_locations
+        from hookz.wasm.clean import clean_hook_detailed
+        from hookz.wasm.visitor import KeepDebugVisitor
+
+        dwarf_locs = []
+        debug_dwarf_locs = []
+        try:
+            twin = compile_hook_two_stage(
+                source, analysis_config, opt_level="-Oz"
+            )
+            twin = clean_hook_detailed(
+                twin, visitor=KeepDebugVisitor()
+            ).wasm
+            dwarf_locs = parse_dwarf_locations(twin)
+            twin_result = analyze_wce(twin)
+            debug = compile_hook(
+                source, config=analysis_config, debug=True, optimize=False
+            )
+            debug = clean_hook_detailed(
+                debug, visitor=KeepDebugVisitor()
+            ).wasm
+            debug_dwarf_locs = parse_dwarf_locations(debug)
+        except Exception as exc:
+            console.print(
+                f"[yellow]secondary source view unavailable: {exc}[/yellow]"
+            )
+        else:
+            _print_annotated_source(
+                console, source, dwarf_locs, debug_dwarf_locs, twin_result
+            )
+
+    sys.exit(1 if rejected is not None else 0)
 
 
 @cli.command("build-test-hooks")

@@ -218,9 +218,11 @@ hookz pipelines
 hookz clean hook.wasm              # strip sections, rewrite guards
 hookz guard-check hook.wasm        # validate guards, show WCE
 
-# WCE budget analysis with source line mapping
-hookz wce hook.c                   # per-loop breakdown
-hookz wce --source hook.c          # annotated source with per-line cost
+# WCE of one exact artifact
+hookz wce hook.wasm                # weigh the bytes as given
+hookz wce hook.c                   # build production-style first, then weigh
+hookz wce hook.c --loops           # + partial guard-line loop mapping
+hookz wce hook.c --source          # + secondary DWARF twin source view
 ```
 
 ### hookz local build pipeline
@@ -236,13 +238,24 @@ source.c
 
 ### hookz wce pipeline
 
+The artifact is weighed first, and everything that maps it back to source is
+downstream of that and labelled as secondary.
+
 ```
-source.c
-  → compile (wasi-sdk clang, -g -O0, debug build with DWARF)
-  → clean with KeepDebugVisitor (rewrite guards, keep .debug_line)
-  → analyze_wce (best-effort, never fails)
-  → cross-reference guard_id → source line
-  → display per-loop WCE breakdown + optional annotated source
+hook.wasm ─────────────────────────────┐   (weighed as given)
+                                       │
+source.c → local-structural | buildbox ┤   (named in the provenance line)
+                                       ↓
+                          validate_guards → deployability verdict
+                            └ on rejection: analyze_wce, totals are a floor
+                                       ↓
+                          sha256 + bytes + WCE per entry point
+                                       ↓
+              --loops   guard_id → source line, partial: subtrees overlap
+                        (mapped into annotated coordinates only when the
+                         build stripped annotations first)
+              --source  separate -O0 / -Oz DWARF twins, per-line rows;
+                        a different control-flow tree, so not artifact WCE
 ```
 
 ## Visitor pattern

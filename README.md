@@ -125,8 +125,9 @@ hookz doctor                         Check install: toolchain, config, smoke tes
 hookz test [pytest args...]          Run tests
 hookz build hook.c                   Local structural build + validation
 hookz build hook.c --buildbox        Canonical remote build + local validation
-hookz wce hook.c                     WCE budget analysis with per-loop breakdown
-hookz wce --source hook.c            Annotated source with per-line WCE cost
+hookz wce hook.wasm                  WCE of the exact artifact you hand it
+hookz wce hook.c                     Build production-style, then weigh the result
+hookz wce hook.c --loops             Add the partial guard-line loop mapping
 hookz guard-check hook.wasm          Validate guard calls and show WCE
 hookz clean hook.wasm                Clean WASM for deployment (strip + rewrite guards)
 hookz show float_multiply            Show C++ source + xahaud test vectors
@@ -184,39 +185,56 @@ the **local** `local-structural` pipeline. It does not call the service.
 
 ## WCE analysis
 
-`hookz wce` shows where your execution budget goes, using accurate production-optimized numbers:
+WCE is a property of the WASM xahaud executes, so `hookz wce` weighs one exact
+artifact and says which one:
 
 ```bash
-hookz wce govern.c
+hookz wce govern.wasm
 
-  govern.c — Worst-Case Execution Summary
-    hook() WCE: 19,314 / 65,535 (29.5%)  █████░░░░░░░░░░░░░░░  (41% smaller than debug)
+  govern.wasm — exact-artifact WCE
+    sha256: 6f1c…                         # the bytes that were weighed
+    bytes: 3,171
+    provenance: provided artifact: govern.wasm
 
-                                     debug    prod
-      line 722  GUARD(3    )        23,988  14,700  ███████████████░░░░░  76.1%
-      line 724  GUARD(67   )         7,973   4,891  █████░░░░░░░░░░░░░░░  25.3%
-      line 279  GUARD(21   )         2,478   1,953  ██░░░░░░░░░░░░░░░░░░  10.1%
+    DEPLOYABILITY: PASSED
+
+    hook() WCE: 19,314 / 65,535 (29.5%)
 ```
 
-Uses two-stage compilation (`clang -c -g -O2` → `wasm-ld`) to get DWARF line tables on optimized code — the numbers reflect actual production instruction counts, not debug build inflation.*
+Given C instead, it builds first and names the compiler it used: the local
+`local-structural` pipeline by default, or the canonical service with
+`--buildbox`. Only then does it weigh the result. Deployability is the headline
+— a hook xahaud would reject exits non-zero, and its WCE total is reported as a
+floor rather than a number.
 
-\* `-O2` is used instead of `-Oz` because wasi-sdk 32 ignores `-mno-bulk-memory` at other optimization levels, emitting `memory.fill` instructions that xahaud rejects.
-
-Add `--source` for an annotated source view showing per-line instruction counts in both debug and optimized builds, with `ELIM` markers for lines the optimizer removed entirely:
+Add `--loops` for the per-loop breakdown. Loop rows come from guard IDs (`_g`
+encodes `__LINE__`), and they are labelled a partial mapping on purpose: loop
+subtree costs nest, so they overlap and do not sum to the total. When the build
+stripped hookz annotations — `local-structural` and `--buildbox` both do — each
+row cites the annotated line alongside the artifact's own, as
+`line 43 (artifact 42)`.
 
 ```
- debug │ prod │      │
+    line 722  GUARD(3    )  subtree WCE  14,700
+    line 724  GUARD(67   )  subtree WCE   4,891
+    line 279  GUARD(21   )  subtree WCE   1,953
+```
+
+`--source` appends a per-line view built from separate DWARF-carrying twin
+builds, with `ELIM` markers for lines missing from the optimized twin. It is a
+navigation aid, not the artifact's WCE: the twins have their own control-flow
+trees, and the command labels the panel accordingly. A standalone `.wasm` has
+no verified source twin, so `--source` is refused there rather than guessed.
+
+```
+ debug │   -Oz │      │
  ──────┼──────┼──────┼──────────────────────────────────
      7 │    6 │   27 │     ► for (int i = 0; GUARD(20), i < 20; ++i)
      5 │    5 │   28 │         if (hook_acc != otxn_acc)
      1 │ ELIM │   30 │             equal = 0;
      2 │ ELIM │   31 │             break;
-     1 │ ELIM │   34 │             equal = 1;
      1 │    1 │   36 │     if (equal)
-     2 │    1 │   21 │     hook_account(SBUF(hook_acc));
 ```
-
-Add `--source` for annotated source with per-line cost. Source lines are extracted from guard IDs (`_g` macro encodes `__LINE__`). Per-loop WCE totals are exact from the guard checker.
 
 ## Ledger model
 

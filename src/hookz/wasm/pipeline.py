@@ -190,6 +190,11 @@ class BuildPipeline:
     transforms: tuple[str, ...] = ()
 
 
+# Named, because whether a build stripped decides whether the artifact's
+# __LINE__ values are published or annotated line numbers, and readers of the
+# trace have to be able to ask.
+STRIP_ANNOTATIONS = "hookz.annotations:strip"
+
 # A local structural approximation using the historical web compiler's flags.
 # It does not call the buildbox and is not byte-identical to it; the local
 # clang, binaryen and cleaner differ. Provenance and known divergences:
@@ -204,7 +209,7 @@ LOCAL_STRUCTURAL_PIPELINE = BuildPipeline(
     opt=BUILDBOX,
     # An annotated hook must build to the same bytes as the file it annotates,
     # or the analysis describes a binary nobody deployed.
-    transforms=("hookz.annotations:strip",),
+    transforms=(STRIP_ANNOTATIONS,),
 )
 
 # Analysis builds — coverage, `hookz wce`, the instrumented hooks tests drive.
