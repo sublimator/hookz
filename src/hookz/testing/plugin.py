@@ -172,10 +172,25 @@ def find_tests_for_lines(hook_name: str, start: int, end: int) -> list[str]:
     return results
 
 
+def _plain_panel(body: str, *, title: str, border_style: str):
+    """Panel whose body is never interpreted as Rich markup.
+
+    Coverage excerpts are C source (and region tables that use ``[node]``
+    tags).  Passing those strings through ``Panel(str)`` enables markup, so
+    ``idx_buf[i]`` is displayed as ``idx_buf`` — valid-looking C that is not
+    the file.  ``Text`` is literal; intentional styling belongs on ``Text``
+    spans, not in the source payload.
+    """
+    from rich.panel import Panel
+    from rich.text import Text
+
+    return Panel(Text(body), title=title, border_style=border_style)
+
+
 def pytest_sessionfinish(session, exitstatus):
     """Print coverage reports for all registered hooks."""
     from rich.console import Console
-    from rich.panel import Panel
+    from rich.text import Text
 
     console = Console()
     console.print()  # newline after last test result
@@ -187,23 +202,27 @@ def pytest_sessionfinish(session, exitstatus):
             # Registered and never run. Skipping printed nothing at all, which
             # reads as "coverage is not configured for this hook" rather than
             # "no test has ever executed a line of it".
+            body = Text(f"no test executed any line of {src_name}\n"
+                         f"registered as ")
+            body.append(name, style="bold")
+            body.append(" in hookz.toml")
+            from rich.panel import Panel
             console.print(Panel(
-                f"no test executed any line of {src_name}\n"
-                f"registered as [bold]{name}[/bold] in hookz.toml",
+                body,
                 title=f"{src_name} coverage — 0%",
                 border_style="red",
             ))
             console.print()
             continue
 
-        console.print(Panel(
+        console.print(_plain_panel(
             tracker.summary(),
             title=f"{src_name} coverage",
             border_style="green" if tracker.coverage_pct() > 80 else "yellow",
         ))
 
         if tracker.regions():
-            console.print(Panel(
+            console.print(_plain_panel(
                 tracker.render_regions(limit=12),
                 title=f"{src_name} — marked regions, least covered first",
                 border_style="yellow",
@@ -214,7 +233,7 @@ def pytest_sessionfinish(session, exitstatus):
             # uncovered list then means "nothing was ever known to be
             # coverable", and printing 100% for it is the exact inversion of
             # the truth.
-            console.print(Panel(
+            console.print(_plain_panel(
                 f"{len(tracker.lines_hit)} line(s) ran, but the executable-line "
                 "set was never established, so no percentage is meaningful.\n"
                 "Instrument via tests.support.instrumented_hook, or call "
@@ -225,7 +244,7 @@ def pytest_sessionfinish(session, exitstatus):
             ))
         elif tracker.uncovered_lines:
             report = tracker.uncovered_report(source_path, context=1)
-            console.print(Panel(
+            console.print(_plain_panel(
                 report,
                 title=f"{src_name} — uncovered lines",
                 border_style="red",
