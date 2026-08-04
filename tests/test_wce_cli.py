@@ -578,7 +578,17 @@ class TestSourceCompilationChoice:
 
 
 class TestGuardLineProvenance:
-    """A guard id is a __LINE__ from whatever file clang saw."""
+    """A guard id is a __LINE__ from whatever file clang saw.
+
+    Covers the two cases that exist: a build that stripped annotations and one
+    that did not.
+
+    TODO(guard-line-citation-provenance): two more are known and untested
+    because nothing in-tree can reach them — a line-shifting transform declared
+    alongside the stripper, and a guard whose __LINE__ comes from a header
+    rather than the hook's own .c. Both print a citation that looks exactly
+    like a correct one.
+    """
 
     def test_stripping_build_maps_the_artifact_line_into_the_annotated_file(
         self, tmp_path, monkeypatch

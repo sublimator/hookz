@@ -351,6 +351,15 @@ def _line_from_guard_id(guard_id: int, line_map: dict[int, int] | None = None) -
     and is passed only when the build that produced the artifact stripped
     annotations first. Applying it to an unstripped build's ids would move
     every citation onto unrelated code.
+
+    TODO(guard-line-citation-provenance): assumes the id's __LINE__ belongs to
+    the hook's own .c file. GUARD is a function-like macro, so expansion puts
+    it there for every in-tree hook — but a guard reached from an inline
+    function in a header would carry that header's line, be looked up in the .c
+    file's map, and be printed with the same confidence as a correct citation.
+    Nothing in the id says which file it came from, so resolving this needs the
+    DWARF file index or a per-file guard-id namespace; until then the honest
+    fallback is to cite the raw id when the mapped line cannot be corroborated.
     """
     if guard_id < 0:
         # Signed: undo two's complement
@@ -1214,6 +1223,14 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
             # is the most ordinary way for this command to fail at all.
             raise click.ClickException(f"local pipeline failed: {exc}") from exc
         wasm = trace.wasm
+        # TODO(guard-line-citation-provenance): membership, where the property
+        # actually required is "the artifact's numbering IS strip(source)'s
+        # numbering". A pipeline declaring the stripper *and* a line-shifting
+        # transform would set this and then map through a map that no longer
+        # describes the compiled file. No such transform exists in-tree;
+        # _resolve_transform imports any module:function, so the set is
+        # open-ended. Fix by building the map from the text run_pipeline
+        # actually compiled, which removes the need for this gate.
         stripped_before_compile = STRIP_ANNOTATIONS in trace.pipeline.transforms
         # Read the caveat off the pipeline rather than asserting one. Only
         # local-structural aims at the production compiler; calling the debug

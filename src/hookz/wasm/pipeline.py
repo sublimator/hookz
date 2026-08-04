@@ -187,6 +187,14 @@ class BuildPipeline:
     # transform that adds or removes a line changes the artifact; this is where
     # anything that rewrites source has to declare itself and show up in the
     # trace, rather than happening somewhere on the way in.
+    #
+    # TODO(guard-line-citation-provenance): declared, not enforced. Nothing
+    # checks that a transform preserves line numbering, and `hookz wce --loops`
+    # decides whether to map guard ids back into annotated coordinates by
+    # testing for the stripper's *presence* here — so a line-shifting pass
+    # declared alongside it would silently invalidate that mapping. Either
+    # record the compiled text on the trace, or make line-preservation a
+    # property a transform has to declare.
     transforms: tuple[str, ...] = ()
 
     @property
