@@ -22,13 +22,13 @@ from hookz.testing.plugin import _plain_panel
 
 SOURCE_LINE = '            if (seen_ids[i] == entry_id) NOPE("reg: duplicate entry id.");'
 
-# Every shape of square bracket a hook can contain that Rich would otherwise
-# read as a tag: a subscript, something that is also a real style name, and a
-# closing tag that would terminate a style opened elsewhere in the line.
+# Every shape Rich would otherwise read as a tag. `[2]` and `[SBUF(key)]` are
+# NOT among them — Rich only opens a tag on [a-z#/@], so a digit or a capital
+# is inert and proves nothing. Each line here must contain a live one.
 BRACKET_LINES = [
     "uint8_t seen_ids[i];",
-    "int bold[2];",
-    "state[SBUF(key)] = acc[0];",
+    "int x[bold];",
+    "state[SBUF(key)] = acc[red];",
     "if (buf[/i] == 0) return 0;",
     "arr[dim] = arr[red] + arr[not a tag];",
 ]

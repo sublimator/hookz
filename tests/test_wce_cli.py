@@ -13,6 +13,7 @@ confidently wrong rather than merely unhelpful:
 from __future__ import annotations
 
 import hashlib
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -20,7 +21,13 @@ from click.testing import CliRunner
 
 from hookz.cli.main import _annotated_line_map, _line_from_guard_id, cli
 from hookz.wasm.guard import BlockInfo, GuardError, GuardResult
-from hookz.wasm.pipeline import STRIP_ANNOTATIONS
+from hookz.wasm.pipeline import (
+    ANALYSIS_PIPELINE,
+    LOCAL_STRUCTURAL_PIPELINE,
+    STRIP_ANNOTATIONS,
+    BuildTrace,
+    StageMetrics,
+)
 
 
 WASM = b"\x00asm\x01\x00\x00\x00exact-artifact"
@@ -28,6 +35,16 @@ WASM = b"\x00asm\x01\x00\x00\x00exact-artifact"
 # One annotation line up front, so every published line sits one line lower in
 # the annotated file: published 42 is annotated 43.
 ANNOTATED_C = "//@@ model\n" + "\n" * 41 + "int hook;\n"
+
+
+@pytest.fixture(autouse=True)
+def pinned_terminal_width(monkeypatch):
+    """`wce` builds its own Console, which takes its width from COLUMNS when
+    stdout is not a tty. Unpinned, every substring assertion in this file
+    passes or fails on the window size of whoever runs it: at 120 the
+    provenance line wraps mid-phrase, at 60 the sha256 splits in two.
+    """
+    monkeypatch.setenv("COLUMNS", "200")
 
 
 def result(*, hook=123, cbak=4, cbak_idx=2, **kw):
@@ -53,15 +70,29 @@ def result_with_loop(*, guard_id=42, **kw):
     return value
 
 
-def fake_trace(*, name="local-structural", transforms=(STRIP_ANNOTATIONS,)):
-    return SimpleNamespace(
+def build_trace(pipeline=LOCAL_STRUCTURAL_PIPELINE, *, source_path=None):
+    """A real BuildTrace carrying the real pipeline objects.
+
+    Invented stand-ins drift: a SimpleNamespace whose `summary` was shorter
+    than the genuine one made the provenance line fit on one rendered row,
+    which is not a property the real pipeline has.
+    """
+    return BuildTrace(
+        pipeline=pipeline,
+        source_path=source_path or Path("hook.c"),
         wasm=WASM,
-        pipeline=SimpleNamespace(
-            name=name,
-            summary="local structural approximation",
-            transforms=transforms,
-        ),
-        format_table=lambda: "stage   bytes\ncompile    22",
+        stages=[
+            StageMetrics(
+                name="compile", detail="clang -O3", size=len(WASM) + 400, depth=3
+            ),
+            StageMetrics(
+                name="clean",
+                detail="hook-cleaner",
+                size=len(WASM),
+                depth=3,
+                hook_wce=123,
+            ),
+        ],
     )
 
 
@@ -76,7 +107,7 @@ def explode(message):
 def local_build(monkeypatch):
     """Stub the local pipeline; return the recorder of what it was asked for."""
     seen = []
-    trace = fake_trace()
+    trace = build_trace()
     monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
     monkeypatch.setattr(
         "hookz.wasm.pipeline.run_pipeline",
@@ -84,6 +115,30 @@ def local_build(monkeypatch):
     )
     monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: result())
     return SimpleNamespace(seen=seen, trace=trace)
+
+
+@pytest.fixture
+def buildbox(monkeypatch):
+    """Stub the remote compiler, recording exactly what it was asked to build."""
+    calls = []
+    remote = SimpleNamespace(
+        wasm=WASM,
+        endpoint="https://compiler.example/api/build",
+        request_sha256="a" * 64,
+    )
+
+    def compile_source(*a, **k):
+        calls.append((a, k))
+        return remote
+
+    monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+    monkeypatch.setattr("hookz.buildbox.compile_source", compile_source)
+    monkeypatch.setattr(
+        "hookz.wasm.pipeline.run_pipeline",
+        explode("buildbox mode used the local pipeline"),
+    )
+    monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: result())
+    return SimpleNamespace(calls=calls, remote=remote)
 
 
 @pytest.fixture
@@ -122,14 +177,17 @@ class TestExactArtifactFirst:
         assert "hook() WCE: 123" in out.output
         assert "DEPLOYABILITY: PASSED" in out.output
 
-    def test_byte_count_is_the_weighed_artifact(self, artifact, monkeypatch):
-        monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
-        )
+    def test_byte_count_is_the_artifact_not_the_input_file(
+        self, c_source, local_build
+    ):
+        """On a .wasm the two are the same number, so the claim only has
+        content when the input is C: 29 bytes of source, 22 of artifact."""
+        assert c_source.stat().st_size != len(WASM)
 
-        out = run(artifact)
+        out = run(c_source)
 
         assert f"bytes: {len(WASM):,}" in out.output
+        assert f"bytes: {c_source.stat().st_size:,}" not in out.output
 
     def test_loop_rows_are_opt_in(self, artifact, monkeypatch):
         monkeypatch.setattr(
@@ -155,6 +213,46 @@ class TestExactArtifactFirst:
         assert "partial mapping" in out.output
         assert "line 42" in out.output
         assert "not additive" in out.output
+
+    def test_the_costliest_loop_is_listed_first(self, artifact, monkeypatch):
+        """The list is a triage order. Reversed, it points at the cheapest
+        loop first and reads exactly as authoritative."""
+        tree = BlockInfo(iteration_bound=1)
+        for guard, cost in ((11, 1), (22, 9), (33, 4)):
+            child = tree.add_child(3, guard, is_loop=True, guard_id=guard)
+            child.instruction_count = cost
+        value = result(hook=50)
+        value.hook_tree = tree
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm: value
+        )
+
+        out = run(artifact, "--loops")
+
+        cited = [
+            int(ln.split("line ")[1].split()[0])
+            for ln in out.output.splitlines()
+            if "GUARD(" in ln
+        ]
+        assert cited == [22, 33, 11]
+
+    def test_cbak_loops_are_reported_too(self, artifact, monkeypatch):
+        """Loop rows have only ever been exercised on the hook side."""
+        value = result_with_loop()
+        cbak_tree = BlockInfo(iteration_bound=1)
+        cbak_tree.add_child(
+            7, 90, is_loop=True, guard_id=90
+        ).instruction_count = 2
+        value.cbak_tree = cbak_tree
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm: value
+        )
+
+        out = run(artifact, "--loops")
+
+        assert "line 42" in out.output  # hook side
+        assert "line 90" in out.output  # cbak side
+        assert "GUARD(7    )" in out.output
 
     def test_bytes_that_are_not_wasm_are_refused_not_analysed(
         self, tmp_path, monkeypatch
@@ -208,6 +306,9 @@ class TestExactArtifactFirst:
         assert "DEPLOYABILITY: REJECTED" in out.output
         assert "too deep" in out.output
         assert "hook() WCE: 999" in out.output
+        # This rejection is not a depth one, so the total is exact. Calling
+        # every rejected total a floor would be its own false statement.
+        assert "floor" not in out.output
 
     def test_over_depth_totals_are_declared_a_floor(self, artifact, monkeypatch):
         monkeypatch.setattr(
@@ -253,10 +354,18 @@ class TestSourceCompilationChoice:
         assert "production-like approximation, not buildbox provenance" in out.output
         assert "exact-artifact WCE" in out.output
 
-    def test_stage_table_is_shown_for_a_local_build(self, c_source, local_build):
+    def test_stage_table_describes_the_build_that_was_weighed(
+        self, c_source, local_build
+    ):
+        """A trace printed for a different build than the one weighed would
+        look perfectly consistent, so tie the last stage to the byte count."""
         out = run(c_source)
 
         assert "compile" in out.output
+        assert "clean" in out.output
+        final = local_build.trace.stages[-1]
+        assert final.size == len(WASM)
+        assert f"bytes: {final.size:,}" in out.output
 
     def test_named_pipeline_reaches_the_runner(self, c_source, local_build):
         out = run(c_source, "--pipeline", "analysis")
@@ -275,27 +384,46 @@ class TestSourceCompilationChoice:
         assert out.exit_code == 1
         assert "local pipeline failed" in out.output
 
-    def test_buildbox_weighs_the_exact_remote_result(self, c_source, monkeypatch):
-        remote = SimpleNamespace(
-            wasm=WASM,
-            endpoint="https://compiler.example/api/build",
-            request_sha256="a" * 64,
-        )
-        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
-        monkeypatch.setattr("hookz.buildbox.compile_source", lambda *a, **k: remote)
-        monkeypatch.setattr(
-            "hookz.wasm.pipeline.run_pipeline",
-            explode("buildbox mode used local pipeline"),
-        )
-        monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
-        )
-
+    def test_buildbox_weighs_the_exact_remote_result(self, c_source, buildbox):
         out = run(c_source, "--buildbox")
 
         assert out.exit_code == 0, out.output
         assert "canonical buildbox result" in out.output
         assert "a" * 64 in out.output
+
+    def test_the_service_is_sent_this_source_under_this_name(
+        self, c_source, buildbox
+    ):
+        """Stubbing compile_source and asserting only on the reply proves the
+        report renders; it does not prove the right file was compiled."""
+        run(c_source, "--buildbox")
+
+        args, kwargs = buildbox.calls[0]
+        assert args[0] == c_source.read_text()
+        assert kwargs["filename"] == "hook.c"
+
+    def test_buildbox_url_and_options_reach_the_request(self, c_source, buildbox):
+        run(
+            c_source,
+            "--buildbox",
+            "--buildbox-url",
+            "https://elsewhere.example/api/build",
+            "--buildbox-options",
+            "-Oz",
+        )
+
+        _, kwargs = buildbox.calls[0]
+        assert kwargs["endpoint"] == "https://elsewhere.example/api/build"
+        assert kwargs["options"] == "-Oz"
+
+    def test_default_compiler_options_are_the_documented_ones(
+        self, c_source, buildbox
+    ):
+        run(c_source, "--buildbox")
+
+        _, kwargs = buildbox.calls[0]
+        assert kwargs["options"] == "-O3"
+        assert kwargs["endpoint"] is None  # the client picks its own default
 
     def test_buildbox_failure_never_falls_back_to_a_local_compiler(
         self, c_source, monkeypatch
@@ -379,7 +507,7 @@ class TestGuardLineProvenance:
         source.write_text(ANNOTATED_C)
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr(
-            "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: fake_trace()
+            "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: build_trace()
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
@@ -401,7 +529,7 @@ class TestGuardLineProvenance:
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr(
             "hookz.wasm.pipeline.run_pipeline",
-            lambda *a, **k: fake_trace(name="analysis", transforms=()),
+            lambda *a, **k: build_trace(ANALYSIS_PIPELINE),
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
@@ -452,7 +580,7 @@ class TestGuardLineProvenance:
 
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr(
-            "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: fake_trace()
+            "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: build_trace()
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm: loopy
@@ -463,6 +591,100 @@ class TestGuardLineProvenance:
 
         assert out.exit_code == 0, out.output
         assert len([p for p in reads if p == source]) == 1
+
+
+class TestSecondarySourceView:
+    """The --source block: two twin builds, wired to a panel whose two columns
+    mean different things. Nothing here is artifact WCE, so the wiring is the
+    only thing that can be right or wrong."""
+
+    @pytest.fixture
+    def twins(self, monkeypatch):
+        """-Oz twin and debug twin, distinguishable by their DWARF row counts.
+
+        The twin carries one row for line 1, the debug build two. A panel that
+        reports 1 in the debug column has been handed the wrong build.
+        """
+        locs = {b"TWIN": [1], b"DEBUG": [1, 1]}
+
+        monkeypatch.setattr(
+            "hookz.compiler.compile_hook_two_stage",
+            lambda source, config, opt_level=None: b"TWIN",
+        )
+        monkeypatch.setattr(
+            "hookz.compiler.compile_hook",
+            lambda source, config=None, debug=False, optimize=True: b"DEBUG",
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.clean.clean_hook_detailed",
+            lambda wasm, visitor=None: SimpleNamespace(wasm=wasm),
+        )
+        monkeypatch.setattr(
+            "hookz.coverage.rewriter.parse_dwarf_locations",
+            lambda wasm: [SimpleNamespace(line=n) for n in locs[wasm]],
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.guard.analyze_wce",
+            lambda wasm: result(hook=7, cbak_idx=None),
+        )
+
+    @staticmethod
+    def _cells(output, needle):
+        row = next(ln for ln in output.splitlines() if needle in ln)
+        return [c.strip() for c in row.split("│")]
+
+    def test_the_panel_is_appended_after_the_exact_report(
+        self, c_source, local_build, twins
+    ):
+        out = run(c_source, "--source")
+
+        assert out.exit_code == 0, out.output
+        assert "not artifact WCE" in out.output
+        # order matters: the artifact verdict must not be buried under it
+        assert out.output.index("DEPLOYABILITY") < out.output.index("Secondary")
+
+    def test_each_column_reports_the_build_it_is_labelled_with(
+        self, c_source, local_build, twins
+    ):
+        out = run(c_source, "--source")
+
+        header = self._cells(out.output, "debug")
+        row = self._cells(out.output, "int hook(void)")
+        assert header[1] == "debug" and header[2] == "-Oz"
+        # debug twin has 2 DWARF rows for this line, -Oz twin has 1
+        assert row[1] == "2", f"debug column got {row[1]!r}"
+        assert row[2] == "1", f"-Oz column got {row[2]!r}"
+
+    def test_a_failed_twin_build_warns_instead_of_drawing_a_panel(
+        self, c_source, local_build, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hookz.compiler.compile_hook_two_stage",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no wasi-sdk")),
+        )
+
+        out = run(c_source, "--source")
+
+        assert out.exit_code == 0, out.output
+        assert "secondary source view unavailable: no wasi-sdk" in out.output
+        assert "not artifact WCE" not in out.output
+
+    def test_the_exact_verdict_still_decides_the_exit_code(
+        self, c_source, monkeypatch, twins
+    ):
+        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: build_trace()
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda wasm: (_ for _ in ()).throw(GuardError("too deep")),
+        )
+
+        out = run(c_source, "--source")
+
+        assert out.exit_code == 1
+        assert "DEPLOYABILITY: REJECTED" in out.output
 
 
 class TestStripDeclarationIsRealNotJustAString:

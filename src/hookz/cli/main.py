@@ -279,9 +279,10 @@ def _print_annotated_source(console, source: Path, opt_locs, debug_locs, result)
 
     out = []
     # Column labels stay 5 wide, like the counts under them; which binaries
-    # these came from is spelled out in the caption below the panel.
+    # these came from is spelled out in the caption below the panel. The rule
+    # segments are 6/7/6 because the separators sit at 7, 15 and 22.
     out.append(" [bold]debug │   -Oz │      │[/bold]")
-    out.append(f" [dim]──────┼──────┼──────┼{'─' * 60}[/dim]")
+    out.append(f" [dim]──────┼───────┼──────┼{'─' * 60}[/dim]")
 
     for i, line_text in enumerate(src_lines, 1):
         d = debug_counts.get(i, 0)

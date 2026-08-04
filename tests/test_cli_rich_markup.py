@@ -19,13 +19,13 @@ from hookz.cli.main import _print_annotated_source, _show_function
 
 SOURCE_LINE = '            if (seen_ids[i] == entry_id) NOPE("reg: duplicate entry id.");'
 
-# Every shape of square bracket a hook can contain that Rich would otherwise
-# read as a tag: a subscript, something that is also a real style name, and a
-# closing tag that would terminate a style opened elsewhere in the line.
+# Every shape Rich would otherwise read as a tag. `[2]` and `[SBUF(key)]` are
+# NOT among them — Rich only opens a tag on [a-z#/@], so a digit or a capital
+# is inert and proves nothing. Each line here must contain a live one.
 BRACKET_LINES = [
     "uint8_t seen_ids[i];",
-    "int bold[2];",
-    "state[SBUF(key)] = acc[0];",
+    "int x[bold];",
+    "state[SBUF(key)] = acc[red];",
     "if (buf[/i] == 0) return 0;",
     "arr[dim] = arr[red] + arr[not a tag];",
 ]
@@ -85,20 +85,53 @@ class TestAnnotatedSourceViewEscapesC:
         assert "►" in out
         assert "seen_ids[i]" in out
 
+    def test_a_loop_line_absent_from_the_oz_twin_is_marked_eliminated(
+        self, tmp_path
+    ):
+        """The loop-marker row is the only consumer of the ELIM column value —
+        every other row hardcodes it — so without this the branch never runs.
+        """
+        from hookz.wasm.guard import BlockInfo
+
+        src = tmp_path / "hook.c"
+        src.write_text("for (int i = 0; GUARD(2), i < 2; ++i) sum += buf[i];\n")
+        tree = BlockInfo(iteration_bound=1)
+        tree.add_child(2, 0, is_loop=True, guard_id=(1 << 31) + 1)
+        buf, console = _console()
+        _print_annotated_source(
+            console,
+            src,
+            [],  # nothing survived into the -Oz twin's line table
+            [SimpleNamespace(line=1)],
+            SimpleNamespace(hook_tree=tree, cbak_tree=None),
+        )
+        out = buf.getvalue()
+        # "ELIM" also appears in the caption, so assert on the row's own cell
+        row = next(ln for ln in out.splitlines() if "►" in ln)
+        cells = [c.strip() for c in row.split("│")]
+        assert cells[1] == "1" and cells[2] == "ELIM"
+        assert "buf[i]" in cells[4]
+
     def test_the_view_disclaims_being_artifact_wce(self, tmp_path):
         out = self._run(tmp_path, ["int a;"], opt=[1], debug=[1])
         assert "not artifact WCE" in out
         assert "Secondary estimate only" in out
 
-    def test_column_header_lines_up_with_the_counts_below_it(self, tmp_path):
+    def test_the_three_rules_and_columns_all_line_up(self, tmp_path):
+        """Header, rule and data are one table; a rule that does not meet its
+        own columns is the tell that a label was widened without the rest."""
         out = self._run(tmp_path, ["int a;"], opt=[1], debug=[1])
-        header = next(ln for ln in out.splitlines() if "debug" in ln)
-        counts = next(
-            ln for ln in out.splitlines() if "int a;" in ln and "│" in ln
-        )
-        assert [i for i, c in enumerate(header) if c == "│"][:3] == [
-            i for i, c in enumerate(counts) if c == "│"
-        ][:3]
+        lines = out.splitlines()
+        header = next(ln for ln in lines if "debug" in ln and "│" in ln)
+        rule = next(ln for ln in lines if "┼" in ln)
+        counts = next(ln for ln in lines if "int a;" in ln and "│" in ln)
+
+        def stops(line, ch):
+            return [i for i, c in enumerate(line) if c == ch]
+
+        assert stops(header, "│") == stops(counts, "│")
+        # [0] is the panel's own left border; the three column separators follow
+        assert stops(rule, "┼") == stops(counts, "│")[1:4]
 
     def test_an_unreadable_source_says_so_instead_of_raising(self, tmp_path):
         buf, console = _console()
@@ -124,12 +157,16 @@ class TestShowPanelsAreNotMarkup:
         "}\n"
     )
 
-    def _show(self, monkeypatch, *, wrapper=None, impl=None, test=None):
+    def _show(self, monkeypatch, tmp_path, *, wrapper=None, impl=None, test=None):
         import hookz.xrpl.xahaud as xahaud
+
+        seen_root = []
 
         class FakeRepo:
             def __init__(self, root):
-                pass
+                # the real XahaudRepo raises FileNotFoundError on a root that
+                # does not exist, so the fixture must not invent one
+                seen_root.append(root)
 
             def find_hook_function(self, name):
                 return wrapper
@@ -143,23 +180,26 @@ class TestShowPanelsAreNotMarkup:
         monkeypatch.setattr(xahaud, "XahaudRepo", FakeRepo)
 
         buf, console = _console()
-        config = SimpleNamespace(xahaud_root="/nowhere", network="mainnet")
+        config = SimpleNamespace(xahaud_root=tmp_path, network="mainnet")
         _show_function(console, config, "state_set")
+        assert seen_root == [str(tmp_path)]
         return buf.getvalue()
 
-    def test_wrapper_panel_keeps_c_subscripts(self, monkeypatch):
-        out = self._show(monkeypatch, wrapper=self.CPP)
+    def test_wrapper_panel_keeps_c_subscripts(self, monkeypatch, tmp_path):
+        out = self._show(monkeypatch, tmp_path, wrapper=self.CPP)
         assert "uint8_t buf[32];" in out
         assert "ptr[i]" in out
 
-    def test_implementation_panel_keeps_c_subscripts(self, monkeypatch):
-        out = self._show(monkeypatch, impl=self.CPP)
+    def test_implementation_panel_keeps_c_subscripts(self, monkeypatch, tmp_path):
+        out = self._show(monkeypatch, tmp_path, impl=self.CPP)
+        # buf[32] alone proves nothing — a digit never opens a Rich tag
+        assert "ptr[i]" in out
         assert "uint8_t buf[32];" in out
 
-    def test_test_panel_keeps_c_subscripts(self, monkeypatch):
-        out = self._show(monkeypatch, test=self.CPP)
+    def test_test_panel_keeps_c_subscripts(self, monkeypatch, tmp_path):
+        out = self._show(monkeypatch, tmp_path, test=self.CPP)
         assert "ptr[i]" in out
 
-    def test_nothing_found_is_said_plainly(self, monkeypatch):
-        out = self._show(monkeypatch)
+    def test_nothing_found_is_said_plainly(self, monkeypatch, tmp_path):
+        out = self._show(monkeypatch, tmp_path)
         assert "No xahaud source found for 'state_set'" in out
