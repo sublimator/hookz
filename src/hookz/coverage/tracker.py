@@ -43,15 +43,20 @@ class RegionCoverage:
     end_line: int
     lines_hit: set[int] = field(default_factory=set)
     lines_total: set[int] = field(default_factory=set)
+    # All instrumented source lines observed in the span, including DWARF
+    # locations that the AST filter does not classify as executable. Keep
+    # these separate so `entered` remains an execution observation while the
+    # coverage numerator cannot exceed its executable-line denominator.
+    lines_observed: set[int] = field(default_factory=set)
 
     @property
     def entered(self) -> bool:
         """At least one line in the region was hit."""
-        return len(self.lines_hit) > 0
+        return bool(self.lines_observed or self.lines_hit)
 
     @property
     def not_entered(self) -> bool:
-        return len(self.lines_hit) == 0
+        return not self.entered
 
     @property
     def completed(self) -> bool:
@@ -189,13 +194,22 @@ class CoverageTracker:
                 # the hits alone; "did all of it run" is not, and must not
                 # borrow the hits to manufacture an answer.
                 total = {ln for ln in span if ln in self._executable_lines}
-                hit = {ln for ln in span if self._line_hits.get(ln, 0) > 0}
+                observed = {
+                    ln for ln in span if self._line_hits.get(ln, 0) > 0
+                }
+                # With a denominator, the numerator must use the same
+                # executable universe. Without one, retain the historical
+                # hit set so marker assertions can still inspect what ran.
+                hit = (
+                    observed & total if self._executable_lines else observed
+                )
                 return RegionCoverage(
                     name=name,
                     start_line=m.region_start,
                     end_line=m.region_end,
                     lines_hit=hit,
                     lines_total=total,
+                    lines_observed=observed,
                 )
         available = [m.name for m in self._markers]
         raise KeyError(f"Unknown marker '{name}'. Available: {available[:10]}...")

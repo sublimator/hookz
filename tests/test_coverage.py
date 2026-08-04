@@ -325,6 +325,32 @@ int64_t hook(uint32_t r) {
         assert region.not_entered
         assert len(region.lines_total) == 4
 
+    def test_non_executable_hits_do_not_exceed_the_denominator(self, tmp_path):
+        t = self._tracker(tmp_path)
+        # Marker/comment line 3 may have a DWARF location even though the AST
+        # executable-line filter correctly excludes it from the denominator.
+        for ln in (3, 4, 5):
+            t.hit(ln)
+
+        region = t.region("half")
+
+        assert region.entered
+        assert region.lines_observed == {3, 4, 5}
+        assert region.lines_hit == {4, 5}
+        assert len(region.lines_hit) <= len(region.lines_total)
+        assert region.coverage_pct == 50.0
+
+    def test_only_a_non_executable_hit_still_records_entry(self, tmp_path):
+        t = self._tracker(tmp_path)
+        t.hit(3)
+
+        region = t.region("half")
+
+        assert region.entered
+        assert region.lines_observed == {3}
+        assert region.lines_hit == set()
+        assert region.coverage_pct == 0.0
+
 
 class TestNoDenominatorIsNotFullCoverage:
     """Hits with no executable set means 0/0, and 0/0 is not 100%.
