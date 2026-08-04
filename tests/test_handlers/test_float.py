@@ -682,6 +682,19 @@ class TestFloatStoSetEdgeCases:
         recovered = float_sto_set(rt, 0, 49)
         assert xfl_to_float(recovered) == pytest.approx(42.0, rel=1e-10)
 
+    def test_raw_48_byte_iou_amount_without_header(self, rt):
+        """slot_subfield supplies an issued amount without its field header."""
+        xfl = float_to_xfl(-42.0)
+        rt._write_memory(100, CUSTOM_CURRENCY_20)
+        rt._write_memory(200, ISSUER_20)
+        float_sto(rt, 0, 50, 100, 20, 200, 20, xfl, hookapi.sfAmount)
+        raw_amount = rt._read_memory(1, 48)
+
+        rt._write_memory(300, raw_amount)
+        recovered = float_sto_set(rt, 300, 48)
+
+        assert xfl_to_float(recovered) == pytest.approx(-42.0, rel=1e-10)
+
     def test_iou_with_2byte_header(self, rt):
         """IOU amount with 2-byte field header (field>=16)."""
         xfl = float_to_xfl(42.0)

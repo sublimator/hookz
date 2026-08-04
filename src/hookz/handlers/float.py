@@ -401,7 +401,9 @@ def float_sto_set(rt: HookRuntime, read_ptr: int, read_len: int) -> int:
     upto = 0
     length = len(data)
 
-    if length > 8:
+    # Slot subfields contain the raw 8-byte native or 48-byte issued amount.
+    # Other supported lengths include a one-, two-, or three-byte field header.
+    if length > 8 and length != 48:
         hi = data[upto] >> 4
         lo = data[upto] & 0x0F
         if hi == 0 and lo == 0:

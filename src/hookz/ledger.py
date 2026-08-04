@@ -124,14 +124,23 @@ def _accid_bytes(account: str | bytes) -> bytes:
 
 
 def _currency_bytes(currency: str | bytes) -> bytes:
-    """Convert currency to 20-byte representation."""
+    """Convert a 3-character or 40-hex currency to 20-byte representation."""
     if isinstance(currency, str):
-        cur = bytearray(20)
-        cur[12:12 + len(currency)] = currency.encode("ascii")
-        return bytes(cur)
+        if len(currency) == 3:
+            cur = bytearray(20)
+            cur[12:15] = currency.encode("ascii")
+            return bytes(cur)
+        if len(currency) == 40:
+            try:
+                return bytes.fromhex(currency)
+            except ValueError as exc:
+                raise ValueError("40-character currency must be hexadecimal") from exc
+        raise ValueError(
+            f"Currency string must be a 3-character code or 40 hex characters, got {len(currency)}"
+        )
     if len(currency) == 20:
         return currency
-    raise ValueError(f"Currency must be 3-char string or 20 bytes, got {len(currency)}")
+    raise ValueError(f"Currency must be a supported string or 20 bytes, got {len(currency)}")
 
 
 def _uint32_bytes(val: int) -> bytes:
@@ -322,7 +331,7 @@ def account_root(account: str, **fields: Any) -> tuple[bytes, bytes]:
 def ripple_state(
     account1: str,
     account2: str,
-    currency: str,
+    currency: str | bytes,
     balance: str = "0",
     limit: str = "0",
     limit_peer: str = "0",
@@ -340,12 +349,15 @@ def ripple_state(
                                 balance="100", limit="1000")
         rt.ledger[kl] = data
     """
-    lo, hi = sorted([account1, account2])
+    acc1 = _accid_bytes(account1)
+    acc2 = _accid_bytes(account2)
+    lo, hi = (account1, account2) if acc1 < acc2 else (account2, account1)
+    json_currency = currency.hex().upper() if isinstance(currency, bytes) else currency
     obj: dict[str, Any] = {
         "LedgerEntryType": "RippleState",
-        "Balance": {"currency": currency, "value": balance, "issuer": "rrrrrrrrrrrrrrrrrrrrrhoLvTp"},
-        "LowLimit": {"currency": currency, "value": limit, "issuer": lo},
-        "HighLimit": {"currency": currency, "value": limit_peer, "issuer": hi},
+        "Balance": {"currency": json_currency, "value": balance, "issuer": "rrrrrrrrrrrrrrrrrrrrrhoLvTp"},
+        "LowLimit": {"currency": json_currency, "value": limit, "issuer": lo},
+        "HighLimit": {"currency": json_currency, "value": limit_peer, "issuer": hi},
         "Flags": fields.pop("Flags", 0),
         **fields,
     }

@@ -115,6 +115,63 @@ class TestUtilKeylet:
         from hookz.ledger import trust_line_keylet
         assert kl == trust_line_keylet(ACCID, acc2, cur)
 
+    def test_line_keylet_decodes_a_40_character_hex_currency(self, rt):
+        """The JSON form of a nonstandard currency hashes like its 20 bytes."""
+        from hookz.ledger import trust_line_keylet
+
+        acc2 = to_accid("rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe")
+        cur = b"\x44" * 20
+
+        assert trust_line_keylet(ACCID, acc2, cur.hex().upper()) == trust_line_keylet(
+            ACCID, acc2, cur
+        )
+
+    def test_ripple_state_returns_the_keylet_used_by_keylet_line(self, rt):
+        """A nonstandard-currency object is visible through KEYLET_LINE."""
+        from hookz.handlers.float import float_int
+        from hookz.handlers.slot import slot_float, slot_set, slot_subfield
+        from hookz.ledger import ripple_state, trust_line_keylet
+
+        account2 = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
+        acc2 = to_accid(account2)
+        cur = b"\x44" * 20
+        keylet, data = ripple_state(RADDR, account2, cur, balance="-100")
+
+        assert keylet == trust_line_keylet(ACCID, acc2, cur)
+        rt.ledger[keylet] = data
+        rt._write_memory(100, ACCID)
+        rt._write_memory(200, acc2)
+        rt._write_memory(300, cur)
+        assert util_keylet(
+            rt, 0, 34, hookapi.KEYLET_LINE, 100, 20, 200, 20, 300, 20
+        ) == 34
+        assert rt._read_memory(0, 34) in rt.ledger
+        assert slot_set(rt, 0, 34, 9) == 9
+        assert slot_subfield(rt, 9, hookapi.sfBalance, 10) == 10
+        assert float_int(rt, slot_float(rt, 10), 6, 1) == 100_000_000
+
+    def test_ripple_state_uses_canonical_account_id_order(self):
+        """LowLimit and HighLimit follow account IDs, not r-address text."""
+        from hookz.ledger import ripple_state
+        from xrpl.core.binarycodec import decode
+
+        account2 = "rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe"
+        _, data = ripple_state(RADDR, account2, "USD")
+        decoded = decode(data.hex())
+        expected_low, expected_high = (
+            (RADDR, account2) if ACCID < to_accid(account2) else (account2, RADDR)
+        )
+
+        assert decoded["LowLimit"]["issuer"] == expected_low
+        assert decoded["HighLimit"]["issuer"] == expected_high
+
+    @pytest.mark.parametrize("currency", ["US", "USDD", "G" * 40])
+    def test_line_keylet_rejects_malformed_currency_strings(self, currency):
+        from hookz.ledger import trust_line_keylet
+
+        with pytest.raises(ValueError):
+            trust_line_keylet(ACCID, b"\x55" * 20, currency)
+
 
 # ---------------------------------------------------------------------------
 # hook_account
