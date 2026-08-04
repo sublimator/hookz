@@ -13,6 +13,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import needs_compile
 from hookz.compiler import compile_hook
 from hookz.config import load_config
 from hookz.wasm.clean import clean_hook
@@ -284,3 +285,71 @@ class TestTransformPolicy:
         trace = run_pipeline(source, "buildbox", load_config(source_file=source),
                              dev=True)
         assert "transform" not in [s.name for s in trace.stages]
+
+
+def _write_hook_with_sibling_header(tmp_path, preamble: str = "") -> None:
+    """A hook whose guard import is DECLARED IN THE SIBLING HEADER.
+
+    That placement is the point: if the `#include` fails to resolve the
+    compile dies, and if it resolves but the header were ignored the cleaner
+    rejects the result for having no `_g` import. Either way the test fails
+    for the reason it is named after.
+    """
+    (tmp_path / "helper.h").write_text(
+        "#define HELPER_RESULT 7\n"
+        "extern int64_t _g(uint32_t, uint32_t);\n"
+    )
+    (tmp_path / "hook.c").write_text(
+        preamble
+        + '#include <stdint.h>\n'
+        '#include "helper.h"\n'
+        'int64_t hook(uint32_t r) {\n'
+        '    for (int i = 0; _g(1, 2), i < 1; ++i) { }\n'
+        '    return HELPER_RESULT;\n'
+        '}\n'
+        'int64_t cbak(uint32_t r) { return 0; }\n'
+    )
+
+
+class TestTransformedBuildsKeepTheirIncludes:
+    """A transform writes the source somewhere else, and clang resolves
+    `#include "x.h"` relative to the *including file*. Somewhere else is a
+    temp dir, so a stripping pipeline broke every hook with a sibling header
+    while the un-transformed path kept working."""
+
+    @needs_compile
+    def test_a_sibling_header_still_resolves_after_stripping(self, tmp_path):
+        from hookz.config import load_config
+        from hookz.wasm.pipeline import (
+            LOCAL_STRUCTURAL_PIPELINE, STRIP_ANNOTATIONS, run_pipeline,
+        )
+
+        assert STRIP_ANNOTATIONS in LOCAL_STRUCTURAL_PIPELINE.transforms, \
+            "this test is only meaningful for a pipeline that relocates source"
+
+        _write_hook_with_sibling_header(
+            tmp_path,
+            preamble="//@@ an annotation, so the strip transform has work to do\n",
+        )
+        source = tmp_path / "hook.c"
+
+        trace = run_pipeline(source, LOCAL_STRUCTURAL_PIPELINE,
+                             load_config(source_file=source))
+
+        assert "transform" in [s.name for s in trace.stages]
+        assert trace.wasm.startswith(b"\x00asm")
+
+    @needs_compile
+    def test_the_untransformed_path_is_unaffected(self, tmp_path):
+        """The control: the same file through a pipeline that does not
+        relocate it. If this fails the fixture is wrong, not the fix."""
+        from hookz.config import load_config
+        from hookz.wasm.pipeline import DEBUG_PIPELINE, run_pipeline
+
+        _write_hook_with_sibling_header(tmp_path)
+        source = tmp_path / "hook.c"
+
+        trace = run_pipeline(source, DEBUG_PIPELINE,
+                             load_config(source_file=source))
+
+        assert trace.wasm.startswith(b"\x00asm")

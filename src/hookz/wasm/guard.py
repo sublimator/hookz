@@ -889,8 +889,21 @@ def analyze_wce(
     """Best-effort WCE analysis. Never raises — returns results + errors.
 
     Works on debug builds, dirty guards, whatever. Always returns a tree.
+
+    "Never raises" has to include the decode. Callers reach this *after* strict
+    validation already rejected the bytes, so a module that will not decode is
+    the ordinary case here, not an exotic one — and a truncated or
+    partially-written artifact used to die inside the rejection handler, with
+    the DecodeError replacing the verdict that sent it there.
     """
-    mod = decode_module(wasm)
+    try:
+        mod = decode_module(wasm)
+    except Exception as e:                                     # noqa: BLE001
+        return GuardResult(
+            hook_wce=0, cbak_wce=0, import_count=0,
+            guard_func_idx=-1, hook_func_idx=-1, cbak_func_idx=None,
+            errors=[f"Failed to decode module: {type(e).__name__}: {e}"],
+        )
     return analyze_wce_module(mod, wasm)
 
 
@@ -911,9 +924,12 @@ def analyze_wce_module(
 
     if hook_exp is None:
         all_errors.append("No hook() export found")
+        # cbak may well be exported — reporting it absent because hook is
+        # absent states something about the binary that is not true.
         return GuardResult(
             hook_wce=0, cbak_wce=0, import_count=mod.import_count,
-            guard_func_idx=guard_idx, hook_func_idx=-1, cbak_func_idx=None,
+            guard_func_idx=guard_idx, hook_func_idx=-1,
+            cbak_func_idx=cbak_exp.index if cbak_exp else None,
             errors=all_errors,
         )
 

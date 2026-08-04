@@ -203,3 +203,57 @@ class TestShowPanelsAreNotMarkup:
     def test_nothing_found_is_said_plainly(self, monkeypatch, tmp_path):
         out = self._show(monkeypatch, tmp_path)
         assert "No xahaud source found for 'state_set'" in out
+
+
+class TestCiteQuotesSourceVerbatim:
+    """`hookz cite` exists to quote source back accurately. It printed through
+    markup-parsing console.print, so it mangled three things at once: the C it
+    found, the `[node_type]` tag it emits itself, and the user's own regex."""
+
+    def _cite(self, tmp_path, pattern, body):
+        from click.testing import CliRunner
+
+        from hookz.cli.main import cli
+
+        src = tmp_path / "markup.c"
+        src.write_text(body)
+        return CliRunner().invoke(cli, ["cite", pattern, str(src)])
+
+    BODY = (
+        "#include <stdint.h>\n"
+        "int64_t hook(uint32_t r) {\n"
+        "    uint8_t seen_ids[4];\n"
+        "    seen_ids[i] = 1;\n"
+        "    return seen_ids[0];\n"
+        "}\n"
+    )
+
+    def test_the_quoted_c_keeps_its_subscripts(self, tmp_path):
+        out = self._cite(tmp_path, r"seen_ids\[", self.BODY)
+
+        assert out.exit_code == 0, out.output
+        assert "seen_ids[i] = 1;" in out.output
+        assert "uint8_t seen_ids[4];" in out.output
+
+    def test_the_node_type_tag_survives(self, tmp_path):
+        """render() emits `[declaration]`-style tags of its own — the same
+        shape as the region table fixed in the coverage panels."""
+        out = self._cite(tmp_path, r"seen_ids\[", self.BODY)
+
+        assert "[declaration]" in out.output
+
+    def test_the_users_pattern_is_echoed_verbatim(self, tmp_path):
+        """A character class is not markup, and escaping alone is not enough:
+        it trades an eaten `[0-9]` for a `\\[` that loses its backslash."""
+        pattern = r"seen_ids\[[0-9]\]"
+        out = self._cite(tmp_path, pattern, self.BODY)
+
+        assert out.exit_code == 0, out.output
+        assert f"/{pattern}/" in out.output
+
+    def test_the_pattern_survives_the_no_match_path_too(self, tmp_path):
+        pattern = r"nothing\[[0-9]\]"
+        out = self._cite(tmp_path, pattern, self.BODY)
+
+        assert out.exit_code == 1
+        assert f"/{pattern}/" in out.output

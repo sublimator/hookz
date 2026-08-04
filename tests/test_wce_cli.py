@@ -23,6 +23,7 @@ from hookz.cli.main import _annotated_line_map, _line_from_guard_id, cli
 from hookz.wasm.guard import BlockInfo, GuardError, GuardResult
 from hookz.wasm.pipeline import (
     ANALYSIS_PIPELINE,
+    DEBUG_PIPELINE,
     LOCAL_STRUCTURAL_PIPELINE,
     STRIP_ANNOTATIONS,
     BuildTrace,
@@ -490,6 +491,85 @@ class TestSourceCompilationChoice:
         assert out.exit_code == 0, out.output
         assert "provided artifact" in out.output
 
+    def test_an_explicit_pipeline_beats_the_env_switch(
+        self, c_source, monkeypatch
+    ):
+        """CI sets HOOKZ_BUILDBOX once per job. Inside that job --pipeline must
+        still work, and must not be refused by an error naming --buildbox,
+        which is not on the command line."""
+        seen = []
+        monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
+        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr(
+            "hookz.buildbox.compile_source",
+            explode("an explicit --pipeline still went to the buildbox"),
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            lambda path, pipeline, config: seen.append(pipeline)
+            or build_trace(ANALYSIS_PIPELINE),
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+        )
+
+        out = run(c_source, "--pipeline", "analysis")
+
+        assert out.exit_code == 0, out.output
+        assert seen[0].name == "analysis"
+
+    def test_both_flags_typed_together_are_still_refused(self, c_source):
+        """The mutual exclusion is between two things the user asked for."""
+        out = run(c_source, "--buildbox", "--pipeline", "analysis")
+
+        assert out.exit_code == 2
+        assert "cannot be combined" in out.output
+
+    def test_a_non_production_pipeline_is_not_called_production_like(
+        self, c_source, monkeypatch
+    ):
+        """The debug pipeline's own summary says "for reading, not deploying".
+        Appending "production-like approximation" to that is the label-over-
+        the-numbers mistake this command was rewritten to stop making."""
+        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            lambda *a, **k: build_trace(DEBUG_PIPELINE),
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+        )
+
+        out = run(c_source, "--pipeline", "debug")
+
+        assert out.exit_code == 0, out.output
+        assert "NOT what you would deploy" in out.output
+        assert "production-like" not in out.output
+
+    def test_the_production_pipeline_still_says_it_is_not_the_buildbox(
+        self, c_source, local_build
+    ):
+        out = run(c_source)
+
+        assert "production-like approximation, not buildbox provenance" in out.output
+
+    def test_a_failed_compile_is_reported_not_raised(self, c_source, monkeypatch):
+        """clang failing is the most ordinary way for this command to fail,
+        and RuntimeError was outside the caught set."""
+        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            lambda *a, **k: (_ for _ in ()).throw(
+                RuntimeError("Compilation failed:\nhook.c:3:1: error")
+            ),
+        )
+
+        out = run(c_source)
+
+        assert out.exit_code == 1
+        assert "local pipeline failed" in out.output
+        assert "hook.c:3:1: error" in out.output
+
     def test_explicit_compiler_flags_on_a_wasm_are_still_refused(self, artifact):
         out = run(artifact, "--buildbox")
 
@@ -747,8 +827,10 @@ class TestGuardIdDecoding:
         assert _annotated_line_map(source)[42] == 43
 
 
-class TestCbakIsReportedOnlyWhenItExists:
-    def test_a_hook_without_cbak_prints_no_cbak_row(self, artifact, monkeypatch):
+class TestAnEntryPointIsReportedOnlyWhenItExists:
+    def test_a_hook_without_cbak_says_so_rather_than_costing_zero(
+        self, artifact, monkeypatch
+    ):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
             lambda wasm: result(cbak=0, cbak_idx=None),
@@ -757,7 +839,31 @@ class TestCbakIsReportedOnlyWhenItExists:
         out = run(artifact)
 
         assert "hook() WCE" in out.output
-        assert "cbak()" not in out.output
+        assert "cbak() not exported" in out.output
+        assert "cbak() WCE" not in out.output
+
+    def test_a_missing_hook_export_is_not_a_free_hook_either(
+        self, artifact, monkeypatch
+    ):
+        """A binary that exports no hook() is rejected, and `hook() WCE: 0`
+        for an entry point that does not exist is the same falsehood."""
+        broken = GuardResult(
+            hook_wce=0, cbak_wce=0, import_count=1, guard_func_idx=0,
+            hook_func_idx=-1, cbak_func_idx=2,
+            errors=["No hook() export found"],
+        )
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda wasm: (_ for _ in ()).throw(GuardError("no hook export")),
+        )
+        monkeypatch.setattr("hookz.wasm.guard.analyze_wce", lambda wasm: broken)
+
+        out = run(artifact)
+
+        assert out.exit_code == 1
+        assert "hook() not exported" in out.output
+        assert "hook() WCE" not in out.output
+        assert "cbak() WCE: 0" in out.output  # cbak IS exported
 
     def test_a_present_cbak_is_reported_even_at_zero(self, artifact, monkeypatch):
         monkeypatch.setattr(
@@ -779,3 +885,82 @@ class TestCbakIsReportedOnlyWhenItExists:
 
         assert "hook() WCE: 100" in out.output
         assert "cbak() WCE: 200" in out.output
+
+
+class TestErrorsReachTheUserAsErrors:
+    """`main()` runs Click with standalone_mode=False, which stops Click
+    catching — and therefore printing — its own exceptions. CliRunner defaults
+    to standalone_mode=True, so the rest of this file cannot see the
+    difference: every UsageError it asserts on was reaching the real binary as
+    a traceback with the message on the last line.
+    """
+
+    @staticmethod
+    def _run_main(argv, monkeypatch, capsys):
+        from hookz.cli.main import main
+
+        monkeypatch.setattr("sys.argv", ["hookz", *argv])
+        try:
+            main()
+        except SystemExit as exc:
+            return exc.code, capsys.readouterr()
+        raise AssertionError("main() did not exit")
+
+    def test_a_usage_error_prints_a_message_and_exits_2(
+        self, artifact, monkeypatch, capsys
+    ):
+        code, out = self._run_main(
+            ["wce", str(artifact), "--buildbox"], monkeypatch, capsys
+        )
+
+        assert code == 2
+        assert "already the artifact" in out.err
+        assert "Traceback" not in out.err
+
+    def test_a_click_exception_prints_a_message_and_exits_1(
+        self, c_source, monkeypatch, capsys
+    ):
+        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        code, out = self._run_main(
+            ["wce", str(c_source), "--pipeline", "no-such-pipeline"],
+            monkeypatch, capsys,
+        )
+
+        assert code == 1
+        assert "local pipeline failed" in out.err
+        assert "Traceback" not in out.err
+
+    def test_a_clean_run_still_exits_zero_through_main(
+        self, artifact, monkeypatch, capsys
+    ):
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+        )
+
+        code, _ = self._run_main(["wce", str(artifact)], monkeypatch, capsys)
+
+        assert code == 0
+
+
+class TestUndecodableBytesGetAVerdictNotATraceback:
+    def test_a_truncated_artifact_is_reported_not_raised(self, tmp_path):
+        """analyze_wce is the rejection handler's fallback, so it is reached
+        precisely when the bytes are already suspect. It promises never to
+        raise; the decode was outside that promise."""
+        from hookz.wasm.guard import analyze_wce
+
+        truncated = WASM + b"\x0a\xff\xff\xff\xff\xff"
+        outcome = analyze_wce(truncated)
+
+        assert outcome.hook_func_idx == -1
+        assert any("decode" in e.lower() for e in outcome.errors)
+
+    def test_the_cli_reports_it_rather_than_dying_in_the_handler(self, tmp_path):
+        artifact = tmp_path / "hook.wasm"
+        artifact.write_bytes(WASM + b"\x0a\xff\xff\xff\xff\xff")
+
+        out = run(artifact)
+
+        assert out.exit_code == 1
+        assert "DEPLOYABILITY: REJECTED" in out.output
+        assert "hook() not exported" in out.output

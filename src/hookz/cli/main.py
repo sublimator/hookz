@@ -1121,16 +1121,22 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
     source: Path | None = input_path if input_path.suffix.lower() == ".c" else None
     is_wasm = input_path.suffix.lower() == ".wasm"
 
-    # The env switch selects a compiler, and a .wasm input has already been
-    # compiled. CI sets it once for a whole build; weighing a prebuilt artifact
-    # in that same job must not become a usage error.
-    if os.environ.get("HOOKZ_BUILDBOX") == "1" and not is_wasm:
-        use_buildbox = True
+    # An explicitly typed flag beats an environment default, and the mutual
+    # exclusion is between two things the *user* asked for. CI sets the switch
+    # once for a whole job: it must not make --pipeline unusable inside that
+    # job, nor blame a flag nobody typed. A .wasm has already been compiled, so
+    # compiler selection does not apply to it either.
     if use_buildbox and pipeline_name:
         raise click.UsageError(
             "--buildbox selects the remote compiler and cannot be combined "
             "with --pipeline"
         )
+    if (
+        os.environ.get("HOOKZ_BUILDBOX") == "1"
+        and not is_wasm
+        and not pipeline_name
+    ):
+        use_buildbox = True
     if buildbox_url and not use_buildbox:
         raise click.UsageError("--buildbox-url requires --buildbox")
     if not is_wasm and source is None:
@@ -1189,13 +1195,25 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
             pipeline = get_pipeline(pipeline_name) if pipeline_name else None
             analysis_config = load_config(source_file=source)
             trace = run_pipeline(source, pipeline, analysis_config)
-        except (ValueError, CleanError, WasmOptError) as exc:
+        except (ValueError, CleanError, WasmOptError, RuntimeError) as exc:
+            # RuntimeError is what compile_hook raises when clang fails, which
+            # is the most ordinary way for this command to fail at all.
             raise click.ClickException(f"local pipeline failed: {exc}") from exc
         wasm = trace.wasm
         stripped_before_compile = STRIP_ANNOTATIONS in trace.pipeline.transforms
+        # Read the caveat off the pipeline rather than asserting one. Only
+        # local-structural aims at the production compiler; calling the debug
+        # pipeline a "production-like approximation" in the same sentence as
+        # its own "for reading, not deploying" is the label-over-the-numbers
+        # mistake this command was rewritten to stop making.
+        caveat = (
+            "production-like approximation, not buildbox provenance"
+            if trace.pipeline.targets_production
+            else "an analysis build — NOT what you would deploy"
+        )
         provenance = (
             f"local '{trace.pipeline.name}' result: {trace.pipeline.summary}; "
-            "production-like approximation, not buildbox provenance"
+            f"{caveat}"
         )
 
     digest = hashlib.sha256(wasm).hexdigest()
@@ -1237,13 +1255,19 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
     )
 
     max_wce = 65535
-    for label, exact_wce, tree in (
-        ("hook()", result.hook_wce, result.hook_tree),
-        ("cbak()", result.cbak_wce, result.cbak_tree),
-    ):
-        if label == "cbak()" and result.cbak_func_idx is None:
-            # No cbak export. Printing "cbak() WCE: 0" for it reads as a
-            # callback that costs nothing rather than one that isn't there.
+    # An entry point that is not exported has no cost, and "WCE: 0 / 65,535
+    # (0.0%)" reads as one that costs nothing rather than one that is absent.
+    # hook() missing is a rejection in its own right and already reported as
+    # an error above; cbak() missing is ordinary.
+    present = (
+        ("hook()", result.hook_wce, result.hook_tree, result.hook_func_idx >= 0),
+        ("cbak()", result.cbak_wce, result.cbak_tree,
+         result.cbak_func_idx is not None),
+    )
+    for label, exact_wce, tree, exported in present:
+        if not exported:
+            console.print(f"  [bold]{label}[/bold] [dim]not exported[/dim]")
+            console.print()
             continue
         pct = exact_wce / max_wce * 100
         console.print(
@@ -1465,7 +1489,14 @@ def surface(source, show_all, show_source):
                          for i, a in enumerate(call.args))
         console.print(f"  [dim]{line:>5}[/dim]  {call.name}({args})")
         if show_source:
-            console.print(f"[dim]{render(span_for(src, line), max_lines=12)}[/dim]\n")
+            # Text, not markup: render() returns C, and emits its own
+            # [node_type] tag. See _plain_panel in hookz.testing.plugin.
+            from rich.text import Text
+
+            console.print(
+                Text(render(span_for(src, line), max_lines=12), style="dim")
+            )
+            console.print()
     return 0
 
 
@@ -1540,21 +1571,41 @@ def cite(pattern, paths, xahaud, globs, max_hits, max_lines, names):
         if truncated:
             break
 
+    # A regex is not markup, and it is not escapable markup either: `[0-9]`
+    # gets eaten as a tag, and escaping it only trades that for `\[` losing its
+    # backslash. Both misquote the search the command just ran. Text is
+    # literal; the styling goes on a span.
+    from rich.markup import escape
+    from rich.text import Text
+
+    def _pattern_line(suffix: str, style: str = "") -> Text:
+        line = Text(style=style)
+        line.append(f"/{pattern}/", style="bold" if not style else style)
+        line.append(suffix)
+        return line
+
     if not spans:
-        console.print(f"[dim]no match for /{pattern}/ in "
-                      f"{len(files)} file(s)[/dim]")
+        console.print(
+            _pattern_line(f" — no match in {len(files)} file(s)", style="dim")
+        )
         raise SystemExit(1)
 
     blocks = _by_symbol(merge(spans))
-    console.print(f"\n[bold]/{pattern}/[/bold] — {hits} hit(s) in "
-                  f"{len(blocks)} construct(s)\n")
+    console.print()
+    console.print(
+        _pattern_line(f" — {hits} hit(s) in {len(blocks)} construct(s)")
+    )
+    console.print()
     for span in blocks:
         if names:
             where = span.symbol or span.node_type
             console.print(f"  [dim]{Path(span.path).name}:{span.start}[/dim]"
-                          f"  {where}  [dim]({len(span.lines)} hit(s))[/dim]")
+                          f"  {escape(where)}  [dim]({len(span.lines)} hit(s))[/dim]")
         else:
-            console.print(render(span, max_lines=max_lines))
+            # render() returns C source and emits its own [node_type] tag —
+            # both literal. This is the command whose entire job is quoting
+            # source back accurately.
+            console.print(Text(render(span, max_lines=max_lines)))
             console.print()
 
     if truncated:
@@ -1653,7 +1704,22 @@ def _name_for(value: int, api: str | None = None,
 
 
 def main():
-    cli(standalone_mode=False)
+    """Run the CLI, rendering Click's own errors as errors.
+
+    `standalone_mode=False` stops Click catching anything, which also stops it
+    printing `UsageError`/`ClickException` — every one of them reached the user
+    as a Python traceback with the message on the last line. Rendering them
+    here restores that without giving Click back control of exit codes, which
+    the commands set themselves via sys.exit.
+    """
+    try:
+        cli(standalone_mode=False)
+    except click.exceptions.Abort:
+        click.echo("Aborted!", err=True)
+        sys.exit(1)
+    except click.ClickException as exc:
+        exc.show()
+        sys.exit(exc.exit_code)
 
 
 if __name__ == "__main__":

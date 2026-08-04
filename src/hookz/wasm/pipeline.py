@@ -189,6 +189,17 @@ class BuildPipeline:
     # trace, rather than happening somewhere on the way in.
     transforms: tuple[str, ...] = ()
 
+    @property
+    def targets_production(self) -> bool:
+        """Is this pipeline aiming at the artifact you would deploy?
+
+        Derived rather than declared: the cleaner is what makes a hook
+        installable at all — it strips custom sections, rebuilds exports and
+        rewrites guards — so a pipeline that skips it is not producing a
+        deployable candidate and must not be described as approximating one.
+        """
+        return self.clean
+
 
 # Named, because whether a build stripped decides whether the artifact's
 # __LINE__ values are published or annotated line numbers, and readers of the
@@ -407,7 +418,21 @@ def run_pipeline(
             text = original = source.read_text()
             for ref in pipeline.transforms:
                 text = _resolve_transform(ref)(text)
-            # a sibling temp file, so relative #includes still resolve
+            # The transformed copy lives in a temp dir, NOT beside the original,
+            # so `#include "helper.h"` no longer resolves on its own. clang
+            # searches the *including file's* directory, which is now tmpdir.
+            # Same fix, same reason, as compile_hook_dev.
+            from dataclasses import replace as _replace
+
+            from hookz.config import load_config
+
+            if config is None:
+                config = load_config(source_file=source)
+            config = _replace(
+                config,
+                extra_cflags=[*(config.extra_cflags or []),
+                              f"-I{source.resolve().parent}"],
+            )
             compile_from = Path(tmpdir) / source.name
             compile_from.write_text(text)
             before, after = original.count("\n"), text.count("\n")
