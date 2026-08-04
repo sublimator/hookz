@@ -273,6 +273,12 @@ BUILD_PIPELINES: dict[str, BuildPipeline] = {
 # Compatibility for callers that imported the old constant. The object and
 # its public name are local-structural; actual buildbox compilation is selected
 # by the CLI's --buildbox flag.
+#
+# TODO(buildbox-alias-name-collision): both names below claim a service they do
+# not call, and `--pipeline buildbox` silently compiles locally. Everywhere the
+# alias is *described* says so loudly, but nothing the person who typed it will
+# read does — a wrong spelling should exit pointing at --buildbox and at
+# --pipeline local-structural, not resolve to one of them.
 BUILDBOX_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
 PIPELINE_ALIASES = {"buildbox": "local-structural"}
 
