@@ -102,11 +102,34 @@ NUMOP_LAST = 0xC4
 GUARD_RULE_FIX_20250131 = 0x01
 # fixGuardDepth32 (xahaud PR #653, Enum.h:447) raises the nesting limit 16 -> 32.
 # Shipped in dev and release, but VoteBehavior::DefaultNo — so it is off
-# unless the network has voted it in. hookz defaults to the stricter limit.
+# unless the network has voted it in.
 GUARD_RULE_DEPTH_32 = 0x02
 
 
-def nesting_limit(rules_version: int = 0, ignore: frozenset[str] = frozenset()) -> int:
+def resolve_rules(rules_version: int | None) -> int:
+    """What `rules_version=None` means: the network, not a guess.
+
+    Same convention, for the same reason, as `whitelist._resolve`. xahaud
+    derives this per-ledger from the amendments in force
+    (xahaud:include/xrpl/hook/Enum.h:451); a constant baked in here is a claim
+    about a network that may have moved. An explicit int still wins, because
+    asking "what would this hook do under depth32" is a legitimate question.
+
+    Falls back to the stricter reading if no manifest is vendored: refusing a
+    hook the network would accept is a visible failure, accepting one it would
+    reject is not.
+    """
+    if rules_version is not None:
+        return rules_version
+    try:
+        from hookz.amendments import guard_rules_version
+        return guard_rules_version()
+    except Exception:                                          # noqa: BLE001
+        return 0
+
+
+def nesting_limit(rules_version: int | None = None,
+                  ignore: frozenset[str] = frozenset()) -> int:
     """Block depth xahaud allows, given the active amendments.
 
     Guard.h:795-797 computes `int max_level = 16; if (rulesVersion &
@@ -114,7 +137,7 @@ def nesting_limit(rules_version: int = 0, ignore: frozenset[str] = frozenset()) 
     """
     if IGNORE_DEPTH in ignore:
         return ANALYSIS_NESTING_CEILING
-    if rules_version & GUARD_RULE_DEPTH_32:
+    if resolve_rules(rules_version) & GUARD_RULE_DEPTH_32:
         return MAX_NESTING_DEPTH32
     return MAX_NESTING
 
@@ -618,10 +641,12 @@ def _validate_calls(
 def validate_guards(
     wasm: bytes,
     import_whitelist: set[str] | dict[str, tuple[int, ...]] | None = None,
-    rules_version: int = GUARD_RULE_FIX_20250131,
+    rules_version: int | None = None,
     ignore: frozenset[str] | None = None,
 ) -> GuardResult:
     """Strict guard validation. Raises GuardError on any violation.
+
+    rules_version None means the network's — see `resolve_rules`.
 
     import_whitelist may be:
       - None: load names *and* signatures from hook_api.macro (what xahaud does)
@@ -759,10 +784,16 @@ def validate_guards_module(
     mod: Module,
     wasm: bytes,
     import_whitelist: set[str] | dict[str, tuple[int, ...]] | None = None,
-    rules_version: int = 0,
+    rules_version: int | None = None,
     ignore: frozenset[str] | None = None,
 ) -> GuardResult:
-    """Strict validation using a pre-decoded Module."""
+    """Strict validation using a pre-decoded Module.
+
+    Same rules_version convention as `validate_guards`. It used to default to
+    0 where that one defaulted to fix20250131, so the two disagreed about
+    whether memory.copy is legal — on the same bytes.
+    """
+    rules_version = resolve_rules(rules_version)
     ignore = frozenset(ignore or ())
     unknown = ignore - IGNORABLE
     if unknown:
@@ -885,6 +916,7 @@ def validate_guards_module(
 
 def analyze_wce(
     wasm: bytes,
+    rules_version: int | None = None,
 ) -> GuardResult:
     """Best-effort WCE analysis. Never raises — returns results + errors.
 
@@ -904,14 +936,22 @@ def analyze_wce(
             guard_func_idx=-1, hook_func_idx=-1, cbak_func_idx=None,
             errors=[f"Failed to decode module: {type(e).__name__}: {e}"],
         )
-    return analyze_wce_module(mod, wasm)
+    return analyze_wce_module(mod, wasm, rules_version)
 
 
 def analyze_wce_module(
     mod: Module,
     wasm: bytes,
+    rules_version: int | None = None,
 ) -> GuardResult:
-    """Best-effort WCE analysis on a pre-decoded Module."""
+    """Best-effort WCE analysis on a pre-decoded Module.
+
+    Took no rules at all until now, so it bounded depth at 16 whatever the
+    network was running — and this is the path the CLI falls back to when
+    strict validation rejects a hook, i.e. exactly when the depth verdict is
+    the thing under discussion.
+    """
+    max_level = nesting_limit(rules_version)
     all_errors: list[str] = []
 
     guard_idx = mod.guard_func_idx
@@ -960,14 +1000,14 @@ def analyze_wce_module(
             all_errors.append(f"Failed to analyze code section {j}: {e}")
             continue
         all_errors.extend(errors)
-        wce, nesting_exceeded = compute_wce(tree)
+        wce, nesting_exceeded = compute_wce(tree, max_level)
         if nesting_exceeded:
             # Best-effort mode reports rather than raises, but this is not a
             # nit: xahaud rejects such a hook outright, and the WCE we report
             # for it is a floor (over-depth subtrees counted as 0).
             any_nesting_exceeded = True
             all_errors.append(
-                f"Code section {j}: {NESTING_LIMIT_MSG} "
+                f"Code section {j}: {nesting_limit_msg(max_level)} "
                 f"xahaud would REJECT this hook; WCE {wce:,} is understated."
             )
         if j == hook_code_idx:

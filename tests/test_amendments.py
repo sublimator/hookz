@@ -147,10 +147,126 @@ class TestTheDefaultSet:
         assert name not in HookRuntime().amendments
 
     def test_the_guard_depth_limit_follows_from_that(self):
-        """fixGuardDepth32 is vetoed, so the nesting limit is 16, not 32."""
-        from hookz.wasm.guard import MAX_NESTING, nesting_limit
+        """fixGuardDepth32 is vetoed, so the nesting limit is 16, not 32.
 
+        This used to assert `nesting_limit() == 16` and call that a
+        consequence. It was not one: the 16 came from a `rules_version=0`
+        default, so the day mainnet voted the amendment in, the test would
+        still have passed and hookz would still have said 16 — wrongly. The
+        limit has to move when the manifest does, which is what is asserted
+        here.
+        """
+        import hookz.amendments as amd
+        from hookz.wasm.guard import (
+            MAX_NESTING, MAX_NESTING_DEPTH32, nesting_limit,
+        )
+
+        assert "fixGuardDepth32" not in amd.enabled_on("mainnet")
         assert nesting_limit() == MAX_NESTING == 16
+
+        # and it is a consequence: same code, a network that has it
+        assert nesting_limit(amd.GUARD_RULE_AMENDMENTS[1][1]) == \
+            MAX_NESTING_DEPTH32 == 32
+
+    def test_the_rules_version_is_derived_from_the_manifest(self):
+        """Not a constant. xahaud recomputes it per-ledger from the amendments
+        in force (xahaud:include/xrpl/hook/Enum.h:451)."""
+        import hookz.amendments as amd
+        from hookz.wasm.guard import (
+            GUARD_RULE_DEPTH_32, GUARD_RULE_FIX_20250131,
+        )
+
+        enabled = amd.enabled_on("mainnet")
+        version = amd.guard_rules_version("mainnet")
+
+        assert bool(version & GUARD_RULE_FIX_20250131) == \
+            ("fix20250131" in enabled)
+        assert bool(version & GUARD_RULE_DEPTH_32) == \
+            ("fixGuardDepth32" in enabled)
+
+    def test_the_rules_follow_the_manifest_rather_than_a_constant(
+        self, monkeypatch
+    ):
+        """mainnet runs 0x01, so hardcoding 0x01 passes every test that only
+        ever looks at mainnet. That is precisely how the constant survived.
+        The question is whether the answer MOVES.
+        """
+        import hookz.amendments as amd
+        from hookz.wasm.guard import nesting_limit, resolve_rules
+
+        monkeypatch.setattr(
+            amd, "enabled_on",
+            lambda network=amd.DEFAULT_NETWORK: {"fix20250131",
+                                                 "fixGuardDepth32"},
+        )
+        assert resolve_rules(None) == 0x03
+        assert nesting_limit(None) == 32
+
+        monkeypatch.setattr(
+            amd, "enabled_on", lambda network=amd.DEFAULT_NETWORK: set()
+        )
+        assert resolve_rules(None) == 0x00
+        assert nesting_limit(None) == 16
+
+    def test_an_unreadable_manifest_falls_back_to_the_stricter_reading(
+        self, monkeypatch
+    ):
+        """Refusing a hook the network would accept is a visible failure.
+        Accepting one it would reject is not."""
+        import hookz.amendments as amd
+        from hookz.wasm.guard import nesting_limit, resolve_rules
+
+        def boom(*a, **k):
+            raise RuntimeError("no manifest vendored")
+
+        monkeypatch.setattr(amd, "enabled_on", boom)
+
+        assert resolve_rules(None) == 0
+        assert nesting_limit(None) == 16
+
+    def test_an_explicit_rules_version_still_wins(self):
+        """Asking what a hook would do under other rules is legitimate."""
+        from hookz.wasm.guard import GUARD_RULE_DEPTH_32, resolve_rules
+
+        assert resolve_rules(0) == 0
+        assert resolve_rules(GUARD_RULE_DEPTH_32) == GUARD_RULE_DEPTH_32
+
+    def test_the_bit_values_are_upstreams(self):
+        """The bits are a wire format shared with xahaud, not our numbering."""
+        import hookz.amendments as amd
+        from hookz.wasm.guard import (
+            GUARD_RULE_DEPTH_32, GUARD_RULE_FIX_20250131,
+        )
+
+        assert dict(amd.GUARD_RULE_AMENDMENTS) == {
+            "fix20250131": GUARD_RULE_FIX_20250131,
+            "fixGuardDepth32": GUARD_RULE_DEPTH_32,
+        }
+
+    def test_every_guard_rule_amendment_is_a_real_one(self):
+        """A typo here would silently clear a bit forever: the name would
+        never appear in any manifest, so the rule would never be in force."""
+        import hookz.amendments as amd
+
+        known = set(amd.symbol_index())
+        for name, _ in amd.GUARD_RULE_AMENDMENTS:
+            assert name in known, f"{name} is not in features.macro"
+
+    def test_the_strict_and_best_effort_paths_agree_on_the_rules(self):
+        """validate_guards defaulted to fix20250131 set and
+        validate_guards_module to nothing set, so the same bytes got different
+        verdicts about whether memory.copy is legal."""
+        import inspect
+
+        from hookz.wasm import guard
+
+        defaults = {
+            fn: inspect.signature(getattr(guard, fn))
+            .parameters["rules_version"].default
+            for fn in ("validate_guards", "validate_guards_module",
+                       "analyze_wce", "analyze_wce_module", "nesting_limit")
+        }
+        assert set(defaults.values()) == {None}, defaults
 
     def test_a_test_can_still_override(self):
         from hookz.runtime import HookRuntime

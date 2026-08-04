@@ -114,7 +114,7 @@ def local_build(monkeypatch):
         "hookz.wasm.pipeline.run_pipeline",
         lambda path, pipeline, config: seen.append(pipeline) or trace,
     )
-    monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: result())
+    monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm, **kw: result())
     return SimpleNamespace(seen=seen, trace=trace)
 
 
@@ -138,7 +138,7 @@ def buildbox(monkeypatch):
         "hookz.wasm.pipeline.run_pipeline",
         explode("buildbox mode used the local pipeline"),
     )
-    monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: result())
+    monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm, **kw: result())
     return SimpleNamespace(calls=calls, remote=remote)
 
 
@@ -163,7 +163,7 @@ def run(*args):
 class TestExactArtifactFirst:
     def test_wasm_is_read_directly_and_never_compiled(self, artifact, monkeypatch):
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
         monkeypatch.setattr(
             "hookz.wasm.pipeline.run_pipeline",
@@ -192,7 +192,7 @@ class TestExactArtifactFirst:
 
     def test_loop_rows_are_opt_in(self, artifact, monkeypatch):
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
         out = run(artifact)
@@ -205,7 +205,7 @@ class TestExactArtifactFirst:
         self, artifact, monkeypatch
     ):
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
         out = run(artifact, "--loops")
@@ -225,7 +225,7 @@ class TestExactArtifactFirst:
         value = result(hook=50)
         value.hook_tree = tree
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: value
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: value
         )
 
         out = run(artifact, "--loops")
@@ -246,7 +246,7 @@ class TestExactArtifactFirst:
         ).instruction_count = 2
         value.cbak_tree = cbak_tree
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: value
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: value
         )
 
         out = run(artifact, "--loops")
@@ -282,7 +282,7 @@ class TestExactArtifactFirst:
         shouty = tmp_path / "HOOK.WASM"
         shouty.write_bytes(WASM)
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         out = run(shouty)
@@ -295,10 +295,10 @@ class TestExactArtifactFirst:
     ):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: (_ for _ in ()).throw(GuardError("too deep")),
+            lambda wasm, **kw: (_ for _ in ()).throw(GuardError("too deep")),
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.analyze_wce", lambda wasm: result(hook=999)
+            "hookz.wasm.guard.analyze_wce", lambda wasm, **kw: result(hook=999)
         )
 
         out = run(artifact)
@@ -314,11 +314,11 @@ class TestExactArtifactFirst:
     def test_over_depth_totals_are_declared_a_floor(self, artifact, monkeypatch):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: (_ for _ in ()).throw(GuardError("nesting")),
+            lambda wasm, **kw: (_ for _ in ()).throw(GuardError("nesting")),
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.analyze_wce",
-            lambda wasm: result(hook=999, nesting_exceeded=True),
+            lambda wasm, **kw: result(hook=999, nesting_exceeded=True),
         )
 
         out = run(artifact)
@@ -329,7 +329,7 @@ class TestExactArtifactFirst:
     def test_warnings_are_surfaced_not_swallowed(self, artifact, monkeypatch):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: result(errors=["No _g import found"]),
+            lambda wasm, **kw: result(errors=["No _g import found"]),
         )
 
         out = run(artifact)
@@ -468,7 +468,7 @@ class TestSourceCompilationChoice:
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr("hookz.buildbox.compile_source", lambda *a, **k: remote)
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         out = run(c_source)
@@ -483,7 +483,7 @@ class TestSourceCompilationChoice:
         must not become a usage error about compiler selection."""
         monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         out = run(artifact)
@@ -510,7 +510,7 @@ class TestSourceCompilationChoice:
             or build_trace(ANALYSIS_PIPELINE),
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         out = run(c_source, "--pipeline", "analysis")
@@ -537,7 +537,7 @@ class TestSourceCompilationChoice:
             lambda *a, **k: build_trace(DEBUG_PIPELINE),
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         out = run(c_source, "--pipeline", "debug")
@@ -590,7 +590,7 @@ class TestGuardLineProvenance:
             "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: build_trace()
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
         out = run(source, "--loops")
@@ -612,7 +612,7 @@ class TestGuardLineProvenance:
             lambda *a, **k: build_trace(ANALYSIS_PIPELINE),
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
         out = run(source, "--pipeline", "analysis", "--loops")
@@ -632,7 +632,7 @@ class TestGuardLineProvenance:
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr("hookz.buildbox.compile_source", lambda *a, **k: remote)
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result_with_loop()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
         out = run(source, "--buildbox", "--loops")
@@ -663,7 +663,7 @@ class TestGuardLineProvenance:
             "hookz.wasm.pipeline.run_pipeline", lambda *a, **k: build_trace()
         )
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: loopy
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: loopy
         )
         monkeypatch.setattr(type(source), "read_text", counting_read_text)
 
@@ -701,11 +701,11 @@ class TestSecondarySourceView:
         )
         monkeypatch.setattr(
             "hookz.coverage.rewriter.parse_dwarf_locations",
-            lambda wasm: [SimpleNamespace(line=n) for n in locs[wasm]],
+            lambda wasm, **kw: [SimpleNamespace(line=n) for n in locs[wasm]],
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.analyze_wce",
-            lambda wasm: result(hook=7, cbak_idx=None),
+            lambda wasm, **kw: result(hook=7, cbak_idx=None),
         )
 
     @staticmethod
@@ -758,7 +758,7 @@ class TestSecondarySourceView:
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: (_ for _ in ()).throw(GuardError("too deep")),
+            lambda wasm, **kw: (_ for _ in ()).throw(GuardError("too deep")),
         )
 
         out = run(c_source, "--source")
@@ -833,7 +833,7 @@ class TestAnEntryPointIsReportedOnlyWhenItExists:
     ):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: result(cbak=0, cbak_idx=None),
+            lambda wasm, **kw: result(cbak=0, cbak_idx=None),
         )
 
         out = run(artifact)
@@ -854,9 +854,9 @@ class TestAnEntryPointIsReportedOnlyWhenItExists:
         )
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: (_ for _ in ()).throw(GuardError("no hook export")),
+            lambda wasm, **kw: (_ for _ in ()).throw(GuardError("no hook export")),
         )
-        monkeypatch.setattr("hookz.wasm.guard.analyze_wce", lambda wasm: broken)
+        monkeypatch.setattr("hookz.wasm.guard.analyze_wce", lambda wasm, **kw: broken)
 
         out = run(artifact)
 
@@ -868,7 +868,7 @@ class TestAnEntryPointIsReportedOnlyWhenItExists:
     def test_a_present_cbak_is_reported_even_at_zero(self, artifact, monkeypatch):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: result(cbak=0, cbak_idx=2),
+            lambda wasm, **kw: result(cbak=0, cbak_idx=2),
         )
 
         out = run(artifact)
@@ -878,7 +878,7 @@ class TestAnEntryPointIsReportedOnlyWhenItExists:
     def test_cbak_cost_is_reported_next_to_hook(self, artifact, monkeypatch):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards",
-            lambda wasm: result(hook=100, cbak=200),
+            lambda wasm, **kw: result(hook=100, cbak=200),
         )
 
         out = run(artifact)
@@ -934,7 +934,7 @@ class TestErrorsReachTheUserAsErrors:
         self, artifact, monkeypatch, capsys
     ):
         monkeypatch.setattr(
-            "hookz.wasm.guard.validate_guards", lambda wasm: result()
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
 
         code, _ = self._run_main(["wce", str(artifact)], monkeypatch, capsys)
@@ -964,3 +964,103 @@ class TestUndecodableBytesGetAVerdictNotATraceback:
         assert out.exit_code == 1
         assert "DEPLOYABILITY: REJECTED" in out.output
         assert "hook() not exported" in out.output
+
+
+class TestTheVerdictNamesItsRules:
+    """A deployability verdict is only meaningful under stated rules, and the
+    rules are a fact about the network rather than a constant."""
+
+    def test_the_rules_and_the_limit_they_imply_are_printed(
+        self, artifact, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
+        )
+
+        out = run(artifact)
+
+        assert "rules: 0x01 (nesting limit 16)" in out.output
+
+    def test_the_network_rules_are_what_reach_the_checker(
+        self, artifact, monkeypatch
+    ):
+        import hookz.amendments as amd
+
+        seen = {}
+
+        def spy(wasm, **kw):
+            seen.update(kw)
+            return result()
+
+        monkeypatch.setattr("hookz.wasm.guard.validate_guards", spy)
+
+        run(artifact)
+
+        assert seen["rules_version"] == amd.guard_rules_version()
+
+    def test_depth32_is_an_override_and_says_so(self, artifact, monkeypatch):
+        from hookz.wasm.guard import GUARD_RULE_DEPTH_32
+
+        seen = {}
+
+        def spy(wasm, **kw):
+            seen.update(kw)
+            return result()
+
+        monkeypatch.setattr("hookz.wasm.guard.validate_guards", spy)
+
+        out = run(artifact, "--depth32")
+
+        assert seen["rules_version"] & GUARD_RULE_DEPTH_32
+        assert "nesting limit 32" in out.output
+        assert "--depth32 assumed" in out.output
+
+    def test_without_the_override_nothing_claims_an_assumption(
+        self, artifact, monkeypatch
+    ):
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
+        )
+
+        out = run(artifact)
+
+        assert "assumed" not in out.output
+
+    def test_waivers_reach_the_checker_too(self, artifact, monkeypatch):
+        from hookz.wasm.guard import IGNORE_DEPTH
+
+        seen = {}
+
+        def spy(wasm, **kw):
+            seen.update(kw)
+            return result()
+
+        monkeypatch.setattr("hookz.wasm.guard.validate_guards", spy)
+
+        run(artifact, "--ignore-depth")
+
+        assert IGNORE_DEPTH in seen["ignore"]
+
+    def test_the_best_effort_path_gets_the_same_rules(
+        self, artifact, monkeypatch
+    ):
+        """The rejected path is exactly when the depth verdict is in question,
+        and it used to bound depth at 16 whatever the network ran."""
+        seen = {}
+
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda wasm, **kw: (_ for _ in ()).throw(GuardError("too deep")),
+        )
+
+        def spy(wasm, **kw):
+            seen.update(kw)
+            return result(hook=9)
+
+        monkeypatch.setattr("hookz.wasm.guard.analyze_wce", spy)
+
+        run(artifact, "--depth32")
+
+        from hookz.wasm.guard import GUARD_RULE_DEPTH_32
+
+        assert seen["rules_version"] & GUARD_RULE_DEPTH_32

@@ -161,7 +161,8 @@ def waiver_options(fn):
     )(fn)
     fn = click.option(
         "--depth32", is_flag=True,
-        help="Assume fixGuardDepth32 is enabled (nesting limit 32, not 16).",
+        help="Override: assume fixGuardDepth32 is in force (nesting limit 32). "
+             "Normally read from the network's amendments.",
     )(fn)
     return fn
 
@@ -179,8 +180,16 @@ def _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls):
 
 
 def _rules(depth32: bool) -> int:
-    from hookz.wasm.guard import GUARD_RULE_FIX_20250131, GUARD_RULE_DEPTH_32
-    return GUARD_RULE_FIX_20250131 | (GUARD_RULE_DEPTH_32 if depth32 else 0)
+    """The network's guard rules, plus whatever the user asked to assume.
+
+    The base used to be the constant GUARD_RULE_FIX_20250131, which is what
+    mainnet happens to run — right by coincidence, and unable to notice the
+    network moving. --depth32 stays as an override because "what would this
+    hook do under depth32" is a legitimate question to ask of a network that
+    has not voted it in.
+    """
+    from hookz.wasm.guard import GUARD_RULE_DEPTH_32, resolve_rules
+    return resolve_rules(None) | (GUARD_RULE_DEPTH_32 if depth32 else 0)
 
 
 def _report_waived(result, log=print) -> None:
@@ -1102,13 +1111,18 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
 )
 @click.option("--buildbox-url", default=None, hidden=True)
 @click.option("--buildbox-options", default="-O3", show_default=True)
+@waiver_options
 def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
-        buildbox_url, buildbox_options):
+        buildbox_url, buildbox_options, ignore_depth, ignore_wce_overage,
+        ignore_guard_calls, depth32):
     """Weigh exact WASM, or build C production-style and weigh the result.
 
     WCE belongs to the final WASM artifact. Source/DWARF mapping is a separate,
     explicitly secondary view because the mapping build can have a radically
     different control-flow tree.
+
+    The deployability verdict is given under the rules the network is actually
+    running, which is why it names them.
     """
     import hashlib
     import os
@@ -1216,22 +1230,34 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
             f"{caveat}"
         )
 
+    rules = _rules(depth32)
+    ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
+
     digest = hashlib.sha256(wasm).hexdigest()
     try:
-        result = validate_guards(wasm)
+        result = validate_guards(wasm, rules_version=rules, ignore=ignore)
         rejected = None
     except GuardError as exc:
         # Keep the exact artifact report useful after a failed deployability
         # verdict. Best-effort totals can be understated at excessive depth,
         # so the rejection remains the headline.
-        result = analyze_wce(wasm)
+        result = analyze_wce(wasm, rules_version=rules)
         rejected = str(exc)
+
+    from hookz.wasm.guard import nesting_limit
 
     console.print()
     console.print(f"[bold]{input_path.name}[/bold] — exact-artifact WCE")
     console.print(f"  [dim]sha256:[/dim] {digest}")
     console.print(f"  [dim]bytes:[/dim] {len(wasm):,}")
     console.print(f"  [dim]provenance:[/dim] {provenance}")
+    # A verdict is only meaningful under stated rules. These come from the
+    # network's amendment manifest, not from a constant.
+    console.print(
+        f"  [dim]rules:[/dim] 0x{rules:02X} "
+        f"(nesting limit {nesting_limit(rules)})"
+        + (" [yellow]--depth32 assumed[/yellow]" if depth32 else "")
+    )
     if trace is not None:
         console.print()
         console.print(trace.format_table())

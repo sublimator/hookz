@@ -166,6 +166,52 @@ def enabled_on(network: str = DEFAULT_NETWORK) -> set[str]:
     return {to_symbol(n) for n in m.get("enabled", ())}
 
 
+# The amendments each guard-rule bit is gated on, in the order
+# getGuardRulesVersion tests them (xahaud:include/xrpl/hook/Enum.h:451).
+# Bit values are GuardRulesVersion (xahaud:include/xrpl/hook/Enum.h:445).
+GUARD_RULE_AMENDMENTS: tuple[tuple[str, int], ...] = (
+    ("fix20250131", 0x01),      # bans memory.copy / memory.fill
+    ("fixGuardDepth32", 0x02),  # nesting limit 16 -> 32
+)
+
+
+def guard_rules_version(network: str = DEFAULT_NETWORK) -> int:
+    """The guard `rulesVersion` a network is actually running.
+
+    xahaud computes this per-ledger from the amendments in force
+    (xahaud:include/xrpl/hook/Enum.h:451), so the rules a hook is checked
+    against are a fact about the network, not a constant. hookz used to
+    hardcode the bits: `validate_guards` defaulted to fix20250131 set,
+    `nesting_limit` to nothing set, and `analyze_wce` took no rules at all —
+    three answers to one question, all of which happened to match mainnet and
+    none of which would have noticed it changing.
+
+    Derived from the same manifest `enabled_on` reads, for the reason given at
+    the top of this module: a curated answer looks equally plausible whichever
+    way it is wrong.
+    """
+    enabled = enabled_on(network)
+    version = 0
+    for amendment, bit in GUARD_RULE_AMENDMENTS:
+        if amendment in enabled:
+            version |= bit
+    return version
+
+
+def guard_rules_explained(network: str = DEFAULT_NETWORK) -> list[str]:
+    """One line per guard-rule bit: the amendment, and whether it is in force.
+
+    So `hookz doctor` can show why a limit is what it is, rather than leaving
+    a reader to infer it from a number.
+    """
+    enabled = enabled_on(network)
+    return [
+        f"{amendment}: {'enabled' if amendment in enabled else 'not enabled'}"
+        f" (bit 0x{bit:02X})"
+        for amendment, bit in GUARD_RULE_AMENDMENTS
+    ]
+
+
 def provenance(network: str = DEFAULT_NETWORK) -> str:
     """One line saying when and from where this was true."""
     m = manifest(network)

@@ -128,6 +128,7 @@ hookz build hook.c --buildbox        Canonical remote build + local validation
 hookz wce hook.wasm                  WCE of the exact artifact you hand it
 hookz wce hook.c                     Build production-style, then weigh the result
 hookz wce hook.c --loops             Add the partial guard-line loop mapping
+hookz wce hook.wasm --depth32        Ask what it would do under fixGuardDepth32
 hookz guard-check hook.wasm          Validate guard calls and show WCE
 hookz clean hook.wasm                Clean WASM for deployment (strip + rewrite guards)
 hookz show float_multiply            Show C++ source + xahaud test vectors
@@ -195,11 +196,19 @@ hookz wce govern.wasm
     sha256: 6f1c…                         # the bytes that were weighed
     bytes: 3,171
     provenance: provided artifact: govern.wasm
+    rules: 0x01 (nesting limit 16)        # the amendments mainnet has in force
 
     DEPLOYABILITY: PASSED
 
     hook() WCE: 19,314 / 65,535 (29.5%)
 ```
+
+The verdict is given under stated rules, because the rules are not a constant:
+xahaud derives `rulesVersion` per-ledger from the amendments in force, and
+hookz derives it from the same manifest. `fixGuardDepth32` is `DefaultNo` and
+mainnet has not voted it in, so the nesting limit is 16 — `--depth32` asks what
+the hook would do if that changed. `hookz doctor` prints which vote produced
+which bit. See [`src/hookz/wasm/README.md`](src/hookz/wasm/README.md).
 
 Given C instead, it builds first and names the compiler it used: the local
 `local-structural` pipeline by default, or the canonical service with

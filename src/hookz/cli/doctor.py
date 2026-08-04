@@ -286,6 +286,31 @@ def _smoke_test(rep: _Report, dwarfdump_ok: bool) -> None:
             src_path.unlink(missing_ok=True)
 
 
+def _check_guard_rules(rep: _Report) -> None:
+    """Which guard rules are in force, and why.
+
+    The nesting limit and the memory.copy ban are not hookz's choices — they
+    are amendments, and a reader who sees "16" deserves to see which vote made
+    it 16 rather than having to trust a constant.
+    """
+    from hookz import amendments as amd
+    from hookz.wasm.guard import nesting_limit
+
+    rep.section("Guard rules (xahaud:include/xrpl/hook/Enum.h:451)")
+    try:
+        version = amd.guard_rules_version()
+    except Exception as e:                                     # noqa: BLE001
+        rep.optional("rules", f"could not read the manifest: {e}",
+                     "regenerate with x-inspect-net amendments")
+        return
+
+    rep.info("network", amd.provenance())
+    rep.info("rulesVersion", f"0x{version:02X}")
+    for line in amd.guard_rules_explained():
+        rep.info("", line)
+    rep.info("nesting limit", str(nesting_limit(version)))
+
+
 def run_doctor(console, smoke: bool = True) -> int:
     """Run all checks. Returns process exit code (0 = healthy)."""
     rep = _Report(console)
@@ -298,6 +323,7 @@ def run_doctor(console, smoke: bool = True) -> int:
 
     wasi_ok, dwarfdump = _check_environment(rep, cfg, cfg_error)
     _check_config(rep, cfg, cfg_error)
+    _check_guard_rules(rep)
 
     if smoke and wasi_ok:
         _smoke_test(rep, dwarfdump_ok=dwarfdump is not None)

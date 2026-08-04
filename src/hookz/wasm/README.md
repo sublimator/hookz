@@ -79,7 +79,27 @@ Other things checked per-instruction:
 - `call_indirect` — always rejected (disallowed in hooks)
 - `memory.grow` — always rejected
 - `memory.copy` / `memory.fill` — rejected if `rulesVersion & 0x01`
-- Block nesting depth — max 16 levels
+- Block nesting depth — 16 levels, or 32 if `rulesVersion & 0x02`
+
+### rulesVersion is a fact about the network
+
+Both of those bits are amendments, and xahaud recomputes the mask per-ledger
+from the ones in force (`xahaud:include/xrpl/hook/Enum.h:451`). hookz derives
+it the same way, from the manifest `hookz.amendments` reads:
+
+| bit | amendment | vote default | mainnet | effect |
+|---|---|---|---|---|
+| `0x01` | `fix20250131` | DefaultYes | enabled | bans `memory.copy` / `memory.fill` |
+| `0x02` | `fixGuardDepth32` | DefaultNo | **not enabled** | nesting 16 → 32 |
+
+So mainnet runs `rulesVersion = 0x01` and the nesting limit is 16. Pass
+`rules_version=None` — the default everywhere — to get that; pass an explicit
+int to ask what a hook would do under different rules, which is what
+`--depth32` does. `hookz doctor` prints the mask and which vote produced it.
+
+Getting this wrong is quiet: a checker running rules the network does not have
+refuses hooks it would accept, and one missing rules it does have accepts hooks
+it would refuse. Neither is visible from the verdict.
 
 **Worst-case execution (WCE) computation:**
 
