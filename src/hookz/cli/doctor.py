@@ -165,7 +165,13 @@ def _check_environment(rep: _Report, cfg, cfg_error: Exception | None) -> tuple[
         ver = _first_line(["wasm-opt", "--version"]) or ""
         rep.ok("wasm-opt", ver)
     else:
-        rep.optional("wasm-opt", "not found (optional — size optimization)",
+        # TODO(external-tool-requirement-registry): "optional" is unconditional
+        # and wrong for anyone building — `hookz build` and `hookz wce hook.c`
+        # both fail without this, because local-structural runs it. Whether a
+        # tool is required is a property of what you are running, and nothing
+        # here knows what that is.
+        rep.optional("wasm-opt", "not found — required by hookz build "
+                                 "and hookz wce on C input",
                      hint=_binaryen_hint())
 
     # docker (optional — xahaud integration mode)

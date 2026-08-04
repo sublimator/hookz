@@ -34,7 +34,7 @@ For integration testing against real xahaud, see [Integration testing with xahau
 
 - [uv](https://docs.astral.sh/uv/)
 - [wasi-sdk](https://github.com/WebAssembly/wasi-sdk) (C to WASM compiler — `mise install wasi-sdk`, or auto-detected from common paths)
-- Optional: [wasm-opt](https://github.com/WebAssembly/binaryen) (size optimization — `brew install binaryen` / `apt install binaryen`)
+- [wasm-opt](https://github.com/WebAssembly/binaryen) (`brew install binaryen` / `apt install binaryen`) — **required to build**: `hookz build` and `hookz wce hook.c` both fail without it, because the production pipeline runs it. Not needed to run tests, or for `hookz wce hook.wasm` / `guard-check` on an artifact you already have.
 - Optional: xahaud checkout (for `hookz show` source lookup — falls back to vendored headers)
 
 ### Setup
@@ -147,7 +147,7 @@ deployment-ready WASM from C source in one command:
 hookz build reward.c
   Compiling reward.c...
     Compiled: 3463 bytes
-    Optimized: 3463 → 3460 bytes        # wasm-opt, if available
+    Optimized: 3463 → 3460 bytes        # wasm-opt; the build fails without it
     Cleaned: 3460 → 3171 bytes          # strip sections, rewrite guards
     Guard check PASSED (hook WCE=9,029 — 13.8% of budget)
     → reward.wasm (3171 bytes)
