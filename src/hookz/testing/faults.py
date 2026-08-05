@@ -70,6 +70,16 @@ class FaultCall:
         return self.name == "state_set" and self.value is None
 
 
+def every(call: FaultCall) -> bool:
+    """`when=` predicate: every admitted call is refused.
+
+    "Admitted" is load-bearing — the builtin's own refusals still answer
+    first, so this is "the host would have accepted it, the network said
+    no", not a blanket short-circuit.
+    """
+    return True
+
+
 def deletes(call: FaultCall) -> bool:
     """`when=` predicate: every state delete is refused.
 
@@ -175,14 +185,32 @@ def refuse_emit(rt: HookRuntime,
     return log
 
 
+#: Hosts with a typed injector; the blunt form refuses to touch them,
+#: because it would bypass exactly the admission ordering, diagnostics,
+#: and decoded receipts the typed wrapper exists to preserve.
+_TYPED_HOSTS = {"state_set": "refuse_state_set", "emit": "refuse_emit"}
+
+
+def _reject_typed(name: str) -> None:
+    typed = _TYPED_HOSTS.get(name)
+    if typed is not None:
+        raise ValueError(
+            f"refuse_host cannot inject into {name!r}: use faults.{typed} "
+            f"(with when=faults.every for an unconditional refusal) — the "
+            f"blunt form would bypass the host's own admission checks, its "
+            f"diagnostics, and the decoded receipts")
+
+
 def refuse_host(rt: HookRuntime, name: str, code: int) -> list[FaultCall]:
     """Refuse every call to host function `name` with `code`.
 
     The bluntest injector: no decoding, no delegation — the named function
     simply answers `code`, and the log records each call's raw arguments.
-    For calls that deserve decoded records and selective refusal, use the
-    typed injectors above.
+    Hosts with a typed injector (`state_set`, `emit`) are refused here on
+    purpose; use the typed form, which still runs the host's admission
+    checks first.
     """
+    _reject_typed(name)
     log: list[FaultCall] = []
 
     def handler(*args):
@@ -196,8 +224,25 @@ def refuse_host(rt: HookRuntime, name: str, code: int) -> list[FaultCall]:
 
 def refusing(name: str, code: int) -> Callable[["HookRuntime"], None]:
     """A `setup(rt)` callable for `refuse_host` — the shape suite drivers
-    take, so `setup=faults.refusing("state_set", INTERNAL_ERROR)` is a
-    drop-in for the local one-off factories it replaces."""
+    take, so `setup=faults.refusing("etxn_reserve", TOO_SMALL)` is a
+    drop-in for the local one-off factories it replaces. Typed hosts are
+    rejected eagerly; see `refusing_emit` for the emit boundary."""
+    _reject_typed(name)
+
     def setup(rt: HookRuntime) -> None:
         refuse_host(rt, name, code)
+    return setup
+
+
+def refusing_emit(code: int = hookapi.EMISSION_FAILURE) -> Callable[["HookRuntime"], None]:
+    """A `setup(rt)` callable that refuses every *admitted* emit with `code`.
+
+    `refusing`'s typed counterpart for the emit boundary: the preflight
+    still answers first (reservation, count, width, the emission rules,
+    with their diagnostics), and only an emit the host would have accepted
+    comes back `code`. The log is discarded — a driver that needs receipts
+    calls `refuse_emit` directly.
+    """
+    def setup(rt: HookRuntime) -> None:
+        refuse_emit(rt, when=every, code=code)
     return setup

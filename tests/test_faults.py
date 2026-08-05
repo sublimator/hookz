@@ -347,7 +347,40 @@ class TestEmitPreflightBeatsTheSelector:
         assert log == []
 
 
+class TestTypedBoundary:
+    def test_refuse_host_rejects_typed_hosts(self, wasm):
+        for name in ("emit", "state_set"):
+            with pytest.raises(ValueError, match=f"faults.refuse_"):
+                faults.refuse_host(HookRuntime(), name, -1)
+
+    def test_refusing_rejects_typed_hosts_eagerly(self, wasm):
+        with pytest.raises(ValueError, match="refuse_emit"):
+            faults.refusing("emit", -1)
+
+    def test_refusing_emit_refuses_only_admitted_calls(self, wasm):
+        """arg 3 again: the short output buffer and the exhausted count
+        still answer with the host's codes; only the admitted middle emit
+        comes back with the injected one."""
+        rt = emit_rt()
+        faults.refusing_emit(hookapi.INTERNAL_ERROR)(rt)
+        result = rt.run(wasm, arg=3)
+
+        _rr, e1, e2, e3 = codes(rt.state_db[RK3])
+        assert e1 == hookapi.TOO_SMALL
+        assert e2 == hookapi.INTERNAL_ERROR
+        assert e3 == hookapi.INTERNAL_ERROR  # nothing committed, count free
+        assert result.emitted_txns == []
+
+
 class TestStockPredicates:
+    def test_every_refuses_admitted_calls_only(self, wasm):
+        rt = HookRuntime()
+        log = faults.refuse_state_set(rt, when=faults.every,
+                                      code=hookapi.RESERVE_INSUFFICIENT)
+        rt.run(wasm)
+        assert log and all(c.refused for c in log)
+        assert rt.state_db == {}
+
     def test_deletes_ignores_non_state_records(self):
         assert not faults.deletes(
             faults.FaultCall(name="emit", index=0, blob=b"x"))
