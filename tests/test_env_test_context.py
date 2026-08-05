@@ -214,6 +214,41 @@ class TestTheHarnessSectionMatchesAWorkingTest:
         assert "<xrpld/app/hook/applyHook.h>" in doc
         assert "<ripple/app/hook/applyHook.h>" not in doc
 
+    def test_every_macro_it_uses_it_also_defines(self, checkout):
+        """The skeleton shipped using `HSFEE` and `M(...)` without them.
+
+        Both are per-test-file `#define`s in xahaud — no header declares them,
+        and `-DHOOKS_TEST_ONLY=ON`, which this document tells you to pass,
+        excludes the `src/test/*_test.cpp` files that do. So the one artifact
+        an agent pastes verbatim failed on two undeclared identifiers.
+
+        The sibling tests here spot-check symbols that happened to be
+        remembered, which is why a partial copy passed all four of them.
+
+        The first version of this test scanned the skeleton for uppercase
+        identifiers followed by `(`, and saw neither offender: `HSFEE` is used
+        as a bare `HSFEE,` and `M` is one character. A filter that excludes
+        the interesting cases is how several of these got through, so the
+        oracle is the reference file rather than a pattern guessed at from the
+        offenders already known.
+        """
+        from hookz.cli.env_test_context import _SKELETON
+
+        reference = (Path(__file__).parents[1]
+                     / "examples/tipbot/env-tests/TipBot_test.cpp").read_text()
+        per_file_macros = set(re.findall(r"^#define (\w+)", reference, re.M))
+        assert {"HSFEE", "M", "BEAST_REQUIRE"} <= per_file_macros, (
+            "premise: the reference test defines these itself")
+
+        body = _SKELETON.format(header="H.h", symbol="s", suite="S", name="n")
+        defined = set(re.findall(r"^#define (\w+)", body, re.M))
+
+        borrowed = {m for m in per_file_macros
+                    if re.search(rf"\b{re.escape(m)}\b", body)}
+        assert borrowed - defined == set(), (
+            "uses xahaud per-test-file macros without defining them: "
+            + ", ".join(sorted(borrowed - defined)))
+
     def test_the_map_key_placeholder_is_not_a_guessable_default(
         self, checkout
     ):

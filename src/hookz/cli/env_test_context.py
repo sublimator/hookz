@@ -83,12 +83,17 @@ _SKELETON = '''\
 namespace ripple {{
 namespace test {{
 
+// All three are per-test-file defines in xahaud, not header declarations —
+// nothing in <test/jtx.h> provides them, and -DHOOKS_TEST_ONLY=ON excludes
+// the src/test/*_test.cpp files that do.
 #define BEAST_REQUIRE(x)     \\
     {{                        \\
         BEAST_EXPECT(!!(x)); \\
         if (!(x))            \\
             return;          \\
     }}
+#define HSFEE fee(100'000'000)
+#define M(m) memo(m, "", "")
 
 // Binds `{name}_wasm`, `{name}_hash`, `{name}_hash_str` and `{name}_keylet`
 // from the generated map. The string is the map key: "file:<domain>/<file>.c",

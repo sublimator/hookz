@@ -38,6 +38,18 @@ WASM_TYPE_CODE = {
 
 VOID = 0x00
 
+
+class WhitelistError(ValueError):
+    """The API whitelist could not be built from the configured checkout.
+
+    A ValueError subclass so existing callers still catch it, and its own type
+    so the CLI can tell "your xahaud checkout has an unparseable macro file"
+    apart from every other ValueError and render it as a verdict. It reached
+    users as a traceback out of `build`, `guard-check` and `wce` — three
+    commands, one unguarded read — and the cause is always the checkout rather
+    than the hook being checked.
+    """
+
 # Coverage callback, mirroring Enum.h:433 in getImportWhitelist():
 #   void __on_source_line(uint32_t line, uint32_t col)
 COVERAGE_IMPORT = "__on_source_line"
@@ -154,7 +166,7 @@ def parse_hook_api_macro(path: Path | str) -> list[HookApiFunction]:
     # The file's own invocation count is the check.
     expected = text.count(MACRO_NAME + "(")
     if len(results) != expected:
-        raise ValueError(
+        raise WhitelistError(
             f"{path}: parsed {len(results)} definitions but the file contains "
             f"{expected} {MACRO_NAME}( invocations — the whitelist would be "
             "incomplete"

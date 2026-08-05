@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from functools import lru_cache
 from pathlib import Path
@@ -197,6 +198,22 @@ def _rules_line(rules_version: int, dim: bool = False) -> str:
     limit = _nesting_limit(rules_version)
     label = "[dim]rules:[/dim]" if dim else "rules:"
     return f"  {label} 0x{rules_version:02X} (nesting limit {limit})"
+
+
+def _unreadable(path, exc: Exception) -> str:
+    """Why a hook source could not be handed to the buildbox, in one line.
+
+    The buildbox takes source as text, so both call sites did a bare
+    `read_text()` inside a `try` that catches only `BuildboxError`. A latin-1
+    byte in a comment — an ordinary thing to have in a C file — came out as a
+    UnicodeDecodeError traceback, and the fix belongs to whoever owns the
+    file, so it has to be legible rather than a stack.
+    """
+    if isinstance(exc, UnicodeDecodeError):
+        return (f"{path} is not valid UTF-8: byte 0x{exc.object[exc.start]:02x} "
+                f"at offset {exc.start}. The buildbox takes source as text — "
+                "re-save the file as UTF-8.")
+    return f"could not read {path}: {exc}"
 
 
 def _say_rules(rules_version: int, log=print) -> None:
@@ -717,7 +734,7 @@ def show(list_all, name):
 
 
 @cli.command("debug-compile")
-@click.argument("source", type=click.Path(exists=True))
+@click.argument("source", type=click.Path(exists=True, dir_okay=False))
 @click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path.")
 def debug_compile(source, output):
     """Check if a hook compiles (debug build, not for deployment)."""
@@ -796,6 +813,12 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
         if not source.exists():
             print(f"Error: source file '{source}' not found", file=sys.stderr)
             sys.exit(1)
+        # Checked here rather than by click.Path(dir_okay=False): this argument
+        # also accepts "-" for stdin, so it cannot carry an existence type.
+        # Without it a mistyped path reached read_bytes and died on
+        # IsADirectoryError — a traceback for a typo.
+        if source.is_dir():
+            raise click.UsageError(f"{source} is a directory, not a hook source")
         stdout_mode = False
 
     if output is not None:
@@ -1055,8 +1078,13 @@ def _build_buildbox(
     )
 
     try:
+        source_text = source.read_text()
+    except (UnicodeDecodeError, OSError) as exc:
+        _build_fail(log, output, stdout_mode, _unreadable(source, exc))
+
+    try:
         result = compile_source(
-            source.read_text(),
+            source_text,
             filename=request_filename or source.name,
             endpoint=endpoint,
             options=options,
@@ -1181,7 +1209,7 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
 
 
 @cli.command()
-@click.argument("input_wasm", type=click.Path(exists=True))
+@click.argument("input_wasm", type=click.Path(exists=True, dir_okay=False))
 @click.option("-o", "--output", type=click.Path(), default=None, help="Output WASM file path (default: overwrite input).")
 def clean(input_wasm, output):
     """Clean a hook WASM binary for deployment."""
@@ -1206,7 +1234,7 @@ def clean(input_wasm, output):
 
 
 @cli.command("guard-check")
-@click.argument("hook_wasm", type=click.Path(exists=True))
+@click.argument("hook_wasm", type=click.Path(exists=True, dir_okay=False))
 @waiver_options
 def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
                 ignore_guard_calls):
@@ -1334,8 +1362,13 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
         from hookz.buildbox import BuildboxError, compile_source
 
         try:
+            source_text = source.read_text()
+        except (UnicodeDecodeError, OSError) as exc:
+            raise click.ClickException(_unreadable(source, exc)) from None
+
+        try:
             remote = compile_source(
-                source.read_text(),
+                source_text,
                 filename=source.name,
                 endpoint=buildbox_url,
                 options=buildbox_options,
@@ -1631,7 +1664,7 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write,
 # ---------------------------------------------------------------------------
 
 @cli.command()
-@click.argument("source", type=click.Path(exists=True))
+@click.argument("source", type=click.Path(exists=True, dir_okay=False))
 @click.option("--all", "show_all", is_flag=True,
               help="Include arithmetic, tracing and exit calls.")
 @click.option("--source", "show_source", is_flag=True,
@@ -1869,20 +1902,34 @@ def _pretty(arg, api: str | None = None, position: int | None = None) -> str:
 _KEYLET_TYPE_ARG = {"util_keylet": 2}
 
 
-@lru_cache(maxsize=1)
-def _field_id_args() -> dict[str, int]:
-    """Which argument of which API is a field id, read from the declarations.
+# The parameter names `extern.h` gives an argument that carries an sfCode.
+# Two spellings, because the API uses two: `field_id` for most, `field_code`
+# for float_sto's. Both are decoded identically in xahaud —
+# `field = x & 0xFFFF; type = x >> 16` (HookAPI.cpp:1153-1154 for float_sto).
+#
+# Deliberately NOT `array_id`, despite the name: `slot_subarray` bound-checks
+# it against `parent_obj.size()` (HookAPI.cpp:2186) and `sto_subarray` spells
+# the same parameter `index_id` and compares it to a running counter
+# (HookAPI.cpp:159,216). They are array indices. Nor `error_code`
+# (accept/rollback) or `guard_id` (_g) — integers in the same range that mean
+# themselves. Naming any of them `sfMemos` is the same class of nonsense as
+# reading `hook_account(buf, 20)` as `hook_account(buf, KEYLET_ESCROW)`.
+_SFCODE_PARAM = re.compile(r"\bfield_(?:id|code)\b")
 
-    Derived rather than listed. A hand-maintained table would be five entries
+
+@lru_cache(maxsize=1)
+def _field_id_args() -> dict[str, frozenset[int]]:
+    """Which arguments of which APIs carry an sfCode, read from the declarations.
+
+    Derived rather than listed. A hand-maintained table would be eight entries
     long and would look equally plausible whichever way it was wrong, which is
     the same reason `guard_rules_version` reads the amendment manifest instead
     of hardcoding the bits.
 
-    `extern.h` names the parameter `field_id` in each declaration that takes
-    one, so the position falls out of the header hookz already vendors.
+    A set of positions per function rather than one: nothing in today's API
+    takes two sfCodes, but returning a single int made a second one
+    unrepresentable, so the first would have silently won.
     """
-    import re
-
     from hookz.xahaud_files import XahaudFile, resolve
 
     try:
@@ -1890,16 +1937,15 @@ def _field_id_args() -> dict[str, int]:
     except Exception:                                          # noqa: BLE001
         return {}
 
-    out: dict[str, int] = {}
+    out: dict[str, set[int]] = {}
     for decl in text.split(";"):
         m = re.search(r"(\w+)\s*\(([^()]*)\)\s*$", decl.strip(), re.DOTALL)
         if not m:
             continue
         for i, param in enumerate(m.group(2).split(",")):
-            if re.search(r"\bfield_id\b", param):
-                out[m.group(1)] = i
-                break
-    return out
+            if _SFCODE_PARAM.search(param):
+                out.setdefault(m.group(1), set()).add(i)
+    return {k: frozenset(v) for k, v in out.items()}
 
 
 def _name_for(value: int, api: str | None = None,
@@ -1921,7 +1967,7 @@ def _name_for(value: int, api: str | None = None,
     from hookz import hookapi
 
     if value > 0xFFFF:
-        if api is not None and _field_id_args().get(api) != position:
+        if api is not None and position not in _field_id_args().get(api, ()):
             return None
         for key, known in vars(hookapi).items():
             if key.startswith("sf") and known == value:
@@ -1944,6 +1990,8 @@ def main():
     here restores that without giving Click back control of exit codes, which
     the commands set themselves via sys.exit.
     """
+    from hookz.wasm.whitelist import WhitelistError
+
     try:
         cli(standalone_mode=False)
     except click.exceptions.Abort:
@@ -1952,6 +2000,17 @@ def main():
     except click.ClickException as exc:
         exc.show()
         sys.exit(exc.exit_code)
+    except WhitelistError as exc:
+        # Handled once here rather than at each call site: every command that
+        # checks a hook needs the whitelist, and the cause is always the
+        # configured checkout rather than the hook. It reached three commands
+        # as a traceback.
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(
+            "This is the configured xahaud checkout, not the hook being "
+            "checked. Point paths.xahaud at a tree whose hook_api.macro "
+            "parses, or unset it to use the vendored copy.", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

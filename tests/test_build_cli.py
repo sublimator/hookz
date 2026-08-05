@@ -384,6 +384,30 @@ class TestTheRulesFollowTheNetwork:
 
         assert "rules: 0x03 (nesting limit 32)" in r.output
 
+    def test_wce_moves_too(self, tmp_path, monkeypatch):
+        """The one verdict command this class had never covered.
+
+        `wce` renders the line through Rich rather than print, so it lives
+        outside the plain-text path the other two share, and its only coverage
+        was `assert "rules: 0x01 (nesting limit 16)" in output` — today's
+        constant, which a hardcoded 16 satisfies. A reviewer planted a
+        `%`-format copy in `wce` that printed 0x03 alongside a hardcoded limit
+        of 16, and the whole suite stayed green while `build` and `wce`
+        disagreed on the same manifest.
+
+        The structural tests in TestTheDisclosureHasOneSource are substring
+        blacklists — `"nesting limit {"`, `"  rules:"`, `"rules:[/dim]"` — so
+        a copy avoiding all three passes them. This closes it behaviourally
+        instead, where the shape of the format string does not matter.
+        """
+        self._with_depth32(monkeypatch)
+        art = tmp_path / "h.wasm"
+        art.write_bytes(_nested_blocks_wasm(2))
+
+        r = TestBuildAndWceAgree._run(["wce", str(art)])
+
+        assert "rules: 0x03 (nesting limit 32)" in r.output, r.output
+
     def test_a_hook_too_deep_today_would_pass_under_the_new_rules(
         self, tmp_path, monkeypatch
     ):
@@ -761,3 +785,79 @@ class TestWriteFailuresAreVerdicts:
         r = self._run(["build", str(SOURCE), "-o", str(out)])
         assert r.exit_code == 0, r.output
         assert out.read_bytes()[:4] == b"\x00asm"
+
+
+class TestAMistypedPathIsAUsageErrorNotATraceback:
+    """`click.Path` defaults to `dir_okay=True`, so a directory passed
+    validation and died one line later on the read.
+
+    Found alongside the write guarding, and worth stating together: `clean`'s
+    *write* was guarded while its *read* tracebacked on the same mistyped
+    path, one line earlier.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args, catch_exceptions=False)
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            pytest.param(["guard-check", "{d}"], id="guard-check"),
+            pytest.param(["clean", "{d}", "-o", "{d}/o.wasm"], id="clean"),
+            pytest.param(["build", "{d}", "-o", "{d}/o.wasm"], id="build"),
+            pytest.param(["debug-compile", "{d}"], id="debug-compile"),
+            pytest.param(["surface", "{d}"], id="surface"),
+        ],
+    )
+    def test_a_directory_is_refused(self, tmp_path, argv):
+        r = self._run([a.format(d=tmp_path) for a in argv])
+
+        assert r.exit_code != 0
+        assert "directory" in r.output.lower(), r.output
+        assert "Traceback" not in r.output
+
+
+class TestSourceTheBuildboxCannotBeGivenIsAVerdict:
+    """The buildbox takes source as text, so both call sites did a bare
+    `read_text()` inside a `try` that catches only `BuildboxError`.
+
+    A latin-1 byte in a comment is an ordinary thing to have in a C file, and
+    it came out as a UnicodeDecodeError traceback from `build --buildbox` and
+    `wce --buildbox` alike. Neither reaches the network, so neither test needs
+    it.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args, catch_exceptions=False)
+
+    @pytest.fixture
+    def latin1_hook(self, tmp_path):
+        p = tmp_path / "bad.c"
+        p.write_bytes(b"// caf\xe9 latin-1\nint hook(uint32_t r){return 0;}\n")
+        return p
+
+    def test_build_says_which_byte_and_where(self, tmp_path, latin1_hook):
+        r = self._run(["build", str(latin1_hook), "-o",
+                       str(tmp_path / "o.wasm"), "--buildbox"])
+
+        assert r.exit_code == 1
+        assert "not valid UTF-8" in r.output
+        assert "0xe9" in r.output and "offset 6" in r.output
+        assert "Traceback" not in r.output
+
+    def test_wce_says_the_same_thing(self, latin1_hook):
+        r = self._run(["wce", str(latin1_hook), "--buildbox"])
+
+        assert r.exit_code != 0
+        assert "not valid UTF-8" in r.output
+        assert "Traceback" not in r.output

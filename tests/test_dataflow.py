@@ -370,14 +370,77 @@ class TestConstantNamingIsPositionAware:
         for value in collisions[:20]:
             assert _name_for(value, api="trace", position=0) is None
 
-    def test_the_field_id_positions_are_read_from_the_declarations(self):
-        """Not a hand-kept list — `extern.h` names the parameter `field_id`."""
-        from hookz.cli.main import _field_id_args
+    def test_every_declaration_that_takes_an_sfcode_is_covered(self):
+        """The property, not the answer.
 
-        assert _field_id_args() == {
-            "sto_subfield": 2, "sto_emplace": 6, "sto_erase": 4,
-            "slot_subfield": 1, "otxn_field": 2,
-        }
+        The first version asserted the exact dict the derivation produced. It
+        had missed three declarations — `float_sto`'s `field_code`, and the
+        `array_id` of `sto_subarray` and `slot_subarray` — so the assertion
+        locked the omission in rather than catching it. Asserting an output
+        against itself proves the code does what it does.
+
+        Scanning every parameter and requiring membership is a second
+        expression of the rule, so a declaration the derivation skips fails
+        here instead of being ratified.
+        """
+        import re
+
+        from hookz.cli.main import _field_id_args
+        from hookz.xahaud_files import XahaudFile, resolve
+
+        text = resolve(XahaudFile.EXTERN_H).read_text()
+        derived = _field_id_args()
+
+        expected: dict[str, set[int]] = {}
+        for decl in text.split(";"):
+            m = re.search(r"(\w+)\s*\(([^()]*)\)\s*$", decl.strip(), re.DOTALL)
+            if not m:
+                continue
+            for i, param in enumerate(m.group(2).split(",")):
+                if re.search(r"\bfield_(?:id|code)\b", param):
+                    expected.setdefault(m.group(1), set()).add(i)
+
+        assert expected, "premise: extern.h declares sfCode-carrying arguments"
+        for api, positions in expected.items():
+            assert set(derived.get(api, ())) == positions, api
+
+    def test_the_one_that_was_missed_is_named(self):
+        """`float_sto`'s sfCode argument is spelled `field_code`, so keying on
+        `field_id` alone dropped it. xahaud decodes it identically to the
+        others — `field = x & 0xFFFF; type = x >> 16` (HookAPI.cpp:1153).
+        """
+        from hookz import hookapi
+        from hookz.cli.main import _name_for
+
+        assert _name_for(hookapi.sfAmount, "float_sto", 7) == "sfAmount"
+
+    def test_an_array_index_is_not_named_as_a_field(self):
+        """`array_id` reads like an sfCode argument and is not one.
+
+        `slot_subarray` bound-checks it against `parent_obj.size()`
+        (HookAPI.cpp:2186) and `sto_subarray` calls the same parameter
+        `index_id` and compares it to a running counter (HookAPI.cpp:159,216).
+        A first pass at this widened the pattern to `(field|array)_(id|code)`
+        on the strength of the name, which named `slot_subarray(s, 1, n)`'s
+        index as whichever field shared its value.
+        """
+        from hookz import hookapi
+        from hookz.cli.main import _field_id_args, _name_for
+
+        assert "slot_subarray" not in _field_id_args()
+        assert "sto_subarray" not in _field_id_args()
+        assert _name_for(hookapi.sfMemos, "slot_subarray", 1) is None
+        assert _name_for(hookapi.sfMemos, "sto_subarray", 2) is None
+
+    def test_an_error_code_is_not_named_as_a_field(self):
+        """`accept`/`rollback` take an `error_code` the hook chooses, in the
+        same numeric range. It means itself."""
+        from hookz import hookapi
+        from hookz.cli.main import _field_id_args, _name_for
+
+        assert "accept" not in _field_id_args()
+        assert _name_for(hookapi.sfAmount, "accept", 2) is None
+        assert _name_for(hookapi.sfAmount, "rollback", 2) is None
 
     def test_a_length_is_not_named_as_a_keylet(self):
         from hookz.cli.main import _name_for
