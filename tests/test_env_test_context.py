@@ -532,3 +532,105 @@ class TestTheLegendExplainsWhatTheTableNames:
         assert "one- and two-line edits" not in line
         assert "applyHook.h" in line and "+142" in line
         assert "RippledCore.cmake" in line and "+114" in line
+
+
+class TestSectionOneIdentifiesSomethingReal:
+    """A hook is identified by the hash of its wasm, so a sha256 in section 1
+    is exactly the field a reader quotes.
+
+    On the source path that hash was of the throwaway `-g -O0` build made for
+    call-site attribution: three times the size of the deployable artifact,
+    matching no artifact anywhere, and different on every run — `compile_hook`
+    writes to a NamedTemporaryFile whose random name lands in the wasm `name`
+    section, so 8 bytes of the hashed input changed each time.
+    """
+
+    def test_a_wasm_input_is_hashed_as_handed_over(self, checkout):
+        import hashlib
+
+        doc = _doc(checkout)
+        digest = hashlib.sha256(WASM.read_bytes()).hexdigest()
+
+        assert f"- sha256: `{digest}`" in doc
+
+    def test_the_source_path_hashes_the_source_not_the_build(self):
+        """Unit-level, so it runs without a toolchain."""
+        import hashlib
+
+        from hookz.cli.env_test_context import _identity
+
+        src = Path(__file__)
+        built = b"\x00asm\x01\x00\x00\x00 pretend this came out of clang"
+        lines = "\n".join(_identity(src, built, from_source=True))
+
+        assert hashlib.sha256(src.read_bytes()).hexdigest() in lines
+        assert hashlib.sha256(built).hexdigest() not in lines, (
+            "the analysis build's hash is unstable and identifies nothing")
+        assert "deployable artifact" in lines
+        assert "not stable across runs" in lines
+        assert "hookz build" in lines
+
+    def test_a_wasm_input_still_shows_the_artifact_hash(self):
+        import hashlib
+
+        from hookz.cli.env_test_context import _identity
+
+        blob = b"\x00asm\x01\x00\x00\x00"
+        lines = "\n".join(_identity(Path("h.wasm"), blob, from_source=False))
+
+        assert hashlib.sha256(blob).hexdigest() in lines
+
+
+class TestTheDocumentIsReproducible:
+    """The strongest available statement that nothing unstable leaks in.
+
+    Two runs over the same source produced different documents, because
+    section 1 hashed a build whose bytes carried a random temp filename. Any
+    future field with the same problem fails here rather than being noticed
+    by someone diffing two copies months later.
+    """
+
+    def test_two_runs_over_the_same_source_agree(self, tmp_path):
+        from hookz.cli.env_test_context import build_context
+        from hookz.config import load_config
+        from hookz.xahaud_files import _vendored_root
+
+        source = Path("examples/tipbot/hooks/tip.c")
+        if not source.is_file():
+            pytest.skip("tipbot example not present")
+
+        config = load_config(source_file=source)
+        if Path(config.xahaud_root).resolve() == _vendored_root().resolve():
+            pytest.skip("needs a real xahaud checkout")
+
+        first = build_context(source, config, include_impl=False,
+                              include_patch=False)
+        second = build_context(source, config, include_impl=False,
+                               include_patch=False)
+
+        assert first == second
+
+    def test_the_call_site_legend_defines_every_glyph_it_uses(self, tmp_path):
+        """`?` was 37% of rendered arguments on tip.c — 121 of 324 — and the
+        legend explained only the trailing `*`. An undefined glyph appearing
+        that often, in a document whose premise is that it is trusted without
+        checking, is the gap the `*` sentence shows the author knew to close.
+        """
+        from hookz.cli.env_test_context import build_context
+        from hookz.config import load_config
+        from hookz.xahaud_files import _vendored_root
+
+        source = Path("examples/tipbot/hooks/tip.c")
+        if not source.is_file():
+            pytest.skip("tipbot example not present")
+
+        config = load_config(source_file=source)
+        if Path(config.xahaud_root).resolve() == _vendored_root().resolve():
+            pytest.skip("needs a real xahaud checkout")
+
+        doc = build_context(source, config, include_impl=False,
+                            include_patch=False)
+
+        assert "## 3. Where it calls them" in doc
+        assert "(?" in doc or ", ?" in doc, "premise: unresolved args render"
+        assert "- `?` —" in doc, "the glyph is never defined"

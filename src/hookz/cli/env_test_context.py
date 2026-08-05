@@ -332,10 +332,14 @@ def _call_site_section(sites, source: Path) -> list[str]:
     from hookz.cli.main import _pretty
 
     lines = [
-        f"Read out of the compiled binary and attributed back to `{source.name}`, "
-        "so the constants the source hid behind macros are resolved to the "
-        "values xahaud will see. A trailing `*` means the value came from a "
-        "single-assignment local rather than off the stack at the call.",
+        f"Read out of the compiled binary and attributed back to "
+        f"`{source.name}`, so the constants the source hid behind macros are "
+        "resolved to the values xahaud will see.",
+        "",
+        "- `?` — not a compile-time constant: the argument is computed at "
+        "runtime, so the binary does not carry a value to resolve.",
+        "- a trailing `*` — the value came from a single-assignment local "
+        "rather than off the stack at the call, which is weaker evidence.",
         "",
         "```",
     ]
@@ -538,6 +542,42 @@ def _patch_section(patch_path: Path, full: bool = False) -> list[str]:
     return lines
 
 
+def _identity(target: Path, wasm: bytes, from_source: bool) -> list[str]:
+    """What this document is about, without claiming a hash that means nothing.
+
+    A hook is identified by the hash of its wasm, so section 1 printing a
+    sha256 is exactly the field a reader will quote. On the source path that
+    hash was of the throwaway `-g -O0` build made here for call-site
+    attribution — three times the size of the deployable artifact, matching no
+    artifact anywhere, and *different on every run*, because `compile_hook`
+    writes to a NamedTemporaryFile whose random name lands in the wasm `name`
+    section.
+
+    So the source path identifies the source, which is stable and is the thing
+    the reader has, and describes the analysis build as what it is.
+    """
+    if not from_source:
+        return [
+            f"- artifact: `{target}` ({len(wasm):,} bytes)",
+            f"- sha256: `{hashlib.sha256(wasm).hexdigest()}` — the file you "
+            "handed over. xahaud identifies a hook by this hash.",
+        ]
+
+    try:
+        src = target.read_bytes()
+    except OSError:                                            # pragma: no cover
+        src = b""
+    return [
+        f"- source: `{target}` ({len(src):,} bytes)",
+        f"- source sha256: `{hashlib.sha256(src).hexdigest()}`",
+        f"- analysis build: {len(wasm):,} bytes, `-g -O0` — compiled here only "
+        "to attribute calls to source lines. It is **not** the deployable "
+        "artifact and its hash is not stable across runs, so it is not shown; "
+        "`hookz build` produces the binary xahaud would accept, and its hash "
+        "is the one that identifies the hook.",
+    ]
+
+
 def _harness_section(suite: str, name: str, stem: str) -> list[str]:
     return [
         f"`hookz build-test-hooks` compiles your hooks into "
@@ -670,10 +710,7 @@ def build_context(
         "",
         "## 1. The hook",
         "",
-        f"- path: `{target}`",
-        f"- size: {len(wasm):,} bytes"
-        + (" (compiled here)" if from_source else ""),
-        f"- sha256: `{hashlib.sha256(wasm).hexdigest()}`",
+        *_identity(target, wasm, from_source),
         f"- host functions imported: {len(imports)}"
         + (f", called from {len(sites)} site(s)" if sites else ""),
         f"- xahaud checkout: `{root}`",
