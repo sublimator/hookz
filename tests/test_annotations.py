@@ -157,8 +157,8 @@ class TestPipelineIntegration:
             "//@@\n" + text)
 
         cfg = load_config(source_file=original)
-        assert run_pipeline(plain, "buildbox", cfg).wasm == \
-            run_pipeline(annotated, "buildbox", cfg).wasm
+        assert run_pipeline(plain, "local-structural", cfg).wasm == \
+            run_pipeline(annotated, "local-structural", cfg).wasm
 
 
 class TestLineMapping:

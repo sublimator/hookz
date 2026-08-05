@@ -375,15 +375,22 @@ class TestSourceCompilationChoice:
         assert local_build.seen[0] is not None
         assert local_build.seen[0].name == "analysis"
 
-    def test_unknown_pipeline_fails_with_the_runner_error(
+    def test_unknown_pipeline_is_a_usage_error_naming_the_real_ones(
         self, c_source, monkeypatch
     ):
+        """A name this flag will not take is bad usage, not a failed build —
+        so it exits 2 and lists what it would have taken."""
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            explode("an unknown --pipeline name still started a build"),
+        )
 
         out = run(c_source, "--pipeline", "no-such-pipeline")
 
-        assert out.exit_code == 1
-        assert "local pipeline failed" in out.output
+        assert out.exit_code == 2
+        assert "local-structural" in out.output
+        assert "local pipeline failed" not in out.output
 
     def test_buildbox_weighs_the_exact_remote_result(self, c_source, buildbox):
         out = run(c_source, "--buildbox")
@@ -451,6 +458,28 @@ class TestSourceCompilationChoice:
 
         assert out.exit_code == 2
         assert "cannot be combined" in out.output
+
+    def test_pipeline_buildbox_is_refused_before_anything_runs(
+        self, c_source, monkeypatch
+    ):
+        """It used to resolve to local-structural and weigh a local build.
+
+        Asserted on both pointers rather than on `buildbox`, which is in the
+        input and so would also match a bare "unknown pipeline". The exploding
+        run_pipeline pins the *before*: a rejected spelling must not reach a
+        build, and must not be reported as one that failed.
+        """
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            explode("a refused --pipeline name still started a build"),
+        )
+
+        out = run(c_source, "--pipeline", "buildbox")
+
+        assert out.exit_code == 2
+        assert "--buildbox" in out.output
+        assert "--pipeline local-structural" in out.output
+        assert "local pipeline failed" not in out.output
 
     def test_buildbox_url_without_buildbox_is_refused(self, c_source):
         out = run(c_source, "--buildbox-url", "https://elsewhere.example")
@@ -930,14 +959,25 @@ class TestErrorsReachTheUserAsErrors:
     def test_a_click_exception_prints_a_message_and_exits_1(
         self, c_source, monkeypatch, capsys
     ):
+        """A build that starts and dies — clang failing is the ordinary case.
+
+        Used to be driven by an unknown --pipeline name, which is now rejected
+        as usage before any build starts and so exercises the exit-2 path
+        above instead. This needs a genuine ClickException or the branch that
+        renders one goes uncovered.
+        """
+        def _die(*a, **k):
+            raise RuntimeError("clang: error: no such file")
+
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr("hookz.wasm.pipeline.run_pipeline", _die)
         code, out = self._run_main(
-            ["wce", str(c_source), "--pipeline", "no-such-pipeline"],
-            monkeypatch, capsys,
+            ["wce", str(c_source)], monkeypatch, capsys
         )
 
         assert code == 1
         assert "local pipeline failed" in out.err
+        assert "clang: error" in out.err
         assert "Traceback" not in out.err
 
     def test_a_clean_run_still_exits_zero_through_main(

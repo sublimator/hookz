@@ -8,7 +8,7 @@ between installing and being rejected outright.
 
 So the flags are not ours to choose. They are copied from the official web
 compiler, and this module records exactly which revision they were copied from.
-`hookz.wasm.optimize.BUILDBOX` and
+`hookz.wasm.optimize.LOCAL_STRUCTURAL` and
 `hookz.wasm.pipeline.LOCAL_STRUCTURAL_PIPELINE` are the local approximation;
 this is the citation. Actual service compilation is `hookz build --buildbox`.
 
@@ -103,12 +103,12 @@ from __future__ import annotations
 COMPILER_REPO = "https://github.com/Xahau/xrpl-hooks-compiler"
 COMPILER_SOURCE = "compiler-api/src/chooks.ts"
 
-# The revision the BUILDBOX flags were copied from.
+# The revision the local-structural flags were copied from.
 COMPILER_COMMIT = "6a954d4f303687c543ae1c85019c3516b8c454bb"
 COMPILER_COMMIT_DATE = "2025-02-14"
 
 # The revision that removed them again. Builds after this date use a different
-# toolchain and will not match BUILDBOX.
+# toolchain and will not match local-structural.
 REVERTED_IN = "61f3a0798a0ca584c8d8954b59ea6c991f334e18"
 REVERTED_DATE = "2026-07-09"
 

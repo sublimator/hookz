@@ -795,7 +795,7 @@ def pipelines():
     from hookz.wasm.pipeline import (
         BUILD_PIPELINES,
         DEFAULT_PIPELINE,
-        PIPELINE_ALIASES,
+        PIPELINE_MISNOMERS,
     )
 
     console = Console()
@@ -811,10 +811,15 @@ def pipelines():
             + ("  [dim]→ cleaner[/dim]" if p.clean else "")
         )
         console.print()
-    for alias, target in PIPELINE_ALIASES.items():
+    # Named here because it used to be accepted. Someone who learned the old
+    # spelling should be told it is gone, not left to read "unknown pipeline"
+    # and wonder whether the service went away with it.
+    for name in PIPELINE_MISNOMERS:
         console.print(
-            f"[dim]legacy alias:[/dim] {alias} → {target} "
-            "(local; not the --buildbox service)"
+            f"[dim]rejected:[/dim] {name} [dim]— builds locally, so it is not "
+            "a name this flag will take. Use[/dim] --buildbox [dim]for the "
+            "service or[/dim] --pipeline local-structural [dim]for the local "
+            "approximation.[/dim]"
         )
 
 
@@ -1214,8 +1219,16 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
             STRIP_ANNOTATIONS, get_pipeline, run_pipeline,
         )
 
+        # Resolved before the try below, because a name this flag will not take
+        # is a usage error and nothing has run yet — folding it in reports a
+        # rejected spelling as "local pipeline failed", which describes a build
+        # that never started.
         try:
             pipeline = get_pipeline(pipeline_name) if pipeline_name else None
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+
+        try:
             analysis_config = load_config(source_file=source)
             trace = run_pipeline(source, pipeline, analysis_config)
         except (ValueError, CleanError, WasmOptError, RuntimeError) as exc:

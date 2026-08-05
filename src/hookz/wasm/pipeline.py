@@ -23,7 +23,7 @@ from typing import Any
 
 from . import compiler_ref
 from .guard import GuardResult
-from .optimize import BUILDBOX, NONE, OptProfile
+from .optimize import LOCAL_STRUCTURAL, NONE, OptProfile
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +225,7 @@ LOCAL_STRUCTURAL_PIPELINE = BuildPipeline(
                f"{compiler_ref.COMPILER_COMMIT[:8]} "
                f"({compiler_ref.COMPILER_COMMIT_DATE})",
     compile=CompileSpec(opt_level="-O3", export_all=True),
-    opt=BUILDBOX,
+    opt=LOCAL_STRUCTURAL,
     # An annotated hook must build to the same bytes as the file it annotates,
     # or the analysis describes a binary nobody deployed.
     transforms=(STRIP_ANNOTATIONS,),
@@ -270,29 +270,30 @@ BUILD_PIPELINES: dict[str, BuildPipeline] = {
     for p in (LOCAL_STRUCTURAL_PIPELINE, ANALYSIS_PIPELINE, DEBUG_PIPELINE)
 }
 
-# Compatibility for callers that imported the old constant. The object and
-# its public name are local-structural; actual buildbox compilation is selected
-# by the CLI's --buildbox flag.
-#
-# TODO(buildbox-alias-name-collision): both names below claim a service they do
-# not call, and `--pipeline buildbox` silently compiles locally. Everywhere the
-# alias is *described* says so loudly, but nothing the person who typed it will
-# read does — a wrong spelling should exit pointing at --buildbox and at
-# --pipeline local-structural, not resolve to one of them.
-BUILDBOX_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
-PIPELINE_ALIASES = {"buildbox": "local-structural"}
-
 DEFAULT_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
+
+# Rejected, not resolved. `buildbox` used to alias local-structural, so one
+# command carried two spellings of the same word and only `--buildbox` called
+# the service — the other quietly built here and exited 0. Every place that
+# *described* the alias said so, but none of them is on the path of someone who
+# types it and reads the exit code. A name that means its opposite is worse
+# than an unknown name, so the wrong spelling exits pointing at both right ones.
+PIPELINE_MISNOMERS = {
+    "buildbox": (
+        "--pipeline buildbox is not the buildbox service — it builds locally. "
+        "Use --buildbox to compile through the service, or "
+        "--pipeline local-structural for the local approximation of it."
+    ),
+}
 
 
 def get_pipeline(name: str) -> BuildPipeline:
-    name = PIPELINE_ALIASES.get(name, name)
+    if name in PIPELINE_MISNOMERS:
+        raise ValueError(PIPELINE_MISNOMERS[name])
     try:
         return BUILD_PIPELINES[name]
     except KeyError:
-        known = ", ".join(
-            sorted(set(BUILD_PIPELINES) | set(PIPELINE_ALIASES))
-        )
+        known = ", ".join(sorted(BUILD_PIPELINES))
         raise ValueError(
             f"unknown build pipeline {name!r} (known: {known})") from None
 

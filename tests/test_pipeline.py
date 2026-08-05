@@ -19,8 +19,8 @@ from hookz.config import load_config
 from hookz.wasm.clean import clean_hook
 from hookz.wasm.guard import analyze_wce
 from hookz.wasm.optimize import (
-    BUILDBOX,
     LOCAL_STRUCTURAL,
+    MISNOMERS,
     NONE,
     OPT_PROFILES,
     OptProfile,
@@ -29,10 +29,10 @@ from hookz.wasm.optimize import (
 )
 from hookz.wasm.pipeline import (
     BUILD_PIPELINES,
-    BUILDBOX_PIPELINE,
     DEBUG_PIPELINE,
     DEFAULT_PIPELINE,
     LOCAL_STRUCTURAL_PIPELINE,
+    PIPELINE_MISNOMERS,
     get_pipeline,
     run_pipeline,
 )
@@ -91,19 +91,19 @@ class TestDepth:
 # Profile invariants
 # ---------------------------------------------------------------------------
 
-class TestBuildboxProfile:
+class TestLocalStructuralProfile:
     def test_carries_rereloop(self):
         """The pass whose absence caused a live hook to read as un-installable."""
-        assert "--rereloop" in BUILDBOX.passes
+        assert "--rereloop" in LOCAL_STRUCTURAL.passes
 
     def test_flatten_precedes_rereloop(self):
         """--rereloop requires flat IR; wasm-opt aborts otherwise."""
-        p = list(BUILDBOX.passes)
+        p = list(LOCAL_STRUCTURAL.passes)
         assert p.index("--flatten") < p.index("--rereloop")
 
     def test_matches_the_reference_flag_list(self):
         """Verbatim from chooks.ts @ COMPILER_COMMIT. See compiler_ref."""
-        assert BUILDBOX.passes == (
+        assert LOCAL_STRUCTURAL.passes == (
             "--shrink-level=100000000", "--coalesce-locals-learning",
             "--vacuum", "--merge-blocks", "--merge-locals", "--flatten",
             "--ignore-implicit-traps", "-ffm", "--const-hoisting",
@@ -117,7 +117,7 @@ class TestBuildboxProfile:
     def test_cites_its_source(self):
         from hookz.wasm import compiler_ref
 
-        assert compiler_ref.COMPILER_COMMIT[:8] in BUILDBOX.provenance
+        assert compiler_ref.COMPILER_COMMIT[:8] in LOCAL_STRUCTURAL.provenance
 
     def test_rereloop_changes_the_reported_depth(self, govern_raw):
         """Non-vacuous: dropping it yields a different answer, not the same one.
@@ -129,9 +129,10 @@ class TestBuildboxProfile:
         """
         without = OptProfile(
             name="ablated", summary="", provenance="",
-            invocations=(tuple(f for f in BUILDBOX.passes if f != "--rereloop"),),
+            invocations=(tuple(f for f in LOCAL_STRUCTURAL.passes
+                               if f != "--rereloop"),),
         )
-        assert _depth(clean_hook(BUILDBOX.run(govern_raw))) != \
+        assert _depth(clean_hook(LOCAL_STRUCTURAL.run(govern_raw))) != \
             _depth(clean_hook(without.run(govern_raw)))
 
     def test_rereloop_needs_flat_ir(self, govern_raw):
@@ -146,13 +147,27 @@ class TestProfileRegistry:
         assert NONE.run(govern_raw) == govern_raw
 
     def test_lookup_by_name(self):
-        assert get_opt_profile("buildbox") is BUILDBOX
         assert get_opt_profile("local-structural") is LOCAL_STRUCTURAL
-        assert BUILDBOX.name == "local-structural"
+        assert LOCAL_STRUCTURAL.name == "local-structural"
+
+    def test_buildbox_is_refused_and_says_what_it_is_not(self):
+        """These flags approximate the service; they are not it."""
+        with pytest.raises(WasmOptError) as e:
+            get_opt_profile("buildbox")
+        assert "local-structural" in str(e.value)
+        assert "--buildbox" in str(e.value)
 
     def test_unknown_name_lists_the_known_ones(self):
-        with pytest.raises(WasmOptError, match="buildbox"):
+        with pytest.raises(WasmOptError, match="local-structural"):
             get_opt_profile("no-such-profile")
+
+    def test_the_known_list_does_not_advertise_a_refused_name(self):
+        """Regression: the list was `OPT_PROFILES | ALIASES`, so the error
+        naming valid profiles offered `buildbox` as one of them."""
+        with pytest.raises(WasmOptError) as e:
+            get_opt_profile("no-such-profile")
+        for refused in MISNOMERS:
+            assert refused not in str(e.value)
 
     def test_registry_keys_match_profile_names(self):
         assert all(k == p.name for k, p in OPT_PROFILES.items())
@@ -167,17 +182,17 @@ class TestRunPipeline:
         assert DEFAULT_PIPELINE is LOCAL_STRUCTURAL_PIPELINE
 
     def test_records_every_stage_in_order(self):
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         assert [s.name for s in trace.stages] == [
             "transform", "compile", "wasm-opt", "clean"]
 
     def test_final_stage_matches_the_artifact(self):
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         assert trace.final.size == len(trace.wasm)
 
     def test_wasm_stages_carry_depth_and_wce(self):
         """Source stages have no wasm to measure; every later stage must."""
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         for s in trace.stages:
             if s.name == "transform":
                 continue
@@ -188,7 +203,7 @@ class TestRunPipeline:
         """The whole point: what comes out passes the real guard checker."""
         from hookz.wasm.guard import validate_guards
 
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         assert validate_guards(trace.wasm).deployable
 
     def test_debug_pipeline_skips_optimize_and_clean(self):
@@ -200,13 +215,34 @@ class TestRunPipeline:
             GOVERN, "local-structural"
         ).pipeline is LOCAL_STRUCTURAL_PIPELINE
 
-    def test_old_buildbox_name_is_a_local_compatibility_alias(self):
-        assert run_pipeline(GOVERN, "buildbox").pipeline is BUILDBOX_PIPELINE
-        assert BUILDBOX_PIPELINE.name == "local-structural"
+    def test_buildbox_is_refused_and_points_at_both_real_options(self):
+        """It used to resolve here and build locally with a zero exit.
+
+        Asserted on the two pointers rather than on the word `buildbox`: that
+        word is in the input, so matching it alone would also pass against a
+        bare "unknown pipeline" and the pointer could rot away unnoticed.
+        """
+        with pytest.raises(ValueError) as e:
+            get_pipeline("buildbox")
+        assert "--buildbox" in str(e.value)
+        assert "--pipeline local-structural" in str(e.value)
+
+    def test_buildbox_does_not_build(self):
+        """The failure that mattered: it produced an artifact, not an error."""
+        with pytest.raises(ValueError):
+            run_pipeline(GOVERN, "buildbox")
 
     def test_unknown_pipeline_lists_the_known_ones(self):
-        with pytest.raises(ValueError, match="buildbox"):
+        with pytest.raises(ValueError, match="local-structural"):
             get_pipeline("no-such-pipeline")
+
+    def test_the_known_list_does_not_advertise_a_refused_name(self):
+        """Regression: the list was `BUILD_PIPELINES | ALIASES`, so the error
+        naming valid pipelines offered `buildbox` as one of them."""
+        with pytest.raises(ValueError) as e:
+            get_pipeline("no-such-pipeline")
+        for refused in PIPELINE_MISNOMERS:
+            assert refused not in str(e.value)
 
     def test_registry_keys_match_pipeline_names(self):
         assert all(k == p.name for k, p in BUILD_PIPELINES.items())
@@ -214,13 +250,13 @@ class TestRunPipeline:
 
 class TestTraceTable:
     def test_table_has_a_row_per_stage(self):
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         lines = trace.format_table().splitlines()
         # header + rule + one per stage
         assert len(lines) == len(trace.stages) + 2
 
     def test_table_names_every_stage(self):
-        trace = run_pipeline(GOVERN, BUILDBOX_PIPELINE)
+        trace = run_pipeline(GOVERN, LOCAL_STRUCTURAL_PIPELINE)
         table = trace.format_table()
         assert all(s.name in table for s in trace.stages)
 
@@ -257,9 +293,9 @@ class TestTransformPolicy:
     """
 
     def test_a_deployable_build_strips(self):
-        from hookz.wasm.pipeline import BUILDBOX_PIPELINE
+        from hookz.wasm.pipeline import LOCAL_STRUCTURAL_PIPELINE
 
-        assert BUILDBOX_PIPELINE.transforms == ("hookz.annotations:strip",)
+        assert LOCAL_STRUCTURAL_PIPELINE.transforms == ("hookz.annotations:strip",)
 
     def test_an_analysis_build_does_not(self):
         """DWARF must point at the file a human is reading."""
@@ -282,8 +318,8 @@ class TestTransformPolicy:
         from hookz.wasm.pipeline import run_pipeline
 
         source = Path(__file__).parent / "e2e" / "hooks" / "misc" / "balance_gate.c"
-        trace = run_pipeline(source, "buildbox", load_config(source_file=source),
-                             dev=True)
+        trace = run_pipeline(source, "local-structural",
+                             load_config(source_file=source), dev=True)
         assert "transform" not in [s.name for s in trace.stages]
 
 

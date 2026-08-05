@@ -116,19 +116,27 @@ OPT_PROFILES: dict[str, OptProfile] = {
     p.name: p for p in (LOCAL_STRUCTURAL, SIZE, NONE)
 }
 
-# Compatibility for callers that imported or selected the old name.
-BUILDBOX = LOCAL_STRUCTURAL
-OPT_PROFILE_ALIASES = {"buildbox": "local-structural"}
-
 DEFAULT_OPT_PROFILE = LOCAL_STRUCTURAL
+
+# Rejected, not resolved. These flags were copied from the historical web
+# compiler, but running them locally is not what the service does, so a profile
+# named after it would promise provenance this module cannot supply.
+MISNOMERS = {
+    "buildbox": (
+        "'buildbox' is not a wasm-opt profile — these flags are "
+        "'local-structural', a local approximation of the service. The "
+        "service itself is selected by the CLI's --buildbox flag."
+    ),
+}
 
 
 def get_opt_profile(name: str) -> OptProfile:
-    name = OPT_PROFILE_ALIASES.get(name, name)
+    if name in MISNOMERS:
+        raise WasmOptError(MISNOMERS[name])
     try:
         return OPT_PROFILES[name]
     except KeyError:
-        known = ", ".join(sorted(set(OPT_PROFILES) | set(OPT_PROFILE_ALIASES)))
+        known = ", ".join(sorted(OPT_PROFILES))
         raise WasmOptError(
             f"unknown wasm-opt profile {name!r} (known: {known})") from None
 
