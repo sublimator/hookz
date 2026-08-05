@@ -45,9 +45,54 @@ def _walk_slot_fields(data: bytes):
 
 # (type 14, field 1) — the byte that closes an STObject.
 _OBJECT_END = 0xE1
+# (type 15, field 1) — the byte that closes an STArray.
+_ARRAY_END = 0xF1
 _STI_OBJECT = 0xE
+_STI_ARRAY = 0xF
 _STI_VL = 0x7
 _STI_VECTOR256 = 0x13
+
+
+def _field_value_bytes(data: bytes, type_code: int, field_code: int,
+                       offset: int, total_len: int,
+                       pay_off: int, pay_len: int) -> bytes:
+    """The value bytes the host serves for one field of `data`.
+
+    Every host answer for a field is its `STBase::add` serialization, with
+    exactly one exception — the write macro strips a leading length byte for
+    accounts and nothing else:
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1908
+            Serializer s;
+            field->add(s);
+            WRITE_WASM_MEMORY_OR_RETURN_AS_INT64(...,
+                field->getSType() == STI_ACCOUNT);
+
+    Concretely, from the field's serialized form inside `data`:
+
+    - fixed-width types: the payload bytes;
+    - `STI_ACCOUNT`: the payload without its length prefix;
+    - other length-prefixed types (`STI_VL`, `STI_VECTOR256`): the prefix
+      *kept* — `STBlob::add` serializes it as part of the value;
+    - `STI_OBJECT` / `STI_ARRAY`: the contents only. The named outer header
+      and the closing `E1`/`F1` belong to the *containing* object's
+      serialization — `STObject::add` emits them around, not inside, the
+      child's own `add` — so an empty array's value is empty.
+
+    This is the single projection both `slot_subfield` and applied-callback
+    direct reads use; the two views describe the same transaction upstream
+    and may not disagree here.
+    """
+    header_len = 1 + (type_code >= 16) + (field_code >= 16)
+    if type_code in (_STI_OBJECT, _STI_ARRAY):
+        closing = _OBJECT_END if type_code == _STI_OBJECT else _ARRAY_END
+        end = offset + total_len
+        if total_len > header_len and data[end - 1] == closing:
+            end -= 1
+        return data[offset + header_len:end]
+    if type_code in (_STI_VL, _STI_VECTOR256):
+        return data[offset + header_len:offset + total_len]
+    return data[pay_off:pay_off + pay_len]
 
 
 def _walk_array_elements(data: bytes):
@@ -130,24 +175,11 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
             return hookapi.NO_FREE_SLOTS
 
     try:
-        for fid, type_code, _fc, offset, total_len, pay_off, pay_len in _walk_slot_fields(parent_data):
+        for fid, type_code, fc, offset, total_len, pay_off, pay_len in _walk_slot_fields(parent_data):
             if fid == field_id:
-                # For arrays (type 0xF), store the whole field including header
-                if type_code == 0xF:
-                    _set_slot_data(rt, new_slot, parent_data[offset:offset + total_len])
-                elif type_code in (_STI_VL, _STI_VECTOR256):
-                    # STBlob::add and STVector256::add serialize their value
-                    # with the VL length prefix.  slot() serializes that STBase
-                    # value, not merely its decoded payload.
-                    header_len = 1 + (type_code >= 16) + (_fc >= 16)
-                    value_off = offset + header_len
-                    _set_slot_data(
-                        rt, new_slot,
-                        parent_data[value_off:offset + total_len],
-                    )
-                else:
-                    # Store just the payload (what slot() would return)
-                    _set_slot_data(rt, new_slot, parent_data[pay_off:pay_off + pay_len])
+                _set_slot_data(rt, new_slot, _field_value_bytes(
+                    parent_data, type_code, fc, offset, total_len,
+                    pay_off, pay_len))
                 return new_slot
     except Exception:
         return hookapi.NOT_AN_OBJECT

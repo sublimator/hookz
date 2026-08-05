@@ -136,6 +136,78 @@ int64_t cbak(uint32_t ctx)
         state_set(SBUF(th), SBUF(k));
     }
 
+    uint8_t vl[16];
+    int64_t vrc = otxn_field(SBUF(vl), sfBlob);
+    if (vrc > 0)
+    {
+        k[0] = 0x0E;
+        state_set(vl, (uint32_t)vrc, SBUF(k));
+    }
+
+    uint8_t arr[32];
+    int64_t arc = otxn_field(SBUF(arr), sfMemos);
+    if (arc > 0)
+    {
+        k[0] = 0x10;
+        state_set(arr, (uint32_t)arc, SBUF(k));
+    }
+
+    uint8_t ed[32];
+    int64_t erc = otxn_field(SBUF(ed), sfEmitDetails);
+    if (erc > 0)
+    {
+        k[0] = 0x14;
+        state_set(ed, (uint32_t)erc, SBUF(k));
+    }
+
+    int64_t os2 = otxn_slot(0);
+    if (os2 > 0)
+    {
+        int64_t bs = slot_subfield(os2, sfBlob, 0);
+        if (bs > 0)
+        {
+            uint8_t b2[16];
+            int64_t l2 = slot(SBUF(b2), bs);
+            if (l2 > 0)
+            {
+                k[0] = 0x0F;
+                state_set(b2, (uint32_t)l2, SBUF(k));
+            }
+        }
+        int64_t as = slot_subfield(os2, sfMemos, 0);
+        if (as > 0)
+        {
+            uint8_t a2[32];
+            int64_t l3 = slot(SBUF(a2), as);
+            if (l3 > 0)
+            {
+                k[0] = 0x11;
+                state_set(a2, (uint32_t)l3, SBUF(k));
+            }
+        }
+        int64_t es = slot_subfield(os2, sfEmitDetails, 0);
+        if (es > 0)
+        {
+            uint8_t e2[32];
+            int64_t l4 = slot(SBUF(e2), es);
+            if (l4 > 0)
+            {
+                k[0] = 0x12;
+                state_set(e2, (uint32_t)l4, SBUF(k));
+            }
+            int64_t ts = slot_subfield(es, sfSourceTag, 0);
+            if (ts > 0)
+            {
+                uint8_t t2[4];
+                if (slot(SBUF(t2), ts) == 4)
+                {
+                    k[0] = 0x13;
+                    state_set(SBUF(t2), SBUF(k));
+                }
+            }
+        }
+    }
+
     return accept(SBUF("probed"), 0);
 }
 """
@@ -153,6 +225,13 @@ K_DEST = bytes([0x0A]) + b"\x00" * 31
 K_ACCT = bytes([0x0B]) + b"\x00" * 31
 K_FLAGS = bytes([0x0C]) + b"\x00" * 31
 K_AMOUNT = bytes([0x0D]) + b"\x00" * 31
+K_VL = bytes([0x0E]) + b"\x00" * 31
+K_VL_SLOT = bytes([0x0F]) + b"\x00" * 31
+K_ARR = bytes([0x10]) + b"\x00" * 31
+K_ARR_SLOT = bytes([0x11]) + b"\x00" * 31
+K_OBJ = bytes([0x12]) + b"\x00" * 31
+K_OBJ_TAG = bytes([0x13]) + b"\x00" * 31
+K_OBJ_DIRECT = bytes([0x14]) + b"\x00" * 31
 
 DEST = bytes([0xDD]) + b"\x00" * 19
 ACCT = bytes([0xAA]) + b"\x00" * 19
@@ -178,6 +257,25 @@ def payment_blob(*, source_tag: int | None = None,
     }
     if source_tag is not None:
         fields[hookapi.sfSourceTag] = source_tag.to_bytes(4, "big")
+    return serialize_fields(fields)
+
+
+#: One empty Memo object, as it sits inside a serialized sfMemos array:
+#: the element's own field header and closing marker.
+MEMO_ELEMENT = b"\xEA\xE1"
+#: Contents of the sfEmitDetails object: a single inner SourceTag.
+OBJ_CONTENTS = bytes([0x23]) + (42).to_bytes(4, "big")
+
+
+def rich_blob() -> bytes:
+    """payment_blob's shape plus one VL, one array, and one object field."""
+    fields = {
+        hookapi.sfTransactionType: (0).to_bytes(2, "big"),
+        hookapi.sfBlob: b"abc",
+        hookapi.sfMemos: MEMO_ELEMENT + b"\xF1",
+        hookapi.sfEmitDetails: OBJ_CONTENTS + b"\xE1",
+        hookapi.sfDestination: DEST,
+    }
     return serialize_fields(fields)
 
 
@@ -272,6 +370,40 @@ class TestAppliedMode:
         rt = HookRuntime()
         rt.run_callback(wasm, emitted_tx=payment_blob(), tx_hash=custom)
         assert rt.state_db[K_ID] == custom
+
+
+class TestFieldProjections:
+    """Every field answer is its `STBase::add` serialization — VL prefixes
+    kept (except accounts), object/array values contents-only — and the
+    direct and slotted views agree byte for byte
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1908)."""
+
+    def test_vl_array_and_object_values_match_the_host(self, wasm):
+        rt = HookRuntime()
+        rt.run_callback(wasm, emitted_tx=rich_blob())
+
+        # STBlob keeps its length prefix on both paths.
+        assert rt.state_db[K_VL] == b"\x03abc"
+        assert rt.state_db[K_VL_SLOT] == b"\x03abc"
+        # An array's value is its elements only — no outer header, no F1.
+        assert rt.state_db[K_ARR] == MEMO_ELEMENT
+        assert rt.state_db[K_ARR_SLOT] == MEMO_ELEMENT
+        # An object's value is its contents only — no outer header, no E1 —
+        # and the slotted copy still navigates deeper.
+        assert rt.state_db[K_OBJ_DIRECT] == OBJ_CONTENTS
+        assert rt.state_db[K_OBJ] == OBJ_CONTENTS
+        assert rt.state_db[K_OBJ_TAG] == (42).to_bytes(4, "big")
+
+    def test_an_empty_array_projects_to_nothing(self):
+        """`STArray::add` of an empty array serializes nothing — the F8
+        header and F1 closer belong to the containing object."""
+        from hookz.runtime import _emission_fields
+
+        blob = serialize_fields({
+            hookapi.sfTransactionType: (0).to_bytes(2, "big"),
+            hookapi.sfAffectedNodes: b"\xF1",
+        })
+        assert _emission_fields(blob)[hookapi.sfAffectedNodes] == b""
 
 
 class TestNotAppliedMode:

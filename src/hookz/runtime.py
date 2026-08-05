@@ -252,18 +252,20 @@ class HookResult:
 def _emission_fields(blob: bytes) -> dict[int, bytes]:
     """Top-level fields of a serialized transaction, as `otxn_fields` payloads.
 
-    Walked with the same walker `slot_subfield` navigates with, so the direct
-    and slotted views of one transaction cannot disagree — upstream they are
-    the same `applyCtx.tx`, and a mock that let them drift apart would let a
-    test pass against a callback world the ledger cannot deliver. Payload
-    conventions match what `otxn_field` serves: accounts arrive without their
-    length prefix, fixed-width types as their raw big-endian bytes.
+    Walked with the same walker `slot_subfield` navigates with, and projected
+    through the same `_field_value_bytes` — so the direct and slotted views
+    of one transaction cannot disagree. Upstream they are the same
+    `applyCtx.tx`, every field answer is its `STBase::add` serialization
+    (accounts lose their length prefix, other VL types keep theirs,
+    objects/arrays are contents-only), and a mock that let the views drift
+    apart would let a test pass against a callback world the ledger cannot
+    deliver.
     """
-    from hookz.handlers.slot import _walk_slot_fields
+    from hookz.handlers.slot import _field_value_bytes, _walk_slot_fields
 
     return {
-        fid: blob[pay_off:pay_off + pay_len]
-        for fid, _type, _fc, _off, _total, pay_off, pay_len
+        fid: _field_value_bytes(blob, tc, fc, off, total, pay_off, pay_len)
+        for fid, tc, fc, off, total, pay_off, pay_len
         in _walk_slot_fields(blob)
     }
 
