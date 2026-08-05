@@ -117,6 +117,7 @@ CITED_FILES = (
     "include/xrpl/protocol/HashPrefix.h",         # emission.py, emitted_txn_id
     "src/libxrpl/protocol/TxMeta.cpp",            # runtime.py, provisional TxMeta shape
     "src/xrpld/app/misc/detail/TxQ.cpp",          # runtime.py, ttEMIT_FAILURE pseudo-txn
+    "include/xrpl/hook/Macro.h",                  # handlers/emit.py, NOT_IN_BOUNDS
 )
 
 

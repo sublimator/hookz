@@ -88,6 +88,19 @@ int64_t hook(uint32_t reserved)
         state_set(SBUF(wide), SBUF(rk));
         return accept(SBUF("preflight"), 0);
     }
+    if (reserved == 4)
+    {
+        uint8_t t1[16] = {0x41};
+        uint8_t h[32];
+        int64_t e1 = emit(h, 31, SBUF(t1));
+        int64_t e2 = emit(SBUF(h), 0x7FFFFF00u, 16);
+        uint8_t out[16];
+        INT64_TO_BUF(out, e1);
+        INT64_TO_BUF(out + 8, e2);
+        rk[1] = 4;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("wrapper"), 0);
+    }
     return accept(SBUF("noop"), 0);
 }
 """
@@ -98,6 +111,7 @@ K3 = bytes([0x03]) + b"\x00" * 31
 RK1 = bytes([0xF0, 0x01]) + b"\x00" * 30
 RK2 = bytes([0xF0, 0x02]) + b"\x00" * 30
 RK3 = bytes([0xF0, 0x03]) + b"\x00" * 30
+RK4 = bytes([0xF0, 0x04]) + b"\x00" * 30
 V = bytes([0xAA]) + b"\x00" * 3
 T1 = bytes([0x11]) + b"\x00" * 15
 T2 = bytes([0x22]) + b"\x00" * 15
@@ -257,6 +271,28 @@ class TestEmitPreflightBeatsTheSelector:
         # never fired and nothing was refused.
         assert [(c.refused, c.result) for c in log] == [(False, 32)]
         assert result.emitted_txns == [bytes([0x31]) + b"\x00" * 15]
+
+    def test_wrapper_checks_precede_reservation(self, wasm):
+        """Overlapping failures resolve in the pinned wrapper's order:
+        unreserved + short output answers TOO_SMALL, unreserved +
+        out-of-bounds transaction answers OUT_OF_BOUNDS — never
+        PREREQUISITE_NOT_MET, and never the injected code
+        (applyHook.cpp:2662-2669 before HookAPI.cpp:504-508)."""
+        rt = emit_rt()
+        log = faults.refuse_emit(rt, when=lambda c: True,
+                                 code=hookapi.INTERNAL_ERROR)
+        rt.run(wasm, arg=4)
+
+        assert codes(rt.state_db[RK4]) == [
+            hookapi.TOO_SMALL, hookapi.OUT_OF_BOUNDS]
+        assert log == []
+
+    def test_wrapper_precedence_holds_without_any_fault(self, wasm):
+        """Paired control: the builtin alone resolves the same way."""
+        rt = emit_rt()
+        rt.run(wasm, arg=4)
+        assert codes(rt.state_db[RK4]) == [
+            hookapi.TOO_SMALL, hookapi.OUT_OF_BOUNDS]
 
     def test_a_selected_but_invalid_emission_keeps_its_diagnostics(self, wasm):
         """With validation on, the probe's bare blobs fail the emission

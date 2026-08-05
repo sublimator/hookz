@@ -143,13 +143,13 @@ def refuse_emit(rt: HookRuntime,
     returns `code` with nothing appended to the emission queue.
     `when=None` only logs.
 
-    The builtin's whole preflight runs first, in the host's order —
-    reservation, reserved count, output width, the emission rules — so a
-    call the ordinary runtime would refuse gets the ordinary answer
-    (PREREQUISITE_NOT_MET, TOO_MANY_EMITTED_TXN, TOO_SMALL,
-    EMISSION_FAILURE with its diagnostics), never the injected code, and
-    never appears in the log. The selector is only ever asked about an
-    emit that would otherwise have succeeded.
+    The builtin's whole preflight runs first, in the pinned host's order —
+    buffer bounds, output width, reservation, reserved count, the emission
+    rules — so a call the ordinary runtime would refuse gets the ordinary
+    answer (OUT_OF_BOUNDS, TOO_SMALL, PREREQUISITE_NOT_MET,
+    TOO_MANY_EMITTED_TXN, EMISSION_FAILURE with its diagnostics), never
+    the injected code, and never appears in the log. The selector is only
+    ever asked about an emit that would otherwise have succeeded.
 
     Returns the live log; it fills in as the hook runs.
     """
@@ -158,8 +158,7 @@ def refuse_emit(rt: HookRuntime,
     log: list[FaultCall] = []
 
     def handler(hash_ptr, hash_len, txn_ptr, txn_len):
-        blob = rt._read_memory(txn_ptr, txn_len)
-        err = _emit_preflight(rt, hash_len, blob)
+        err, blob = _emit_preflight(rt, hash_ptr, hash_len, txn_ptr, txn_len)
         if err is not None:
             return err
         call = FaultCall(name="emit", index=len(log), blob=blob)

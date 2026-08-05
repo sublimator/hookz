@@ -131,24 +131,52 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
     return len(data)
 
 
-def _emit_preflight(rt: HookRuntime, hash_len: int, txn_bytes: bytes) -> int | None:
+def _not_in_bounds(rt: HookRuntime, ptr: int, length: int) -> bool:
+    """The host wrapper's memory-bounds test, on the hook's linear memory.
+
+    xahaud:include/xrpl/hook/Macro.h:230
+        (ptr >= memory_length) || (ptr + len > memory_length)
+    """
+    memory_length = rt._memory.data_len(rt._store)
+    return ptr >= memory_length or ptr + length > memory_length
+
+
+def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
+                    txn_ptr: int, txn_len: int) -> tuple[int | None, bytes | None]:
     """The refusal half of `emit`, shared with the fault layer.
 
-    The ordering is the host's — reservation, then the reserved count, then
-    the output width, then the emission rules — and a wrapper that consulted
-    a fault selector first would substitute an injected code for an answer
-    the ordinary runtime already owed the hook. Validation diagnostics are
-    recorded here, exactly once, whoever calls.
+    The order is the pinned host's — outer wrapper first, then
+    `HookAPI::emit`:
+
+    1. transaction-buffer bounds, output-buffer bounds, output width
+       (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2662-2669);
+    2. reservation, then the reserved count
+       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:504-508);
+    3. the emission rules.
+
+    Observable when failures overlap: an unreserved emit with a short
+    output buffer answers TOO_SMALL, not PREREQUISITE_NOT_MET, and a
+    wrapper that consulted a fault selector anywhere in this sequence
+    would substitute an injected code for an answer the host already owed
+    the hook. Validation diagnostics are recorded here, exactly once,
+    whoever calls.
+
+    Returns `(error, txn_bytes)`; exactly one side is None.
     """
+    if _not_in_bounds(rt, txn_ptr, txn_len):
+        return hookapi.OUT_OF_BOUNDS, None
+    if _not_in_bounds(rt, hash_ptr, hash_len):
+        return hookapi.OUT_OF_BOUNDS, None
+    if hash_len < 32:
+        return hookapi.TOO_SMALL, None
     if not rt._etxn_reserved:
-        return hookapi.PREREQUISITE_NOT_MET
+        return hookapi.PREREQUISITE_NOT_MET, None
     # The reservation covers this hook execution only, so the count is taken
     # over this run's slice of the queue, not the runtime's whole history.
     if len(rt.emitted_txns) - rt._emitted_mark >= rt._etxn_count:
-        return hookapi.TOO_MANY_EMITTED_TXN
-    if hash_len < 32:
-        return hookapi.TOO_SMALL
+        return hookapi.TOO_MANY_EMITTED_TXN, None
 
+    txn_bytes = rt._read_memory(txn_ptr, txn_len)
     # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498 applies fourteen rules
     # and a preflight before it accepts an emitted transaction. Skipping them
     # made every emit succeed here regardless of its contents — a hook whose
@@ -164,12 +192,12 @@ def _emit_preflight(rt: HookRuntime, hash_len: int, txn_bytes: bytes) -> int | N
         )
         if not check.ok:
             rt.emission_rejections.append(check)
-            return hookapi.EMISSION_FAILURE
+            return hookapi.EMISSION_FAILURE, None
         if check.undecodable:
             # accepted, but nothing was verified — say so rather than let the
             # empty rejections list imply it passed
             rt.emission_undecided.append(check)
-    return None
+    return None, txn_bytes
 
 
 def _emit_commit(rt: HookRuntime, hash_ptr: int, hash_len: int,
@@ -182,8 +210,7 @@ def _emit_commit(rt: HookRuntime, hash_ptr: int, hash_len: int,
 
 
 def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
-    txn_bytes = rt._read_memory(txn_ptr, txn_len)
-    err = _emit_preflight(rt, hash_len, txn_bytes)
+    err, txn_bytes = _emit_preflight(rt, hash_ptr, hash_len, txn_ptr, txn_len)
     if err is not None:
         return err
     return _emit_commit(rt, hash_ptr, hash_len, txn_bytes)
