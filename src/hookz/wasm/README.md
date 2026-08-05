@@ -198,7 +198,7 @@ clang -O3 --sysroot=... -xc -Werror=implicit-function-declaration \
       --no-standard-libraries -nostartfiles \
       -Wl,--allow-undefined,--no-entry,--export-all hook.c -o hook.wasm
 
-# 2. Optimize — see hookz.wasm.optimize.BUILDBOX for the full list
+# 2. Optimize — see hookz.wasm.optimize.LOCAL_STRUCTURAL for the full list
 wasm-opt --flatten ... --rereloop ... -O3 -o hook.wasm unopt.wasm
 
 # 3. Clean: strip sections, rewrite guards, fix exports

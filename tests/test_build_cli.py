@@ -130,3 +130,108 @@ class TestCompileTempFiles:
         with pytest.raises(RuntimeError, match="Compilation failed"):
             compile_hook(bad, None, config, debug=False, optimize=True)
         assert set(tmpdir.glob("tmp*.wasm")) - before == set()
+
+
+class TestPipelineSelection:
+    """`--pipeline` is a flag value, so a name it will not take is bad usage.
+
+    Untested until a reviewer found `--pipeline buildbox` exiting 1 through
+    _build_fail — which then printed the stale-artifact note below, about a
+    build that had not run. Both symptoms come from routing a rejected flag
+    value into the failure path for a build that started and died.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args)
+
+    def test_a_refused_name_exits_two_and_points_at_both_real_options(
+        self, tmp_path
+    ):
+        out = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"),
+             "--pipeline", "buildbox"]
+        )
+        assert out.exit_code == 2, out.output
+        # Not asserted on "buildbox": that is in the input, so it also appears
+        # in the generic "unknown build pipeline 'buildbox'" message and the
+        # pointer could rot away with this still green.
+        assert "--buildbox" in out.output
+        assert "--pipeline local-structural" in out.output
+
+    def test_a_refused_name_does_not_call_a_good_artifact_stale(self, tmp_path):
+        """The reported bug. Nothing was compiled, so nothing became stale —
+        and the file it maligned was the last good build."""
+        artifact = tmp_path / "h.wasm"
+        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+        out = self._run(
+            ["build", str(SOURCE), "-o", str(artifact),
+             "--pipeline", "buildbox"]
+        )
+
+        assert "stale" not in out.output
+        assert artifact.read_bytes() == b"\x00asm\x01\x00\x00\x00"
+
+    def test_an_unknown_name_is_usage_not_a_failed_build(self, tmp_path):
+        out = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"),
+             "--pipeline", "no-such-pipeline"]
+        )
+        assert out.exit_code == 2, out.output
+        assert "local-structural" in out.output
+        assert "stale" not in out.output
+
+    def test_build_and_wce_agree_on_a_refused_name(self, tmp_path):
+        """They resolve the same flag through the same function; disagreeing
+        on the exit code makes one of them wrong for a scripted caller."""
+        build = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"),
+             "--pipeline", "buildbox"]
+        )
+        wce = self._run(["wce", str(SOURCE), "--pipeline", "buildbox"])
+        assert build.exit_code == wce.exit_code == 2
+
+    def test_a_real_pipeline_still_builds(self, tmp_path):
+        out = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"),
+             "--pipeline", "local-structural"]
+        )
+        assert out.exit_code == 0, out.output
+        assert (tmp_path / "h.wasm").exists()
+
+
+class TestPipelinesListing:
+    """`hookz pipelines` had no test at all, so deleting its rejection block
+    was a green mutation."""
+
+    @staticmethod
+    def _run():
+        from click.testing import CliRunner
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, ["pipelines"])
+
+    def test_lists_every_pipeline_the_flag_accepts(self):
+        from hookz.wasm.pipeline import BUILD_PIPELINES
+
+        out = self._run()
+        assert out.exit_code == 0, out.output
+        for name in BUILD_PIPELINES:
+            assert name in out.output
+
+    def test_names_the_refused_spelling_and_where_to_go(self):
+        """Someone who learned the old name should be told it is gone, not
+        left to read "unknown pipeline" and wonder if the service went too."""
+        out = self._run()
+        assert "buildbox" in out.output
+        assert "--buildbox" in out.output
+        assert "local-structural" in out.output
+
+    def test_does_not_offer_a_refused_name_as_a_choice(self):
+        """It used to print `legacy alias: buildbox → local-structural`."""
+        out = self._run()
+        assert "alias" not in out.output.lower()

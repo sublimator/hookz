@@ -227,6 +227,23 @@ class TestRunPipeline:
         assert "--buildbox" in str(e.value)
         assert "--pipeline local-structural" in str(e.value)
 
+    @pytest.mark.parametrize(
+        "spelling", ["buildbox", "BuildBox", "BUILDBOX", "build-box", "build_box"]
+    )
+    def test_every_spelling_this_cli_taught_gets_the_pointer(self, spelling):
+        """--buildbox/--build-box are both real flags and --compiler is
+        case-insensitive, so the near-misses are names people were taught."""
+        with pytest.raises(ValueError) as e:
+            get_pipeline(spelling)
+        assert "--buildbox" in str(e.value)
+        assert "--pipeline local-structural" in str(e.value)
+
+    def test_a_genuinely_unknown_name_is_not_swallowed_by_the_loose_match(self):
+        """Loose matching must not turn every near-miss into the buildbox
+        pointer — `box` is not a misspelling of it."""
+        with pytest.raises(ValueError, match="unknown build pipeline"):
+            get_pipeline("box")
+
     def test_buildbox_does_not_build(self):
         """The failure that mattered: it produced an artifact, not an error."""
         with pytest.raises(ValueError):

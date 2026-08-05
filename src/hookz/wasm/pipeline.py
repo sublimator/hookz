@@ -287,9 +287,28 @@ PIPELINE_MISNOMERS = {
 }
 
 
+def _misnomer(name: str) -> str | None:
+    """The pointer for `name`, however the caller spelled it.
+
+    Matched loosely on purpose. The sibling flag is `--buildbox`/`--build-box`
+    and `--compiler` takes its choices case-insensitively, so this CLI has
+    taught people at least four spellings of the word. An exact-match table
+    would hand the pointer to `buildbox` and drop `BuildBox` and `build-box`
+    into the generic "unknown pipeline" message — which is honest but tells
+    the reader nothing about why the name they had every reason to expect is
+    not there.
+    """
+    key = name.lower().replace("-", "").replace("_", "")
+    for misnomer, message in PIPELINE_MISNOMERS.items():
+        if key == misnomer.lower().replace("-", "").replace("_", ""):
+            return message
+    return None
+
+
 def get_pipeline(name: str) -> BuildPipeline:
-    if name in PIPELINE_MISNOMERS:
-        raise ValueError(PIPELINE_MISNOMERS[name])
+    refusal = _misnomer(name)
+    if refusal is not None:
+        raise ValueError(refusal)
     try:
         return BUILD_PIPELINES[name]
     except KeyError:

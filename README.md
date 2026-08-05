@@ -181,8 +181,11 @@ HOOKZ_BUILDBOX_URL=https://...  # alternate compatible endpoint
 HOOKZ_BUILDBOX=1                # select remote mode in CMake/CI pipelines
 ```
 
-`hookz build --pipeline buildbox` remains a temporary compatibility alias for
-the **local** `local-structural` pipeline. It does not call the service.
+`hookz build --pipeline buildbox` is refused, and says so. It used to be an
+alias for the **local** `local-structural` pipeline, which meant one command
+carried two spellings of buildbox and only `--buildbox` called the service. Use
+`--buildbox` for the service, or `--pipeline local-structural` for the local
+approximation of it — `hookz pipelines` lists what the flag will take.
 
 ## WCE analysis
 
@@ -250,14 +253,21 @@ no verified source twin, so `--source` is refused there rather than guessed.
 Hooks that look up accounts or trust lines via keylets work without mocking:
 
 ```python
-from hookz.ledger import account_root
+from hookz.ledger import account_root, book_directory, offer
 
 kl, data = account_root("rBob...", Balance="50000000")
 rt.ledger[kl] = data
 result = rt.run(hook)  # hook's util_keylet + slot_set just works
 ```
 
-20+ keylet functions matching xahaud exactly (verified against rippled). `slot_set` with a 34-byte keylet automatically looks up `rt.ledger`. `slot_subfield`/`slot_count`/`slot_subarray` parse real serialized data.
+20+ keylet functions matching xahaud exactly (verified against rippled).
+Quality directories and ordered ledger scans use the same exclusive-low,
+inclusive-high semantics as Xahau's `KEYLET_QUALITY` and `ledger_keylet` APIs;
+`book_directory` and `offer` provide serialized DEX fixtures. `slot_set` with a
+34-byte keylet automatically looks up `rt.ledger`.
+`slot_subfield`/`slot_count`/`slot_subarray` parse real serialized data and
+preserve the value-level VL prefix returned by Xahau for blob and Vector256
+slots.
 
 ## Traces
 

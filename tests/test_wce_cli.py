@@ -963,8 +963,13 @@ class TestErrorsReachTheUserAsErrors:
 
         Used to be driven by an unknown --pipeline name, which is now rejected
         as usage before any build starts and so exercises the exit-2 path
-        above instead. This needs a genuine ClickException or the branch that
-        renders one goes uncovered.
+        above instead.
+
+        Paired with that exit-2 test rather than redundant with it: UsageError
+        subclasses ClickException, so both enter the same `except` arm in
+        main(). What the pair pins is that main() exits with `exc.exit_code`
+        rather than a constant — replacing it with either literal fails one of
+        the two.
         """
         def _die(*a, **k):
             raise RuntimeError("clang: error: no such file")

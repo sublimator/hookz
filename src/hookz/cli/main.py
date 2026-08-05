@@ -792,6 +792,7 @@ def pipelines():
     toolchain records where its flags came from.
     """
     from rich.console import Console
+    from rich.markup import escape
     from hookz.wasm.pipeline import (
         BUILD_PIPELINES,
         DEFAULT_PIPELINE,
@@ -816,7 +817,7 @@ def pipelines():
     # and wonder whether the service went away with it.
     for name in PIPELINE_MISNOMERS:
         console.print(
-            f"[dim]rejected:[/dim] {name} [dim]— builds locally, so it is not "
+            f"[dim]rejected:[/dim] {escape(name)} [dim]— builds locally, so it is not "
             "a name this flag will take. Use[/dim] --buildbox [dim]for the "
             "service or[/dim] --pipeline local-structural [dim]for the local "
             "approximation.[/dim]"
@@ -854,10 +855,14 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     # Status messages go to stderr so stdout is clean for binary output
     log = print if not stdout_mode else lambda *a, **k: print(*a, file=sys.stderr, **k)
 
+    # A name this flag will not take is bad usage, and nothing has been
+    # compiled yet — so it is not a build failure and must not go through
+    # _build_fail, whose stale-artifact note would then be false: no build ran,
+    # so whatever sits at `output` is exactly as fresh as it was a moment ago.
     try:
         pipeline = get_pipeline(pipeline_name) if pipeline_name else None
     except ValueError as e:
-        _build_fail(log, output, stdout_mode, str(e))
+        raise click.UsageError(str(e)) from e
 
     # Build through the named toolchain. Nothing is written to `output` until
     # every stage has passed — a later stage can still fail, and an unclean
