@@ -174,6 +174,12 @@ def _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls):
     return frozenset(selected)
 
 
+def _nesting_limit(rules_version: int) -> int:
+    """The depth limit those rules imply, for reporting alongside them."""
+    from hookz.wasm.guard import nesting_limit
+    return nesting_limit(rules_version)
+
+
 def _rules() -> int:
     """The guard rules the network is actually running.
 
@@ -850,12 +856,12 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
                   explain: bool = False) -> None:
     """Standard production build pipeline."""
     from hookz.wasm.clean import CleanError
-    from hookz.wasm.guard import validate_guards, GuardError, GUARD_RULE_FIX_20250131
+    from hookz.wasm.guard import validate_guards, GuardError
     from hookz.wasm.optimize import WasmOptError
     from hookz.wasm.pipeline import run_pipeline, get_pipeline
 
     if rules_version is None:
-        rules_version = GUARD_RULE_FIX_20250131
+        rules_version = _rules()
 
     # Status messages go to stderr so stdout is clean for binary output
     log = print if not stdout_mode else lambda *a, **k: print(*a, file=sys.stderr, **k)
@@ -881,6 +887,12 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
         _build_fail(log, output, stdout_mode, f"Optimize FAILED: {e}")
     except CleanError as e:
         _build_fail(log, output, stdout_mode, f"Clean FAILED: {e}")
+    except RuntimeError as e:
+        # What compile_hook raises when clang fails, which is the most
+        # ordinary way for this command to fail at all. Uncaught, it reached
+        # the user as a traceback with the compiler diagnostics buried in it —
+        # `wce` has caught this since it was rewritten and `build` had not.
+        _build_fail(log, output, stdout_mode, f"Compile FAILED: {e}")
 
     cleaned = trace.wasm
     log(f"Built {source.name} via '{trace.pipeline.name}' pipeline "
@@ -900,6 +912,11 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
         hook_pct = result.hook_wce / 65535 * 100
         verdict = "completed WITH WAIVERS" if result.waived else "PASSED"
         log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
+        # Under which rules. `wce` has said this since it was rewritten; build
+        # did not, which is how --depth32 turned a rejection into "PASSED"
+        # with nothing in the transcript to notice.
+        log(f"  rules: 0x{rules_version:02X} "
+            f"(nesting limit {_nesting_limit(rules_version)})")
     except GuardError as e:
         _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
 
@@ -931,14 +948,10 @@ def _build_buildbox(
 ) -> None:
     """Canonical remote build followed by independent local validation."""
     from hookz.buildbox import BuildboxError, compile_source
-    from hookz.wasm.guard import (
-        GUARD_RULE_FIX_20250131,
-        GuardError,
-        validate_guards,
-    )
+    from hookz.wasm.guard import GuardError, validate_guards
 
     if rules_version is None:
-        rules_version = GUARD_RULE_FIX_20250131
+        rules_version = _rules()
 
     log = (
         print
@@ -1001,11 +1014,11 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
     from hookz.compiler import compile_hook_two_stage
     from hookz.coverage.rewriter import instrument_wasm
     from hookz.wasm.clean import clean_hook, CleanError
-    from hookz.wasm.guard import validate_guards, GuardError, GUARD_RULE_FIX_20250131
+    from hookz.wasm.guard import validate_guards, GuardError
     from hookz.wasm.whitelist import get_import_signatures
 
     if rules_version is None:
-        rules_version = GUARD_RULE_FIX_20250131
+        rules_version = _rules()
 
     log = print if not stdout_mode else lambda *a, **k: print(*a, file=sys.stderr, **k)
 
@@ -1092,11 +1105,19 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
     source = Path(hook_wasm)
     wasm = source.read_bytes()
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
+    rules = _rules()
+
+    def _say_rules(emit=print) -> None:
+        """Both verdicts, not just the good one. A depth rejection is exactly
+        the case where which limit applied is the question being asked."""
+        emit(f"  rules: 0x{rules:02X} "
+             f"(nesting limit {_nesting_limit(rules)})")
 
     try:
-        result = validate_guards(wasm, rules_version=_rules(), ignore=ignore)
+        result = validate_guards(wasm, rules_version=rules, ignore=ignore)
     except GuardError as e:
         print(f"Guard check FAILED: {e}")
+        _say_rules()
         if e.codesec >= 0:
             print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
         # Only suggest a waiver for a limit that actually has one. Structural
@@ -1110,6 +1131,7 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
         print(f"Guard check completed WITH WAIVERS: {source.name}")
     else:
         print(f"Guard check PASSED: {source.name}")
+    _say_rules()
     _print_guard_result(result)
     _report_waived(result)
     sys.exit(1 if result.waived else 0)

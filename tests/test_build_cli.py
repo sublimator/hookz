@@ -235,3 +235,94 @@ class TestPipelinesListing:
         """It used to print `legacy alias: buildbox → local-structural`."""
         out = self._run()
         assert "alias" not in out.output.lower()
+
+
+class TestBuildAndWceAgree:
+    """`wce` was rewritten and hardened; `build` was not, and the gap kept
+    producing defects — a traceback where wce printed a message, a hardcoded
+    rules constant where wce derived one, and a silent verdict where wce named
+    its rules. These pin the symmetry rather than the individual fixes.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args)
+
+    def test_a_compile_failure_is_a_message_not_a_traceback(self, tmp_path):
+        """RuntimeError is what compile_hook raises when clang fails — the
+        most ordinary way for this command to fail at all."""
+        bad = tmp_path / "bad.c"
+        bad.write_text("this is not valid C;\n")
+
+        out = self._run(
+            ["build", str(bad), "-o", str(tmp_path / "bad.wasm")]
+        )
+
+        assert out.exit_code == 1
+        assert "Compile FAILED" in out.output
+        assert "Traceback" not in out.output
+        assert not (tmp_path / "bad.wasm").exists()
+
+    def test_wce_reports_the_same_compile_failure_the_same_way(self, tmp_path):
+        bad = tmp_path / "bad.c"
+        bad.write_text("this is not valid C;\n")
+
+        out = self._run(["wce", str(bad)])
+
+        assert out.exit_code == 1
+        assert "Traceback" not in out.output
+
+    def test_the_build_verdict_names_the_rules_it_judged_under(self, tmp_path):
+        """How --depth32 turned a rejection into PASSED with nothing in the
+        transcript to notice: build printed a verdict and never its rules."""
+        out = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm")]
+        )
+
+        assert out.exit_code == 0, out.output
+        assert "rules: 0x" in out.output
+        assert "nesting limit" in out.output
+
+    def test_guard_check_names_its_rules_on_both_verdicts(self, tmp_path):
+        """A depth rejection is exactly when which limit applied is the
+        question, so the failing path must say it too."""
+        import sys
+
+        sys.path.insert(0, str(Path(__file__).parent))
+        from test_wasm import _nested_blocks_wasm
+
+        deep = tmp_path / "deep.wasm"
+        deep.write_bytes(_nested_blocks_wasm(24))
+        shallow = tmp_path / "ok.wasm"
+        shallow.write_bytes(_nested_blocks_wasm(2))
+
+        failed = self._run(["guard-check", str(deep)])
+        assert failed.exit_code == 1
+        assert "FAILED" in failed.output
+        assert "nesting limit 16" in failed.output
+
+        passed = self._run(["guard-check", str(shallow)])
+        assert "nesting limit 16" in passed.output
+
+    def test_no_build_path_hardcodes_the_rules_version(self):
+        """All three used `rules_version = GUARD_RULE_FIX_20250131`, which is
+        what mainnet happens to run — right by coincidence, and unable to
+        notice the network moving. The constant must not reappear."""
+        import inspect
+
+        from hookz.cli import main as cli_main
+
+        for fn in (cli_main._build_normal, cli_main._build_buildbox,
+                   cli_main._build_coverage):
+            src = inspect.getsource(fn)
+            assert "GUARD_RULE_FIX_20250131" not in src, fn.__name__
+            assert "_rules()" in src, fn.__name__
+
+    def test_every_build_path_derives_the_same_rules_as_wce(self):
+        from hookz.amendments import guard_rules_version
+        from hookz.cli.main import _rules
+
+        assert _rules() == guard_rules_version()
