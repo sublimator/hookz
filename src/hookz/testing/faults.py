@@ -111,7 +111,7 @@ def refuse_state_set(rt: HookRuntime,
     log: list[FaultCall] = []
 
     def handler(read_ptr, read_len, kread_ptr, kread_len):
-        err = _state_set_error(read_len, kread_len)
+        err = _state_set_error(rt, read_ptr, read_len, kread_ptr, kread_len)
         if err is not None:
             return err
         key = rt._read_memory(kread_ptr, kread_len)

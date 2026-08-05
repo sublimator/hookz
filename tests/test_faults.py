@@ -101,6 +101,22 @@ int64_t hook(uint32_t reserved)
         state_set(SBUF(out), SBUF(rk));
         return accept(SBUF("wrapper"), 0);
     }
+    if (reserved == 5)
+    {
+        uint8_t k1[32] = {0x05};
+        uint8_t v[4] = {0xCC};
+        uint8_t wide[33] = {0x06};
+        int64_t r1 = state_set(0x7FFFFF00u, 4, SBUF(k1));
+        int64_t r2 = state_set(0x7FFFFF00u, 4, wide, 33);
+        int64_t r3 = state_set(SBUF(v), 0x7FFFFF00u, 32);
+        uint8_t out[24];
+        INT64_TO_BUF(out, r1);
+        INT64_TO_BUF(out + 8, r2);
+        INT64_TO_BUF(out + 16, r3);
+        rk[1] = 5;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("bounds"), r2);
+    }
     return accept(SBUF("noop"), 0);
 }
 """
@@ -112,6 +128,7 @@ RK1 = bytes([0xF0, 0x01]) + b"\x00" * 30
 RK2 = bytes([0xF0, 0x02]) + b"\x00" * 30
 RK3 = bytes([0xF0, 0x03]) + b"\x00" * 30
 RK4 = bytes([0xF0, 0x04]) + b"\x00" * 30
+RK5 = bytes([0xF0, 0x05]) + b"\x00" * 30
 V = bytes([0xAA]) + b"\x00" * 3
 T1 = bytes([0x11]) + b"\x00" * 15
 T2 = bytes([0x22]) + b"\x00" * 15
@@ -200,6 +217,26 @@ class TestRefuseStateSet:
 
         assert result.return_code == hookapi.TOO_BIG
         assert log == []
+
+    def test_bounds_precede_width_and_any_fault(self, wasm):
+        """arg 5: an out-of-bounds value pointer answers OUT_OF_BOUNDS even
+        alongside an illegally wide key and under a match-all selector —
+        the wrapper's bounds come first (the state_set wrapper delegates
+        to state_foreign_set's, applyHook.cpp:1293-1314). Only the probe's
+        own valid result write ever reaches the selector."""
+        rt = HookRuntime()
+        log = faults.refuse_state_set(rt, when=lambda c: True)
+        result = rt.run(wasm, arg=5)
+
+        assert result.return_code == hookapi.OUT_OF_BOUNDS
+        assert [(c.key, c.refused) for c in log] == [(RK5, True)]
+
+    def test_bounds_precedence_holds_without_any_fault(self, wasm):
+        """Paired control: the builtin alone resolves all three the same
+        way — OOB value, OOB value + wide key, OOB key."""
+        rt = HookRuntime()
+        rt.run(wasm, arg=5)
+        assert codes(rt.state_db[RK5]) == [hookapi.OUT_OF_BOUNDS] * 3
 
     def test_log_only_when_none(self, wasm):
         rt = HookRuntime()

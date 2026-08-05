@@ -43,22 +43,39 @@ def _journal(rt: HookRuntime, scope: str, account: bytes, namespace: bytes,
     ))
 
 
-def _state_set_error(read_len: int, kread_len: int) -> int | None:
-    """The argument-validation half of `state_set`, shared with the fault
-    layer — the host refuses malformed arguments before any question of
-    whether the write itself would succeed, and a wrapper that re-implemented
-    these checks would drift from them."""
-    if kread_len < 1:
-        return hookapi.TOO_SMALL
+def _state_set_error(rt: HookRuntime, read_ptr: int, read_len: int,
+                     kread_ptr: int, kread_len: int) -> int | None:
+    """The admission half of `state_set`, shared with the fault layer.
+
+    The host refuses malformed arguments before any question of whether the
+    write itself would succeed, and in the pinned wrapper's order —
+    `state_set` delegates to the `state_foreign_set` wrapper
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1248), which checks the
+    value buffer's bounds (unless the call is the zero/zero delete
+    spelling), then the key width, then the key buffer's bounds
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1293-1314). The value
+    size cap sits later in the host, but no overlapping failure can
+    distinguish that from checking it here. A wrapper that re-implemented
+    any of this would drift from it.
+    """
+    from hookz.handlers.core import _not_in_bounds
+
+    if not (read_ptr == 0 and read_len == 0):
+        if _not_in_bounds(rt, read_ptr, read_len):
+            return hookapi.OUT_OF_BOUNDS
     if kread_len > 32:
         return hookapi.TOO_BIG
+    if kread_len < 1:
+        return hookapi.TOO_SMALL
+    if _not_in_bounds(rt, kread_ptr, kread_len):
+        return hookapi.OUT_OF_BOUNDS
     if read_len > 256:
         return hookapi.TOO_BIG
     return None
 
 
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
-    err = _state_set_error(read_len, kread_len)
+    err = _state_set_error(rt, read_ptr, read_len, kread_ptr, kread_len)
     if err is not None:
         return err
     key = rt._read_memory(kread_ptr, kread_len)

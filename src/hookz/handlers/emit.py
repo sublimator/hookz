@@ -131,14 +131,7 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
     return len(data)
 
 
-def _not_in_bounds(rt: HookRuntime, ptr: int, length: int) -> bool:
-    """The host wrapper's memory-bounds test, on the hook's linear memory.
-
-    xahaud:include/xrpl/hook/Macro.h:230
-        (ptr >= memory_length) || (ptr + len > memory_length)
-    """
-    memory_length = rt._memory.data_len(rt._store)
-    return ptr >= memory_length or ptr + length > memory_length
+from hookz.handlers.core import _not_in_bounds
 
 
 def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,

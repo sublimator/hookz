@@ -27,6 +27,16 @@ class Trace:
         return f"Trace({self.tag!r}, {self.value!r}{loc})"
 
 
+def _not_in_bounds(rt: HookRuntime, ptr: int, length: int) -> bool:
+    """The host wrapper's memory-bounds test, on the hook's linear memory.
+
+    xahaud:include/xrpl/hook/Macro.h:230
+        (ptr >= memory_length) || (ptr + len > memory_length)
+    """
+    memory_length = rt._memory.data_len(rt._store)
+    return ptr >= memory_length or ptr + length > memory_length
+
+
 def _read_tag(rt: HookRuntime, tag_ptr: int, tag_len: int) -> str:
     raw = rt._read_memory(tag_ptr, tag_len).rstrip(b"\x00") if tag_len > 0 else b""
     return raw.decode(errors="replace")
