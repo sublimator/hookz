@@ -377,9 +377,14 @@ def _surface_section(imports, signatures, whitelist, counts=None,
         lines.append(row)
 
     lines.append("")
-    seen = {n for _, n, _, _ in imports}
-    for prefixes, label, note in _FAMILIES:
-        if any(n.startswith(p) for n in seen for p in prefixes):
+    # Through _family, not a second matcher. This loop kept its own copy and
+    # went on calling `startswith` on patterns that had become globs, so five
+    # of the eight families could never match and the notes explaining what a
+    # test has to arrange — the actionable half — silently stopped printing
+    # while the table above still named those families.
+    shown = {_family(n)[0] for _, n, _, _ in imports}
+    for _, label, note in _FAMILIES:
+        if label in shown:
             lines.append(f"- **{label}** — {note}")
 
     if unknown:

@@ -439,3 +439,54 @@ class TestTheSkeletonStatesWhatFailsSilently:
 
         doc = _doc(checkout)
         assert "convention" in doc
+
+
+class TestTheLegendExplainsWhatTheTableNames:
+    """The `family` column is a label; the legend under it is the arrangement
+    advice — "submit a transaction that reaches the hook", "needs etxn_reserve
+    and a ledger close". The column without the note is the half a test author
+    cannot act on.
+
+    They were matched by two different mechanisms. When the patterns became
+    globs only `_family` was updated; the legend went on calling `startswith`
+    on `"otxn_*"`, so five of eight families could never match and their notes
+    silently stopped printing while the table still named them.
+    """
+
+    @staticmethod
+    def _families_in_table(doc):
+        return {ln.split("|")[3].strip()
+                for ln in doc.splitlines() if ln.startswith("| `")} - {"—", ""}
+
+    @staticmethod
+    def _families_in_legend(doc):
+        return {m.group(1) for m in
+                re.finditer(r"^- \*\*(.+?)\*\* — ", doc, re.M)}
+
+    def test_every_family_the_table_names_is_explained(self, checkout):
+        doc = _doc(checkout)
+
+        named = self._families_in_table(doc)
+        explained = self._families_in_legend(doc)
+
+        assert named, "premise: the table assigns families"
+        assert named - explained == set(), sorted(named - explained)
+
+    def test_it_does_not_explain_families_the_hook_never_uses(self, checkout):
+        """The other direction: the legend is scoped to this hook, so a note
+        about emitted transactions on a hook that cannot emit is noise."""
+        doc = _doc(checkout)
+
+        assert self._families_in_legend(doc) <= self._families_in_table(doc)
+
+    def test_the_glob_families_reach_the_legend(self, checkout):
+        """govern.wasm imports otxn_*, state*, emit*, slot* and trace* — every
+        one of them a starred pattern, and every one of them absent from the
+        legend before this. `accept` and `_g` matched under either matcher,
+        which is why the existing family tests stayed green.
+        """
+        explained = self._families_in_legend(_doc(checkout))
+
+        for label in ("originating transaction", "hook state / installation",
+                      "emitted transactions", "slots", "diagnostics only"):
+            assert label in explained, label
