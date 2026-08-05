@@ -30,6 +30,7 @@ Usage:
 from __future__ import annotations
 
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -52,6 +53,19 @@ class HookFunctionDef:
     body: str
     start_line: int
     end_line: int
+
+
+@dataclass
+class EnumConstant:
+    """One enumerator parsed out of a C++ enum, with its provenance.
+
+    `line` is 1-based in the header it came from, so a generated module can
+    cite each constant in the repo's `xahaud:path:line` convention.
+    """
+    name: str
+    value: int
+    line: int
+    enum: str
 
 
 @dataclass
@@ -109,6 +123,121 @@ class XahaudRepo:
                 continue
 
         return result
+
+    # ---- Parse C++ enums (tree-sitter, not regex) ----
+
+    def parse_enum_constants(
+        self, rel_path: str, env: dict[str, int] | None = None,
+    ) -> list[EnumConstant]:
+        """Every enumerator in `rel_path`, in declaration order, values resolved.
+
+        Handles the shapes the protocol headers actually use: explicit integer
+        and hex literals, implicit increment from the previous enumerator, and
+        mask expressions built from earlier enumerators (`~`, `|`, `&`, `+`,
+        `-`, `<<`, parentheses, identifier references). Values from enums with
+        an unsigned base type are wrapped to 32 bits, matching what the C++
+        compiler stores — a `~x` mask must come out as the uint32 the chain
+        compares against, not a negative Python int.
+
+        `env` seeds identifier resolution and accumulates every enumerator
+        parsed — pass one dict across files when a header references another
+        header's constants (TxFlags.h reads lsf* from LedgerFormats.h).
+        """
+        source = self._read(rel_path)
+        tree = self._parser.parse(source)
+
+        constants: list[EnumConstant] = []
+        if env is None:
+            env = {}
+
+        def evaluate(node) -> int:
+            kind = node.type
+            if kind == "number_literal":
+                text = _node_text(node, source).rstrip("uUlL")
+                return int(text, 0)
+            if kind == "identifier":
+                name = _node_text(node, source)
+                if name in env:
+                    return env[name]
+                raise ValueError(f"unknown identifier {name!r}")
+            if kind == "unary_expression":
+                op = _node_text(node.children[0], source)
+                operand = evaluate(node.children[1])
+                if op == "-":
+                    return -operand
+                if op == "~":
+                    return ~operand
+                if op == "+":
+                    return operand
+                raise ValueError(f"unsupported unary {op!r}")
+            if kind == "binary_expression":
+                left = evaluate(node.child_by_field_name("left"))
+                right = evaluate(node.child_by_field_name("right"))
+                op = _node_text(node.child_by_field_name("operator"), source)
+                ops = {
+                    "|": lambda a, b: a | b,
+                    "&": lambda a, b: a & b,
+                    "^": lambda a, b: a ^ b,
+                    "<<": lambda a, b: a << b,
+                    ">>": lambda a, b: a >> b,
+                    "+": lambda a, b: a + b,
+                    "-": lambda a, b: a - b,
+                }
+                if op not in ops:
+                    raise ValueError(f"unsupported operator {op!r}")
+                return ops[op](left, right)
+            if kind == "parenthesized_expression":
+                inner = [c for c in node.children if c.is_named]
+                if len(inner) == 1:
+                    return evaluate(inner[0])
+                raise ValueError("unexpected parenthesized expression shape")
+            if kind in ("cast_expression", "call_expression"):
+                # e.g. `uint32_t(...)` / `(uint32_t)~x` — evaluate the payload
+                for child in reversed(node.children):
+                    if child.is_named and child.type != "type_descriptor":
+                        return evaluate(child)
+            raise ValueError(f"unsupported expression node {kind!r}")
+
+        def walk(node) -> None:
+            if node.type == "enum_specifier":
+                name_node = node.child_by_field_name("name")
+                enum_name = (
+                    _node_text(name_node, source) if name_node else "<anonymous>"
+                )
+                base_node = node.child_by_field_name("base")
+                unsigned = base_node is not None and "uint" in _node_text(
+                    base_node, source
+                )
+                body = node.child_by_field_name("body")
+                if body is None:
+                    return
+                next_value = 0
+                for entry in body.named_children:
+                    if entry.type != "enumerator":
+                        continue
+                    entry_name = _node_text(
+                        entry.child_by_field_name("name"), source
+                    )
+                    value_node = entry.child_by_field_name("value")
+                    value = next_value if value_node is None else evaluate(
+                        value_node
+                    )
+                    if unsigned:
+                        value &= 0xFFFFFFFF
+                    env[entry_name] = value
+                    constants.append(EnumConstant(
+                        name=entry_name,
+                        value=value,
+                        line=entry.start_point[0] + 1,
+                        enum=enum_name,
+                    ))
+                    next_value = value + 1
+                return
+            for child in node.children:
+                walk(child)
+
+        walk(tree.root_node)
+        return constants
 
     def parse_all_hook_constants(self) -> dict[str, dict[str, int]]:
         """Parse all hook header constants."""
@@ -369,6 +498,150 @@ class XahaudRepo:
                     lines.append(f"{name} = {value}  # 0x{value:X}")
                 else:
                     lines.append(f"{name} = {value}  # -0x{abs(value):X}")
+            lines.append("")
+
+        content = "\n".join(lines)
+        if output_path:
+            Path(output_path).write_text(content)
+        return content
+
+    # ---- Generate TER and transaction/ledger flag constants ----
+
+    def _source_id(self) -> str:
+        """`xahaud @ <commit>` when the tree is a git checkout, else the path."""
+        try:
+            probe = subprocess.run(
+                ["git", "-C", str(self.root), "rev-parse", "--short", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if probe.returncode == 0:
+                return f"xahaud @ {probe.stdout.strip()}"
+        except Exception:                                      # noqa: BLE001
+            pass
+        return str(self.root)
+
+    def _generated_header(self, title: str, headers: list[str]) -> list[str]:
+        cited = ", ".join(headers)
+        return [
+            f'"""{title}',
+            "",
+            f"Auto-generated from {cited}.",
+            f"Source: {self._source_id()}",
+            "Regenerate: python scripts/gen-constants.py <xahaud-root>",
+            "",
+            "Every constant carries its origin in the repo's citation",
+            "convention — `xahaud:<path>:<line>` names the exact line of the",
+            "pinned xahaud tree it was read from.",
+            '"""',
+            "",
+        ]
+
+    TER_HEADER = "include/xrpl/protocol/TER.h"
+    TX_FLAGS_HEADER = "include/xrpl/protocol/TxFlags.h"
+    LEDGER_FORMATS_HEADER = "include/xrpl/protocol/LedgerFormats.h"
+
+    #: The TER enums, in range order. Everything else in TER.h is machinery.
+    TER_ENUMS = ("TELcodes", "TEMcodes", "TEFcodes", "TERcodes",
+                 "TEScodes", "TECcodes")
+
+    def generate_ter_py(self, output_path: str | Path | None = None) -> str:
+        """Generate `hookz/ter.py` — transaction result codes, both directions.
+
+        Declaration order is preserved so the module reads like the header,
+        and `name()` resolves a duplicated value to its first (canonical)
+        declaration, exactly as the header presents it.
+        """
+        constants = [
+            c for c in self.parse_enum_constants(self.TER_HEADER)
+            if c.enum in self.TER_ENUMS
+        ]
+        wanted = {name: None for name in self.TER_ENUMS}
+        lines = self._generated_header(
+            "Transaction result (TER) codes from xahaud.", [self.TER_HEADER]
+        )
+        for enum_name in wanted:
+            group = [c for c in constants if c.enum == enum_name]
+            if not group:
+                continue
+            lines.append(f"# ---- {enum_name} ----")
+            for c in group:
+                lines.append(
+                    f"{c.name} = {c.value}"
+                    f"  # xahaud:{self.TER_HEADER}:{c.line}"
+                )
+            lines.append("")
+
+        lines += [
+            "_PREFIXES = ('tel', 'tem', 'tef', 'ter', 'tes', 'tec')",
+            "",
+            "_CODES: dict[str, int] = {",
+            "    _n: _v for _n, _v in list(globals().items())",
+            "    if _n[:3] in _PREFIXES and isinstance(_v, int)",
+            "}",
+            "",
+            "_NAMES: dict[int, str] = {}",
+            "for _n, _v in _CODES.items():   # first declaration wins",
+            "    _NAMES.setdefault(_v, _n)",
+            "",
+            "",
+            "def code(name: str) -> int:",
+            '    """Numeric TER for a symbolic name, e.g. \'tecDST_TAG_NEEDED\' -> 143."""',
+            "    return _CODES[name]",
+            "",
+            "",
+            "def name(code: int) -> str:",
+            '    """Symbolic name for a numeric TER, e.g. 143 -> \'tecDST_TAG_NEEDED\'."""',
+            "    return _NAMES[code]",
+            "",
+        ]
+        content = "\n".join(lines)
+        if output_path:
+            Path(output_path).write_text(content)
+        return content
+
+    def generate_flags_py(self, output_path: str | Path | None = None) -> str:
+        """Generate `hookz/flags.py` — tf*/asf* transaction flags and lsf*
+        ledger-object flags, cited per constant.
+        """
+        lines = self._generated_header(
+            "Transaction flags (tf*/asf*) and ledger-entry flags (lsf*) "
+            "from xahaud.",
+            [self.TX_FLAGS_HEADER, self.LEDGER_FORMATS_HEADER],
+        )
+        # TxFlags.h references lsf* names, so LedgerFormats.h parses first to
+        # seed the shared environment; emission order below is tf then lsf.
+        env: dict[str, int] = {}
+        parsed = {
+            self.LEDGER_FORMATS_HEADER: self.parse_enum_constants(
+                self.LEDGER_FORMATS_HEADER, env
+            ),
+        }
+        parsed[self.TX_FLAGS_HEADER] = self.parse_enum_constants(
+            self.TX_FLAGS_HEADER, env
+        )
+
+        seen: dict[str, int] = {}
+        for header in (self.TX_FLAGS_HEADER, self.LEDGER_FORMATS_HEADER):
+            current_enum = None
+            for c in parsed[header]:
+                if c.name in seen:
+                    if seen[c.name] != c.value:
+                        raise ValueError(
+                            f"{c.name} redefined with a different value: "
+                            f"{seen[c.name]:#x} vs {c.value:#x}"
+                        )
+                    continue
+                seen[c.name] = c.value
+                if c.enum != current_enum:
+                    current_enum = c.enum
+                    lines.append(f"# ---- {current_enum} ({header}) ----")
+                rendered = (
+                    f"0x{c.value:08X}" if c.value > 0xFFFF else str(c.value)
+                )
+                lines.append(
+                    f"{c.name} = {rendered}"
+                    f"  # xahaud:{header}:{c.line}"
+                )
             lines.append("")
 
         content = "\n".join(lines)

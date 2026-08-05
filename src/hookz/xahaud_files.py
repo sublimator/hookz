@@ -36,6 +36,14 @@ class XahaudFile(str, Enum):
     APPLY_HOOK_H = "src/xrpld/app/hook/applyHook.h"
     SET_HOOK_TEST_CPP = "src/test/app/SetHook_test.cpp"
 
+    # include/xrpl/protocol/ — sources for the generated constant modules
+    # (hookz.ter, hookz.flags) and their per-constant citations
+    TER_H = "include/xrpl/protocol/TER.h"
+    TX_FLAGS_H = "include/xrpl/protocol/TxFlags.h"
+    LEDGER_FORMATS_H = "include/xrpl/protocol/LedgerFormats.h"
+    HASH_PREFIX_H = "include/xrpl/protocol/HashPrefix.h"
+    STTX_CPP = "src/libxrpl/protocol/STTx.cpp"
+
 
 # Logical groups
 HOOK_HEADERS = {

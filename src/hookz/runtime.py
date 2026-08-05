@@ -36,6 +36,56 @@ class Hook:
     source: Path | None = None
 
 
+def _param_key(key: str | bytes) -> bytes:
+    """Param names are bytes on the hook side; tests naturally write str."""
+    return key.encode() if isinstance(key, str) else key
+
+
+class ParamMap(dict):
+    """A parameter mapping that normalizes str keys to UTF-8 bytes.
+
+    `hook_param` and `otxn_param` look names up as bytes, but a test that
+    writes `rt.tx_params["CMD"] = b"SWAP"` means the same parameter as one
+    that writes `rt.tx_params[b"CMD"]` — and before this existed, every test
+    project carried its own str→bytes bridging helper. Values are stored
+    untouched; only keys are normalized, on every path into the dict.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        if args or kwargs:
+            self.update(*args, **kwargs)
+
+    def __setitem__(self, key, value):
+        super().__setitem__(_param_key(key), value)
+
+    def __getitem__(self, key):
+        return super().__getitem__(_param_key(key))
+
+    def __delitem__(self, key):
+        super().__delitem__(_param_key(key))
+
+    def __contains__(self, key):
+        return super().__contains__(_param_key(key))
+
+    def get(self, key, default=None):
+        return super().get(_param_key(key), default)
+
+    def pop(self, key, *default):
+        return super().pop(_param_key(key), *default)
+
+    def setdefault(self, key, default=None):
+        return super().setdefault(_param_key(key), default)
+
+    def update(self, *args, **kwargs):
+        for mapping in args:
+            items = mapping.items() if hasattr(mapping, "items") else mapping
+            for key, value in items:
+                self[key] = value
+        for key, value in kwargs.items():
+            self[key] = value
+
+
 class HookAccepted(Exception):
     """Raised when hook calls accept()."""
     def __init__(self, msg: bytes, code: int):
@@ -206,7 +256,10 @@ class HookRuntime:
         self.state_db: dict[bytes, bytes] = {}
         # Two namespaces, as on chain. `params` are the hook's install
         # parameters (hook_param); `tx_params` are carried by the originating
-        # transaction (otxn_param). A name may appear in both without colliding.
+        # transaction (otxn_param). A name may appear in both without
+        # colliding. Both accept str or bytes keys (normalized to bytes), and
+        # assigning any mapping to either attribute re-wraps it in a ParamMap
+        # so `rt.params = {"CMD": ...}` behaves the same as item assignment.
         self.params: dict[bytes, bytes] = {}
         self.tx_params: dict[bytes, bytes] = {}
         self.hook_account: bytes = b"\x00" * 20
@@ -272,6 +325,22 @@ class HookRuntime:
         self._emit_nonce_counter: int = 0
         self._foreign_state_db: dict[tuple[bytes, bytes, bytes], bytes] = {}
         self._param_overrides: dict[bytes, dict[bytes, bytes]] = {}
+
+    @property
+    def params(self) -> ParamMap:
+        return self._params
+
+    @params.setter
+    def params(self, mapping) -> None:
+        self._params = ParamMap(mapping or {})
+
+    @property
+    def tx_params(self) -> ParamMap:
+        return self._tx_params
+
+    @tx_params.setter
+    def tx_params(self, mapping) -> None:
+        self._tx_params = ParamMap(mapping or {})
 
     def set_param(self, key: int | bytes, value: bytes) -> None:
         """Set an install parameter (read by `hook_param`)."""

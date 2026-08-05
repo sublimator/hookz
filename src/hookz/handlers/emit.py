@@ -7,7 +7,7 @@ import struct
 from typing import TYPE_CHECKING
 
 from hookz import hookapi
-from hookz.emission import check_emission
+from hookz.emission import check_emission, emitted_txn_id
 
 if TYPE_CHECKING:
     from hookz.runtime import HookRuntime
@@ -162,6 +162,6 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
             rt.emission_undecided.append(check)
 
     rt.emitted_txns.append(txn_bytes)
-    h = hashlib.sha512(b'\x54\x58\x4e\x00' + txn_bytes).digest()[:32]
+    h = emitted_txn_id(txn_bytes)
     rt._write_memory(hash_ptr, h[:hash_len])
     return 32

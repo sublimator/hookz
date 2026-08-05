@@ -29,9 +29,25 @@ worth stating out loud rather than discovering later.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass, field
 
 from hookz import hookapi
+
+
+def emitted_txn_id(txn: bytes) -> bytes:
+    """The 32-byte transaction ID of an emitted transaction's serialized bytes.
+
+    This is the hash `emit()` hands back to the hook and the key a callback is
+    correlated by: SHA-512 half over the transaction-ID hash prefix (`'TXN'`,
+    xahaud:include/xrpl/protocol/HashPrefix.h:56) followed by the blob, as
+    `STTx` computes it (xahaud:src/libxrpl/protocol/STTx.cpp:65).
+
+    Exposed because every test that plants or looks up a callback note needs
+    exactly this value — re-deriving it per suite is how the prefix gets
+    mistyped once and a whole callback fixture silently stops matching.
+    """
+    return hashlib.sha512(b"TXN\x00" + txn).digest()[:32]
 
 # xahaud refuses a generation of this value or above
 _EMIT_GENERATION_MAX = 10
