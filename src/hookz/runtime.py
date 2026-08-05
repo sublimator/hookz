@@ -356,6 +356,45 @@ def _get_default_amendments() -> set[str]:
         return set()
 
 
+_UNSIGNED_PARAMS: dict[str, tuple[bool, ...]] | None = None
+
+
+def _unsigned_param_mask(name: str) -> tuple[bool, ...] | None:
+    """Which parameters of hook API `name` are declared unsigned.
+
+    Wasmtime hands a Python callback the raw i32 bit pattern as a *signed*
+    int, so a `uint32_t` pointer of 0xFFFFFFFF arrives as -1 — and a
+    negative reads as small and in-range everywhere a handler compares it
+    against a size or a memory bound, which is the exact inverse of the
+    host's answer. Normalizing those arguments once, here, spares every
+    handler from remembering.
+
+    Which parameters those are is read from the API declaration itself
+    (`hook_api.macro`) rather than from the wasm signature, because wasm
+    has one i32 and the API has two: `float_set`'s exponent is a genuine
+    `int32_t` and a negative exponent is ordinary — masking it would turn
+    every small XFL into an astronomical one. A re-pin re-reads the
+    declaration, so the distinction cannot drift.
+
+    None when the function is not declared in the macro (an unknown import
+    or a test double), leaving its arguments untouched.
+    """
+    global _UNSIGNED_PARAMS
+    if _UNSIGNED_PARAMS is None:
+        try:
+            from hookz.wasm.whitelist import parse_hook_api_macro
+            from hookz.xahaud_files import XahaudFile, resolve
+            _UNSIGNED_PARAMS = {
+                fn.name: tuple(p == "uint32_t" for p in fn.param_types)
+                for fn in parse_hook_api_macro(
+                    resolve(XahaudFile.HOOK_API_MACRO))
+            }
+        except Exception:                                      # noqa: BLE001
+            # No declaration available: normalize nothing rather than guess.
+            _UNSIGNED_PARAMS = {}
+    return _UNSIGNED_PARAMS.get(name)
+
+
 _MODULE_CACHE: dict[bytes, tuple] = {}
 _MODULE_CACHE_LIMIT = 32
 
@@ -567,8 +606,12 @@ class HookRuntime:
                 handler = getattr(self, f"_hook_{name}", None)
 
             if handler is not None:
-                def make_wrapper(h, n):
+                def make_wrapper(h, n, mask=_unsigned_param_mask(name)):
                     def wrapper(*args):
+                        if mask is not None and len(args) == len(mask):
+                            args = tuple(
+                                a & 0xFFFFFFFF if unsigned else a
+                                for a, unsigned in zip(args, mask))
                         call = HostCall(name=n, args=args)
                         rt.call_log.append(call)
                         result = h(*args)

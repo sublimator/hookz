@@ -117,6 +117,34 @@ int64_t hook(uint32_t reserved)
         state_set(SBUF(out), SBUF(rk));
         return accept(SBUF("bounds"), r2);
     }
+    if (reserved == 7)
+    {
+        int64_t v = float_set(-6, 1500000);
+        uint8_t out[8];
+        INT64_TO_BUF(out, v);
+        rk[1] = 7;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("xfl"), 0);
+    }
+    if (reserved == 6)
+    {
+        etxn_reserve(1);
+        uint8_t h[32];
+        uint8_t t[16] = {0x61};
+        uint8_t k1[32] = {0x07};
+        int64_t e1 = emit(SBUF(h), 0xFFFFFFFFu, 16);
+        int64_t e2 = emit(SBUF(h), t, 0xFFFFFFFFu);
+        int64_t s1 = state_set(0x80000000u, 4, SBUF(k1));
+        int64_t s2 = state_set(SBUF(k1), 0xFFFFFFFFu, 32);
+        uint8_t out[32];
+        INT64_TO_BUF(out, e1);
+        INT64_TO_BUF(out + 8, e2);
+        INT64_TO_BUF(out + 16, s1);
+        INT64_TO_BUF(out + 24, s2);
+        rk[1] = 6;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("highbit"), 0);
+    }
     return accept(SBUF("noop"), 0);
 }
 """
@@ -129,6 +157,8 @@ RK2 = bytes([0xF0, 0x02]) + b"\x00" * 30
 RK3 = bytes([0xF0, 0x03]) + b"\x00" * 30
 RK4 = bytes([0xF0, 0x04]) + b"\x00" * 30
 RK5 = bytes([0xF0, 0x05]) + b"\x00" * 30
+RK6 = bytes([0xF0, 0x06]) + b"\x00" * 30
+RK7 = bytes([0xF0, 0x07]) + b"\x00" * 30
 V = bytes([0xAA]) + b"\x00" * 3
 T1 = bytes([0x11]) + b"\x00" * 15
 T2 = bytes([0x22]) + b"\x00" * 15
@@ -345,6 +375,91 @@ class TestEmitPreflightBeatsTheSelector:
             hookapi.EMISSION_FAILURE, hookapi.EMISSION_FAILURE]
         assert len(rt.emission_rejections) == 2
         assert log == []
+
+
+class TestHighBitArguments:
+    """Every hook API parameter is `uint32_t`, but wasmtime hands a Python
+    callback the raw i32 bit pattern as a *signed* int — 0xFFFFFFFF arrives
+    as -1, which reads as small and in-range everywhere a handler compares
+    it against a size. The host compares unsigned
+    (xahaud:include/xrpl/hook/Macro.h:230), so these must all refuse."""
+
+    def test_high_bit_pointers_and_lengths_are_out_of_bounds(self, wasm):
+        rt = emit_rt()
+        rt.run(wasm, arg=6)
+        assert codes(rt.state_db[RK6]) == [hookapi.OUT_OF_BOUNDS] * 4
+
+    def test_a_match_all_selector_never_sees_them(self, wasm):
+        rt = emit_rt()
+        emit_log = faults.refuse_emit(rt, when=faults.every,
+                                      code=hookapi.INTERNAL_ERROR)
+        state_log = faults.refuse_state_set(rt, when=faults.every,
+                                            code=hookapi.INTERNAL_ERROR)
+        rt.run(wasm, arg=6)
+
+        assert emit_log == []
+        # Only the probe's own valid result write reached the selector —
+        # and it is refused too, so the record it carries is the evidence.
+        assert [c.key for c in state_log] == [RK6]
+        assert codes(state_log[0].value) == [hookapi.OUT_OF_BOUNDS] * 4
+        assert RK6 not in rt.state_db
+
+    def test_signed_declarations_keep_their_sign(self):
+        """The mask comes from the API declaration, not the wasm signature:
+        wasm has one i32, the API has two. `float_set`'s exponent is a
+        genuine int32_t and a negative exponent is ordinary — masking it
+        turns every small XFL into an astronomical one, which is exactly
+        how a blanket-normalization first attempt broke value handling
+        across the downstream suite."""
+        from hookz.runtime import _unsigned_param_mask
+
+        # (int32_t exponent, int64_t mantissa) — neither is uint32_t.
+        assert _unsigned_param_mask("float_set") == (False, False)
+        # (uint32_t, uint32_t, int64_t) — the trailing number is signed.
+        assert _unsigned_param_mask("trace_num") == (True, True, False)
+        # All four of emit's parameters are uint32_t.
+        assert _unsigned_param_mask("emit") == (True,) * 4
+        # An import the declaration does not describe is left alone.
+        assert _unsigned_param_mask("not_a_hook_api_function") is None
+
+    def test_a_negative_xfl_exponent_survives_the_boundary(self, wasm):
+        """The behavioural half of the above, through a real hook call."""
+        from hookz.xfl import xfl_to_float
+
+        rt = HookRuntime()
+        seen = {}
+
+        def capture(exponent, mantissa):
+            seen["exponent"] = exponent
+            from hookz.handlers.float import float_set as builtin
+            return builtin(rt, exponent, mantissa)
+
+        rt.handlers["float_set"] = capture
+        rt.run(wasm, arg=7)
+
+        assert seen["exponent"] == -6, "a signed exponent was masked"
+        assert xfl_to_float(codes(rt.state_db[RK7])[0]) == pytest.approx(1.5)
+
+    def test_the_predicate_itself_is_unsigned(self, wasm):
+        """Called directly, not just through the linker's normalization."""
+        from hookz.handlers.core import _not_in_bounds
+
+        rt = HookRuntime()
+        captured = {}
+
+        def probe(*_args):
+            captured["oob"] = [
+                _not_in_bounds(rt, -1, 4),
+                _not_in_bounds(rt, 0, -1),
+                _not_in_bounds(rt, 0xFFFFFFFF, 4),
+            ]
+            captured["ok"] = _not_in_bounds(rt, 0, 4)
+            return 0
+
+        rt.handlers["etxn_reserve"] = probe
+        rt.run(wasm, arg=6)
+        assert captured["oob"] == [True, True, True]
+        assert captured["ok"] is False
 
 
 class TestTypedBoundary:

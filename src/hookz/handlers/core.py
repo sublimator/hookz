@@ -32,7 +32,16 @@ def _not_in_bounds(rt: HookRuntime, ptr: int, length: int) -> bool:
 
     xahaud:include/xrpl/hook/Macro.h:230
         (ptr >= memory_length) || (ptr + len > memory_length)
+
+    The macro casts both operands to `uint64_t` and every wrapper parameter
+    is `uint32_t`, so the comparison is unsigned. Arguments are normalized
+    again here — the linker already does it for real hook calls
+    (`HookRuntime._make_host_functions`), but this predicate is also called
+    directly, and a signed `-1` slipping through reads as "in bounds",
+    which is the one answer it must never give.
     """
+    ptr = ptr & 0xFFFFFFFF
+    length = length & 0xFFFFFFFF
     memory_length = rt._memory.data_len(rt._store)
     return ptr >= memory_length or ptr + length > memory_length
 

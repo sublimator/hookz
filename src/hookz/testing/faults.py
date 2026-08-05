@@ -206,7 +206,7 @@ def refuse_host(rt: HookRuntime, name: str, code: int) -> list[FaultCall]:
 
     The bluntest injector: no decoding, no delegation — the named function
     simply answers `code`, and the log records each call's raw arguments.
-    Hosts with a typed injector (`state_set`, `emit`) are refused here on
+    Hosts with a typed injector (`state_set`, `emit`) are rejected here on
     purpose; use the typed form, which still runs the host's admission
     checks first.
     """
@@ -238,9 +238,9 @@ def refusing_emit(code: int = hookapi.EMISSION_FAILURE) -> Callable[["HookRuntim
     """A `setup(rt)` callable that refuses every *admitted* emit with `code`.
 
     `refusing`'s typed counterpart for the emit boundary: the preflight
-    still answers first (reservation, count, width, the emission rules,
-    with their diagnostics), and only an emit the host would have accepted
-    comes back `code`. The log is discarded — a driver that needs receipts
+    still answers first (buffer bounds, output width, reservation, count,
+    the emission rules, with their diagnostics), and only an emit the host
+    would have accepted comes back `code`. The log is discarded — a driver that needs receipts
     calls `refuse_emit` directly.
     """
     def setup(rt: HookRuntime) -> None:
