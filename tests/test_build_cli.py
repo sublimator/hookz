@@ -15,6 +15,7 @@ from hookz.cli.main import _build_normal
 from hookz.config import load_config
 from hookz.wasm.decode import decode_module
 from hookz.wasm.guard import GuardError
+from test_wasm import _nested_blocks_wasm
 
 
 SOURCE = Path("tests/e2e/hooks/misc/balance_gate.c")
@@ -246,54 +247,85 @@ class TestBuildAndWceAgree:
 
     @staticmethod
     def _run(args):
+        """catch_exceptions=False on purpose.
+
+        With the default, CliRunner swallows an escaping exception, sets
+        exit_code 1 and puts nothing in `.output` — so `assert "Traceback" not
+        in out.output` passes for exactly the failure it claims to exclude.
+        The first version of these tests asserted that and could not fail;
+        `--coverage` was tracebacking the whole time they were green.
+        """
         from click.testing import CliRunner
         from hookz.cli.main import cli
 
-        return CliRunner().invoke(cli, args)
+        return CliRunner().invoke(cli, args, catch_exceptions=False)
 
-    def test_a_compile_failure_is_a_message_not_a_traceback(self, tmp_path):
-        """RuntimeError is what compile_hook raises when clang fails — the
+    # Every path that compiles. --coverage ran zero times in the whole suite
+    # before this, which is how its missing handler survived a review that was
+    # looking straight at it.
+    COMPILING = [
+        pytest.param([], id="default"),
+        pytest.param(["--coverage"], id="coverage"),
+    ]
+
+    @pytest.mark.parametrize("extra", COMPILING)
+    def test_a_compile_failure_is_a_message_not_an_exception(
+        self, tmp_path, extra
+    ):
+        """RuntimeError is what the compilers raise when clang fails — the
         most ordinary way for this command to fail at all."""
         bad = tmp_path / "bad.c"
         bad.write_text("this is not valid C;\n")
+        out = tmp_path / "bad.wasm"
 
-        out = self._run(
-            ["build", str(bad), "-o", str(tmp_path / "bad.wasm")]
-        )
+        r = self._run(["build", str(bad), "-o", str(out), *extra])
 
-        assert out.exit_code == 1
-        assert "Compile FAILED" in out.output
-        assert "Traceback" not in out.output
-        assert not (tmp_path / "bad.wasm").exists()
+        assert r.exception is None or isinstance(r.exception, SystemExit)
+        assert r.exit_code == 1
+        assert "FAILED" in r.output
+        assert not out.exists()
+
+    @pytest.mark.parametrize("extra", COMPILING)
+    def test_a_compile_failure_still_flags_a_stale_artifact(
+        self, tmp_path, extra
+    ):
+        """Skipping _build_fail loses this note, so the previous build sits at
+        the output path looking current."""
+        bad = tmp_path / "bad.c"
+        bad.write_text("this is not valid C;\n")
+        out = tmp_path / "bad.wasm"
+        out.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+        r = self._run(["build", str(bad), "-o", str(out), *extra])
+
+        assert "stale" in r.output
+        assert out.read_bytes() == b"\x00asm\x01\x00\x00\x00"
 
     def test_wce_reports_the_same_compile_failure_the_same_way(self, tmp_path):
         bad = tmp_path / "bad.c"
         bad.write_text("this is not valid C;\n")
 
-        out = self._run(["wce", str(bad)])
+        r = self._run(["wce", str(bad)])
 
-        assert out.exit_code == 1
-        assert "Traceback" not in out.output
+        assert r.exception is None or isinstance(r.exception, SystemExit)
+        assert r.exit_code == 1
 
-    def test_the_build_verdict_names_the_rules_it_judged_under(self, tmp_path):
+    @pytest.mark.parametrize("extra", COMPILING)
+    def test_every_build_path_names_the_rules_it_judged_under(
+        self, tmp_path, extra
+    ):
         """How --depth32 turned a rejection into PASSED with nothing in the
-        transcript to notice: build printed a verdict and never its rules."""
-        out = self._run(
-            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm")]
+        transcript to notice: a verdict was printed and never its basis."""
+        r = self._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"), *extra]
         )
 
-        assert out.exit_code == 0, out.output
-        assert "rules: 0x" in out.output
-        assert "nesting limit" in out.output
+        assert r.exit_code == 0, r.output
+        assert "rules: 0x01 (nesting limit 16)" in r.output
 
     def test_guard_check_names_its_rules_on_both_verdicts(self, tmp_path):
         """A depth rejection is exactly when which limit applied is the
         question, so the failing path must say it too."""
-        import sys
-
-        sys.path.insert(0, str(Path(__file__).parent))
-        from test_wasm import _nested_blocks_wasm
-
         deep = tmp_path / "deep.wasm"
         deep.write_bytes(_nested_blocks_wasm(24))
         shallow = tmp_path / "ok.wasm"
@@ -307,22 +339,74 @@ class TestBuildAndWceAgree:
         passed = self._run(["guard-check", str(shallow)])
         assert "nesting limit 16" in passed.output
 
-    def test_no_build_path_hardcodes_the_rules_version(self):
-        """All three used `rules_version = GUARD_RULE_FIX_20250131`, which is
-        what mainnet happens to run — right by coincidence, and unable to
-        notice the network moving. The constant must not reappear."""
-        import inspect
 
-        from hookz.cli import main as cli_main
+class TestTheRulesFollowTheNetwork:
+    """The constant was `GUARD_RULE_FIX_20250131` — what mainnet happens to
+    run. Any test asserting today's answer is vacuous, because today's answer
+    IS the constant: `0x01 == 0x01` passes whether or not anything derives.
 
-        for fn in (cli_main._build_normal, cli_main._build_buildbox,
-                   cli_main._build_coverage):
-            src = inspect.getsource(fn)
-            assert "GUARD_RULE_FIX_20250131" not in src, fn.__name__
-            assert "_rules()" in src, fn.__name__
+    So these move the manifest and assert the verdict moves with it. That is
+    the only thing that distinguishes deriving from guessing, and the first
+    version of these tests — an `inspect.getsource` grep and a comparison
+    against the live manifest — was green under `def _rules(): return
+    GUARD_RULE_FIX_20250131`.
+    """
 
-    def test_every_build_path_derives_the_same_rules_as_wce(self):
-        from hookz.amendments import guard_rules_version
-        from hookz.cli.main import _rules
+    @staticmethod
+    def _with_depth32(monkeypatch):
+        """Pretend mainnet voted fixGuardDepth32 in."""
+        import hookz.amendments as amd
 
-        assert _rules() == guard_rules_version()
+        real = amd.enabled_on
+        monkeypatch.setattr(
+            amd, "enabled_on",
+            lambda *a, **k: set(real(*a, **k)) | {"fixGuardDepth32"})
+
+    @pytest.mark.parametrize("extra", TestBuildAndWceAgree.COMPILING)
+    def test_a_build_verdict_moves_when_the_network_moves(
+        self, tmp_path, monkeypatch, extra
+    ):
+        self._with_depth32(monkeypatch)
+
+        r = TestBuildAndWceAgree._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"), *extra]
+        )
+
+        assert r.exit_code == 0, r.output
+        assert "rules: 0x03 (nesting limit 32)" in r.output
+
+    def test_guard_check_moves_too(self, tmp_path, monkeypatch):
+        self._with_depth32(monkeypatch)
+        art = tmp_path / "h.wasm"
+        art.write_bytes(_nested_blocks_wasm(2))
+
+        r = TestBuildAndWceAgree._run(["guard-check", str(art)])
+
+        assert "rules: 0x03 (nesting limit 32)" in r.output
+
+    def test_a_hook_too_deep_today_would_pass_under_the_new_rules(
+        self, tmp_path, monkeypatch
+    ):
+        """The behaviour behind the number, not just the printed line — and
+        the reason removing --depth32 lost nothing: when the vote lands this
+        happens on its own."""
+        art = tmp_path / "deep.wasm"
+        art.write_bytes(_nested_blocks_wasm(24))
+
+        before = TestBuildAndWceAgree._run(["guard-check", str(art)])
+        assert before.exit_code == 1
+        assert "Maximum allowable depth" in before.output
+
+        self._with_depth32(monkeypatch)
+        after = TestBuildAndWceAgree._run(["guard-check", str(art)])
+        assert after.exit_code == 0, after.output
+        assert "PASSED" in after.output
+
+    def test_the_printed_limit_is_the_one_that_was_applied(self, monkeypatch):
+        """`nesting limit 16` hardcoded in the message would satisfy every
+        assertion above that runs on today's manifest."""
+        from hookz.cli.main import _nesting_limit, _rules
+
+        assert _nesting_limit(_rules()) == 16
+        self._with_depth32(monkeypatch)
+        assert _nesting_limit(_rules()) == 32

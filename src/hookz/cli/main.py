@@ -180,6 +180,22 @@ def _nesting_limit(rules_version: int) -> int:
     return nesting_limit(rules_version)
 
 
+def _say_rules(rules_version: int, log=print) -> None:
+    """Name the rules a verdict was reached under.
+
+    One helper, called by every path that prints a verdict, because the first
+    attempt at this added the line to `_build_normal` alone and left the
+    coverage and buildbox builds saying PASSED with no basis stated — the same
+    asymmetry it was written to close.
+
+    Printed on rejections too. A depth failure is exactly the case where which
+    limit applied is the question being asked, and "FAILED" without the limit
+    invites the reader to supply one.
+    """
+    log(f"  rules: 0x{rules_version:02X} "
+        f"(nesting limit {_nesting_limit(rules_version)})")
+
+
 def _rules() -> int:
     """The guard rules the network is actually running.
 
@@ -888,11 +904,16 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     except CleanError as e:
         _build_fail(log, output, stdout_mode, f"Clean FAILED: {e}")
     except RuntimeError as e:
-        # What compile_hook raises when clang fails, which is the most
-        # ordinary way for this command to fail at all. Uncaught, it reached
+        # The most ordinary way this command fails at all. Uncaught, it reached
         # the user as a traceback with the compiler diagnostics buried in it —
         # `wce` has caught this since it was rewritten and `build` had not.
-        _build_fail(log, output, stdout_mode, f"Compile FAILED: {e}")
+        #
+        # Labelled "Build FAILED" rather than "Compile FAILED" because the same
+        # exception carries "Compilation failed", "Linking failed" and the
+        # WASI-SDK-not-configured message (compiler.py:56,147,272). Each says
+        # which it is; naming the stage here would overwrite two of them with a
+        # guess.
+        _build_fail(log, output, stdout_mode, f"Build FAILED: {e}")
 
     cleaned = trace.wasm
     log(f"Built {source.name} via '{trace.pipeline.name}' pipeline "
@@ -912,12 +933,9 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
         hook_pct = result.hook_wce / 65535 * 100
         verdict = "completed WITH WAIVERS" if result.waived else "PASSED"
         log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
-        # Under which rules. `wce` has said this since it was rewritten; build
-        # did not, which is how --depth32 turned a rejection into "PASSED"
-        # with nothing in the transcript to notice.
-        log(f"  rules: 0x{rules_version:02X} "
-            f"(nesting limit {_nesting_limit(rules_version)})")
+        _say_rules(rules_version, log)
     except GuardError as e:
+        _say_rules(rules_version, log)
         _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
 
     # 5. Sanity check
@@ -989,7 +1007,12 @@ def _build_buildbox(
             f"  Local guard check {verdict} "
             f"(hook WCE={validation.hook_wce:,})"
         )
+        # Whose rules judged the remote bytes. Most needed here of the three:
+        # the artifact came from a compiler this machine did not run, so the
+        # only thing the local verdict contributes is the basis it used.
+        _say_rules(rules_version, log)
     except GuardError as exc:
+        _say_rules(rules_version, log)
         _build_fail(
             log, output, stdout_mode, f"Local guard check FAILED: {exc}"
         )
@@ -1025,7 +1048,13 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
     # 1. Two-stage compile: clang -c -g → wasm-ld (preserves DWARF)
     from hookz.compiler import COVERAGE_OPT_LEVEL
     log(f"Compiling {source.name} (two-stage, {COVERAGE_OPT_LEVEL} with DWARF)...")
-    wasm = compile_hook_two_stage(source, config, opt_level=COVERAGE_OPT_LEVEL)
+    try:
+        wasm = compile_hook_two_stage(source, config, opt_level=COVERAGE_OPT_LEVEL)
+    except RuntimeError as e:
+        # Same handler _build_normal grew. Without it a clang failure under
+        # --coverage reached the user as a traceback and skipped the
+        # stale-artifact note, so a previous build at `output` went unflagged.
+        _build_fail(log, output, stdout_mode, f"Build FAILED: {e}")
     log(f"  Compiled: {len(wasm)} bytes")
 
     # 2. Instrument with __on_source_line callbacks
@@ -1053,7 +1082,9 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
         hook_pct = result.hook_wce / 65535 * 100
         verdict = "completed WITH WAIVERS" if result.waived else "PASSED"
         log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
+        _say_rules(rules_version, log)
     except GuardError as e:
+        _say_rules(rules_version, log)
         _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
 
     # 5. Sanity check

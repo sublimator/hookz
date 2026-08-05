@@ -144,13 +144,18 @@ deployment-ready WASM from C source in one command:
 
 ```bash
 hookz build reward.c
-  Compiling reward.c...
-    Compiled: 3463 bytes
-    Optimized: 3463 → 3460 bytes        # wasm-opt; the build fails without it
-    Cleaned: 3460 → 3171 bytes          # strip sections, rewrite guards
-    Guard check PASSED (hook WCE=9,029 — 13.8% of budget)
-    → reward.wasm (3171 bytes)
+  Built reward.c via 'local-structural' pipeline (clang -O3 → binaryen → cleaner)
+    3,281 bytes, block depth 6
+    Guard check PASSED (hook WCE=8,446 — 12.9% of budget)
+    rules: 0x01 (nesting limit 16)      # which amendments produced that verdict
+    → reward.wasm (3281 bytes)
 ```
+
+`--explain` prints size, depth and WCE after every stage. The `rules:` line is
+there because a verdict without its basis invites the reader to supply one:
+wasm-opt runs on this path and the build fails without it, so a "PASSED" here
+is a claim about the binary that toolchain produced, judged under the
+amendments that manifest records.
 
 The cleaner (Python port of [hook-cleaner-c](https://github.com/RichardAH/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
 
