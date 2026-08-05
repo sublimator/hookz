@@ -32,8 +32,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hookz"]
 
-# force-include removed: packages=["src/hookz"] already ships xahaud_lite
-# (double-include broke hatchling wheel: error.h twice)
+# force-include removed for xahaud_lite: packages=["src/hookz"] already ships
+# it (double-include broke hatchling wheel: error.h twice).
+#
+# The patch is different — it lives outside src/hookz, so there is no double
+# include, and `hookz env-test-context` inlines it. Without this the command
+# degraded to "could not read …" on every wheel install while printing a
+# `git apply` line naming a path that does not exist.
+[tool.hatch.build.targets.wheel.force-include]
+"patches/xahaud-external-env-tests.patch" = "hookz/data/xahaud-external-env-tests.patch"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

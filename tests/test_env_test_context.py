@@ -72,11 +72,21 @@ class TestItRefusesRatherThanQuietlyUnderdelivering:
         self, checkout
     ):
         """Plain `dev` has every file the hook-API sections read. Only the
-        skeleton needs the branch, so the document is still worth having."""
+        skeleton needs the branch, so the document is still worth having.
+
+        The remediation assertion used to read `"git apply" in doc or "apply"
+        in doc`, which cannot fail: the left side is always False (the command
+        is `git -C <root> apply <patch>`) and the right side always True (the
+        harness section mentions `applyHook.h`). It asserted nothing about the
+        one thing it is named for.
+        """
         doc = _doc(checkout)
 
         assert "does not carry the env-tests harness" in doc
-        assert "git apply" in doc or "apply" in doc
+
+        line = next(ln for ln in doc.splitlines() if " apply " in ln)
+        assert str(checkout) in line, line
+        assert line.rstrip().endswith(".patch"), line
 
     def test_a_checkout_with_the_branch_says_nothing_about_it(self, checkout):
         (checkout / "src/test/jtx/TestEnv.h").write_text("// stub\n")
@@ -148,8 +158,11 @@ class TestItSaysWhatItCannotKnow:
         """
         doc = _doc(checkout)
 
-        assert "no instrumentation markers" in doc
-        assert ".c" in doc
+        note = next(ln for ln in doc.splitlines()
+                    if "no instrumentation markers" in ln)
+        # `assert ".c" in doc` was the first version — always true, since the
+        # map key in the skeleton is `file:<domain>/govern.c`.
+        assert "`.c`" in note, note
         assert "## 3. Where it calls them" not in doc
 
     def test_omitted_sections_do_not_leave_a_hole_in_the_numbering(
@@ -259,3 +272,170 @@ class TestTheHarnessSectionMatchesAWorkingTest:
 
         assert "file:<domain>/govern.c" in doc
         assert "HOOKS_C_DIR" in doc
+
+
+class TestTheDocumentDoesNotOverclaim:
+    """Each of these is a sentence the document printed regardless of whether
+    it was true — the failure mode the whole feature exists to avoid, since an
+    agent has no way to check.
+    """
+
+    def test_the_family_table_covers_every_function_in_the_whitelist(self):
+        """Three fell through to no family at all — `meta_slot` and
+        `xpop_slot` (a `slot` *prefix* misses a `slot` suffix) and `fee_base`.
+
+        Asserting the two cases someone already thought of is what let the
+        next three through: `accept`/`rollback` and bare `slot` each got a
+        test, and nothing asserted the table was total.
+        """
+        from hookz.cli.env_test_context import _family
+        from hookz.wasm.whitelist import get_import_signatures
+
+        unfamilied = sorted(n for n in get_import_signatures()
+                            if not _family(n)[0])
+        assert unfamilied == [], unfamilied
+
+    def test_no_family_pattern_is_dead(self):
+        """`keylet_` matched nothing — the API is `util_keylet`, already
+        caught by `util_`. A pattern matching nothing is a claim about the API
+        that stopped being true, or never was."""
+        from fnmatch import fnmatchcase
+
+        from hookz.cli.env_test_context import _FAMILIES
+        from hookz.wasm.whitelist import get_import_signatures
+
+        names = list(get_import_signatures())
+        dead = [p for patterns, _, _ in _FAMILIES for p in patterns
+                if not any(fnmatchcase(n, p) for n in names)]
+        assert dead == [], dead
+
+    def test_no_impl_does_not_promise_implementations(self, checkout):
+        """The surface section said "the implementations are quoted below"
+        unconditionally, and the docs recommend --no-impl for context size."""
+        with_impl = _doc(checkout, include_impl=True)
+        without = _doc(checkout, include_impl=False)
+
+        assert "implementations are quoted below" in with_impl
+        assert "implementations are quoted below" not in without
+        assert "--no-impl" in without
+
+    def test_a_directory_that_is_not_a_checkout_says_so(self, checkout):
+        """`checkout` exists and has src/test/jtx, so it passes the refusal —
+        but nothing in it is xahaud, and every lookup returns None. That
+        rendered a heading per function with no code under it and no
+        explanation: the "looks complete, silently omits" shape one level
+        down from the one the refusal prevents.
+        """
+        doc = _doc(checkout, include_impl=True)
+
+        assert "Nothing was found for any function" in doc
+        assert doc.count("_Not found in this checkout._") >= 20
+
+    def test_the_vendored_patch_is_reachable_where_it_is_installed(self):
+        """`patches/` lives outside `src/hookz`, so a wheel gets it only via
+        the force-include in pyproject. Without that the command degraded to
+        "could not read ..." on every non-source install."""
+        import tomllib
+
+        from hookz.cli.env_test_context import PATCH_NAME, _default_patch
+
+        assert _default_patch(None).is_file(), _default_patch(None)
+
+        pyproject = Path(__file__).parents[1] / "pyproject.toml"
+        cfg = tomllib.loads(pyproject.read_text())
+        forced = (cfg["tool"]["hatch"]["build"]["targets"]["wheel"]
+                  ["force-include"])
+        assert f"patches/{PATCH_NAME}" in forced
+        assert forced[f"patches/{PATCH_NAME}"].endswith(PATCH_NAME)
+
+
+class TestTheBranchSectionIsPiecesNotADiff:
+    """Inlining the whole patch was half the document, and most of it is
+    context lines around one-line edits that a reader has to decode.
+    """
+
+    def test_the_harness_header_is_inlined_as_source(self, checkout):
+        from hookz import env_tests_ref as ref
+
+        doc = _doc(checkout, include_patch=True)
+
+        assert "class TestEnv : public Env" in doc
+        assert "#ifndef TEST_JTX_TESTENV_H_INCLUDED" in doc
+        # As C++, not as a diff of C++.
+        assert "```cpp" in doc
+        assert f"### `{ref.HARNESS_HEADER}`" in doc
+
+    def test_the_full_diff_is_not_there_by_default(self, checkout):
+        default = _doc(checkout, include_patch=True)
+        full = _doc(checkout, include_patch=True, full_patch=True)
+
+        assert "```diff" not in default
+        assert "--full-patch" in default
+        assert "```diff" in full
+        assert len(full) > len(default)
+
+    def test_every_file_in_the_patch_is_accounted_for(self, checkout):
+        """The manifest replaces the diff, so anything it omits is a change
+        the reader now has no way to learn about."""
+        from hookz import env_tests_ref as ref
+
+        doc = _doc(checkout, include_patch=True)
+
+        for path, _, _, _ in ref.files_in_patch():
+            assert f"`{path}`" in doc, path
+            assert ref.FILES[path] in doc, path
+
+    def test_the_pin_is_stated_so_it_can_be_checked(self, checkout):
+        from hookz import env_tests_ref as ref
+
+        doc = _doc(checkout, include_patch=True)
+
+        assert ref.PATCH_SHA256 in doc
+        assert ref.BRANCH in doc
+        assert ref.BRANCH_COMMIT[:12] in doc
+
+    def test_a_drifted_patch_says_so_rather_than_printing_a_wrong_pin(
+        self, checkout, monkeypatch
+    ):
+        """Everything rendered is read from the patch on disk, so it stays
+        accurate — but the branch, commit and hash beside it would not be."""
+        from hookz import env_tests_ref as ref
+
+        monkeypatch.setattr(ref, "PATCH_SHA256", "0" * 64)
+        doc = _doc(checkout, include_patch=True)
+
+        assert "does not match its pin" in doc
+
+
+class TestTheSkeletonStatesWhatFailsSilently:
+    def test_it_names_the_file_cmake_globs_for(self, checkout):
+        """CMake globs `${HOOKS_TEST_DIR}/*_test.cpp` and derives the header
+        name from the stem, so a file named anything else is skipped with no
+        warning and the build succeeds without the test."""
+        doc = _doc(checkout)
+
+        assert "env-tests/Govern_test.cpp" in doc
+        assert "_test.cpp" in doc
+
+    def test_it_wires_up_coverage_rather_than_implying_xahaud_does(
+        self, checkout
+    ):
+        """`HOOKS_COVERAGE_DIR` is read by nothing in the branch — it is a
+        convention the test file implements. The document told a reader to set
+        it and emitted a `run()` with no dump, so the hits accumulated and were
+        dropped at exit with no error.
+
+        Asserted against `_SKELETON` rather than the document. The bullet
+        explaining the problem names all three calls, so `"coverageReset" in
+        doc` passes with the wiring deleted — the assertion matched the prose
+        about the fix instead of the fix.
+        """
+        from hookz.cli.env_test_context import _SKELETON
+
+        body = _SKELETON.format(header="H.h", symbol="s", suite="S", name="n")
+        for call in ("coverageReset", "coverageLabel", "coverageDump"):
+            assert f"hook::{call}(" in body, call
+        assert 'std::getenv("HOOKS_COVERAGE_DIR")' in body
+
+        doc = _doc(checkout)
+        assert "convention" in doc

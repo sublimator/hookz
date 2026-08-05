@@ -851,8 +851,11 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
 @click.option("--no-impl", is_flag=True,
               help="Omit the quoted xahaud implementations (much shorter).")
 @click.option("--no-patch", is_flag=True,
-              help="Omit the inlined external-env-tests patch.")
-def env_test_context(target, output, no_impl, no_patch):
+              help="Omit the external-env-tests branch section entirely.")
+@click.option("--full-patch", is_flag=True,
+              help="Inline the complete branch diff, not just the harness "
+                   "header and the manifest.")
+def env_test_context(target, output, no_impl, no_patch, full_patch):
     """Everything needed to write an env test for TARGET, as one document.
 
     TARGET is a hook .c (preferred) or a compiled .wasm. Reads the hook's
@@ -870,7 +873,8 @@ def env_test_context(target, output, no_impl, no_patch):
     try:
         doc = build_context(
             Path(target), load_config(source_file=Path(target)),
-            include_impl=not no_impl, include_patch=not no_patch)
+            include_impl=not no_impl, include_patch=not no_patch,
+            full_patch=full_patch)
     except ContextError as e:
         raise click.ClickException(str(e)) from None
 
@@ -1934,7 +1938,17 @@ def _field_id_args() -> dict[str, frozenset[int]]:
 
     try:
         text = resolve(XahaudFile.EXTERN_H).read_text(errors="replace")
-    except Exception:                                          # noqa: BLE001
+    except Exception as exc:                                   # noqa: BLE001
+        # Returning {} turns off every sfCode name at once, and lru_cache
+        # makes that permanent for the process even after the cause is gone.
+        # Silence would be the opposite of the `resolve_rules` precedent this
+        # docstring cites — that one degrades loudly, and so does this.
+        import warnings
+        warnings.warn(
+            f"extern.h could not be read ({exc}), so no host-API constant "
+            "will be named: `otxn_field(buf, 20, sfAccount)` prints as "
+            "`otxn_field(buf, 20, 524289)`. The values are still correct.",
+            RuntimeWarning, stacklevel=2)
         return {}
 
     out: dict[str, set[int]] = {}
@@ -1990,6 +2004,7 @@ def main():
     here restores that without giving Click back control of exit codes, which
     the commands set themselves via sys.exit.
     """
+    from hookz.amendments import ManifestError
     from hookz.wasm.whitelist import WhitelistError
 
     try:
@@ -2010,6 +2025,16 @@ def main():
             "This is the configured xahaud checkout, not the hook being "
             "checked. Point paths.xahaud at a tree whose hook_api.macro "
             "parses, or unset it to use the vendored copy.", err=True)
+        sys.exit(1)
+    except ManifestError as exc:
+        # Same shape, different file. `doctor` handles this itself because it
+        # has a row to degrade into; everything else reached the user as a
+        # JSONDecodeError from json.loads four frames down.
+        click.echo(f"Error: {exc}", err=True)
+        click.echo(
+            "This is the vendored amendment manifest, not the hook being "
+            "checked. Regenerate it with: x-inspect-net amendments --net "
+            "mainnet --json src/hookz/data/amendments-mainnet.json", err=True)
         sys.exit(1)
 
 

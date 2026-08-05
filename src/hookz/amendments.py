@@ -132,13 +132,36 @@ def to_symbol(reported: str) -> str:
     return reported if reported.startswith("fix") else f"feature{reported}"
 
 
+class ManifestError(ValueError):
+    """The vendored amendment manifest exists but could not be read.
+
+    Typed so the CLI can render it once, for every command, as a statement
+    about the installation rather than about the hook being checked. It used
+    to escape as a bare `JSONDecodeError` from `build`, `guard-check`, `wce`
+    and `env-test-context` alike — four commands, one unguarded `json.loads`.
+
+    A ValueError subclass because that is what `json.loads` already raised, so
+    anything that was catching it still does. `resolve_rules` is one of those:
+    it degrades to 0x00 with a warning rather than failing, which is the right
+    behaviour for a verdict and is unchanged by this.
+    """
+
+
 @lru_cache(maxsize=4)
 def manifest(network: str = DEFAULT_NETWORK) -> dict:
-    """The recorded amendment state of a network, or {} if not vendored."""
+    """The recorded amendment state of a network, or {} if not vendored.
+
+    Absent is not an error — a source install may legitimately have no
+    manifest, and every reader treats {} as "no amendments known". Present and
+    unreadable is, because it means the answer would be silently wrong.
+    """
     path = _data_dir() / f"amendments-{network}.json"
     if not path.exists():
         return {}
-    data = json.loads(path.read_text())
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, ValueError) as e:
+        raise ManifestError(f"{path}: {e}") from None
     # the CLI writes {network: {...}}; accept either shape
     return data.get(network, data)
 

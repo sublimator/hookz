@@ -84,27 +84,34 @@ hookz env-test-context hooks/tip.c > context.md
 
 It emits, in order:
 
-1. **The surface** — every host function the compiled hook imports, grouped by
+1. **The hook** — path, size, sha256, import count, and which checkout the
+   rest was read from.
+2. **The surface** — every host function the compiled hook imports, grouped by
    what a test has to arrange to reach it (a transaction, hook state, slots,
    or nothing).
-2. **Where it calls them** — each call site with its source line and the
+3. **Where it calls them** — each call site with its source line and the
    constants the source hid behind macros resolved, from the same
    instrumentation `hookz surface` uses.
-3. **What those calls do** — the `applyHook.cpp` wrapper and `HookAPI.cpp`
+4. **What those calls do** — the `applyHook.cpp` wrapper and `HookAPI.cpp`
    implementation of each one, quoted from your checkout.
-4. **The branch patch**, inlined — the same
-   `patches/xahaud-external-env-tests.patch` described below.
-5. **A test skeleton** — includes, the `HOOK_WASM` macro, `TestEnv` setup and
+5. **What the branch adds** — `TestEnv.h` in full (the patch adds it
+   outright, so you get the file rather than a diff of it), a manifest of the
+   other eleven files with what each is for, and the pin from
+   `hookz.env_tests_ref`. `--full-patch` inlines the complete diff as well.
+6. **A test skeleton** — includes, the `HOOK_WASM` macro, `TestEnv` setup and
    the CMake invocation, copied from `examples/tipbot/env-tests` rather than
    reconstructed.
 
 Pass the `.c`, not the built `.wasm`: call-site attribution comes from
 instrumentation markers that a finished artifact does not carry. A `.wasm`
-still works and yields sections 1 and 3–5.
+still works and drops section 3; the remaining headings renumber, so it emits
+1–5 with no gap.
 
-`--no-impl` drops section 3 and `--no-patch` drops section 4; on a hook the
-size of `tip.c` that is 59KB → 10KB, which matters if the document is going
-into a context window alongside other things.
+`--no-impl` drops "What those calls do" and `--no-patch` drops the branch
+section — on `tip.c` that is 37,181 → 11,437 bytes, which matters if the document is going
+into a context window alongside other things. Section numbers always run
+contiguously, so they shift with what you omit; the headings are the stable
+reference.
 
 This needs `paths.xahaud` pointing at a real checkout — the vendored
 `xahaud_lite/` tree has no `src/test/jtx`, and the command refuses it rather

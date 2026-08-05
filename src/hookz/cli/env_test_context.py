@@ -20,20 +20,27 @@ this command exists to supply, so a missing checkout is an error with the two
 ways to fix it rather than a quieter answer.
 
 The branch's own changes are not read from the checkout — they come from
-`patches/xahaud-external-env-tests.patch`, which this repo already vendors as
-the branch's diff against `origin/dev`. That patch is the definition of what
-the harness adds, it is inlined verbatim, and it is correct even when the
-configured checkout is plain `dev`.
+the vendored patch, pinned in `hookz.env_tests_ref`, so they are correct even
+when the configured checkout is plain `dev`.
+
+Not inlined verbatim: the whole diff was half the document, and most of it is
+context lines around one-line edits that a reader has to decode. What goes in
+is `TestEnv.h` — the one file the branch adds outright, so its diff *is* the
+file and it can be handed over as C++ — plus a manifest of what else changed
+and why, with the pin so it can be checked. `--full-patch` inlines the rest.
 """
 
 from __future__ import annotations
 
 import hashlib
+from fnmatch import fnmatchcase
 from pathlib import Path
 
-# Which host functions imply which setup. Keyed on the prefix xahaud's own
-# naming already groups them by, because that grouping is a fact about the API
-# rather than a taxonomy invented here.
+# Which host functions imply which setup. Keyed on globs over xahaud's own
+# naming, because that grouping is a fact about the API rather than a taxonomy
+# invented here. `test_the_table_covers_every_function_in_the_whitelist` keeps
+# it total: three functions fell through to no family at all, and each was
+# found only after someone happened to look at that row.
 #
 # This is a routing hint and says so in the rendered document: it tells a
 # reader which of the three or four families a call belongs to, so they know
@@ -44,22 +51,25 @@ _FAMILIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("accept", "rollback"), "hook outcome",
      "decides the ter() the triggering transaction gets — this is what the "
      "test asserts on"),
-    (("otxn_",), "originating transaction",
+    (("otxn_*",), "originating transaction",
      "the test must submit a transaction that reaches the hook; these read "
      "fields off it"),
-    (("state", "hook_"), "hook state / installation",
+    (("state*", "hook_*"), "hook state / installation",
      "needs the hook installed on an account with reserve for the state it "
      "writes"),
-    (("emit", "etxn_"), "emitted transactions",
+    (("emit*", "etxn_*"), "emitted transactions",
      "needs etxn_reserve and a ledger close after the triggering transaction "
      "for emitted results to apply"),
-    (("slot",), "slots",
+    # Glob rather than prefix because the API puts `slot` on both ends:
+    # `slot_set`, bare `slot`, and `meta_slot`/`xpop_slot`. A `slot_` prefix
+    # missed the bare one, and fixing only that missed the two suffixed ones.
+    (("slot*", "*_slot"), "slots",
      "reads ledger objects loaded into slots, so those objects must exist "
      "before the hook runs"),
-    (("trace",), "diagnostics only",
+    (("trace*",), "diagnostics only",
      "no ledger arrangement; see the output with "
      'TESTENV_LOGGING="HooksTrace=trace"'),
-    (("float_", "util_", "keylet_", "sto_", "ledger_"), "computation",
+    (("float_*", "util_*", "sto_*", "ledger_*", "fee_base"), "computation",
      "pure or near-pure; no ledger arrangement needed to reach them"),
     (("_g",), "guard",
      "the loop guard, enforced at check time rather than something a test "
@@ -71,6 +81,11 @@ _FAMILIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
 # the headers. The detail most easily got wrong is that HOOK_WASM is defined
 # per test file — the generated header supplies only the map it indexes.
 _SKELETON = '''\
+// Save as env-tests/{suite}_test.cpp — the name is load-bearing, and getting
+// it wrong fails silently. CMake globs "${{HOOKS_TEST_DIR}}/*_test.cpp"
+// (RippledCore.cmake), so a file not ending in _test.cpp is skipped with no
+// warning; and the header is named from the stem, so only {suite}_test.cpp
+// generates the {header} this file includes.
 #include "{header}"
 #include <test/jtx.h>
 #include <test/jtx/TestEnv.h>
@@ -79,6 +94,7 @@ _SKELETON = '''\
 #include <xrpld/app/tx/detail/SetHook.h>
 #include <xrpl/hook/Enum.h>
 #include <xrpl/protocol/jss.h>
+#include <cstdlib>
 
 namespace ripple {{
 namespace test {{
@@ -166,7 +182,22 @@ public:
     run() override
     {{
         using namespace jtx;
+
+        // Coverage is opt-in and entirely up to this function: -DHOOKS_COVERAGE=ON
+        // only instruments the hooks. Nothing in xahaud reads an output path or
+        // writes a file, so without the three calls below the hits accumulate in
+        // memory and are dropped when the process exits, with no error.
+        hook::coverageReset();
+        {{
+            HOOK_WASM({name}, "file:<domain>/{name}.c");
+            // Label it, or the dump is keyed by hook hash instead of filename.
+            hook::coverageLabel({name}_hash, "file:<domain>/{name}.c");
+        }}
+
         testItRuns(supported_amendments());
+
+        if (auto const* dir = std::getenv("HOOKS_COVERAGE_DIR"))
+            hook::coverageDump(std::string(dir) + "/{suite}.dat");
     }}
 }};
 
@@ -269,8 +300,8 @@ def _call_sites(source: Path, config) -> tuple[bytes, list[tuple[int, object]]]:
 
 
 def _family(name: str) -> tuple[str, str]:
-    for prefixes, label, note in _FAMILIES:
-        if any(name.startswith(p) for p in prefixes):
+    for patterns, label, note in _FAMILIES:
+        if any(fnmatchcase(name, p) for p in patterns):
             return label, note
     return "", ""
 
@@ -315,11 +346,14 @@ def _call_site_section(sites, source: Path) -> list[str]:
     return lines
 
 
-def _surface_section(imports, signatures, whitelist, counts=None) -> list[str]:
+def _surface_section(imports, signatures, whitelist, counts=None,
+                     impl_below: bool = True) -> list[str]:
     lines = [
         "Every host function in the wasm's import section. `family` groups by "
         "what a test has to arrange to reach the call — a routing hint, not "
-        "the authority; the implementations are quoted below.",
+        "the authority. "
+        + ("The implementations are quoted below." if impl_below else
+           "Re-run without `--no-impl` to see the implementations."),
         "",
         "| host function | signature | family | amendment |"
         + (" calls |" if counts else ""),
@@ -372,11 +406,13 @@ def _related_code_section(imports, repo, signatures) -> list[str]:
         lines += ["_No imports with hook-API definitions._", ""]
         return lines
 
+    found_any = False
     for name in names:
         lines.append(f"### `{name}`")
         lines.append("")
         lines.append(f"```c\n{_c_signature(signatures[name])}\n```")
         lines.append("")
+        quoted = False
         for finder, path in (
             (repo.find_hook_function, "src/xrpld/app/hook/detail/applyHook.cpp"),
             (repo.find_api_method, "src/xrpld/app/hook/detail/HookAPI.cpp"),
@@ -386,23 +422,100 @@ def _related_code_section(imports, repo, signatures) -> list[str]:
             except Exception:                                  # noqa: BLE001
                 body = None
             if body:
+                quoted = found_any = True
                 lines += [f"`{path}`:", "", "```cpp", body.rstrip(), "```", ""]
+        if not quoted:
+            # Silence here rendered a heading per function with nothing under
+            # it — the "looks complete, silently omits" shape the vendored-tree
+            # refusal exists to prevent, reproduced one level down.
+            lines += ["_Not found in this checkout._", ""]
+
+    if not found_any:
+        lines[:0] = [
+            "> **Nothing was found for any function.** The configured path is "
+            "a directory, but not a xahaud checkout with "
+            "`src/xrpld/app/hook/detail/` in it — so every entry below is a "
+            "signature with no implementation.",
+            "",
+        ]
     return lines
 
 
-def _patch_section(patch_path: Path) -> list[str]:
-    lines = [
-        "The branch's diff against `origin/dev`, vendored in this repo. It is "
-        "the definition of the harness: `TestEnv.h` is new here, and so is the "
-        "CMake wiring that finds your `*_test.cpp` and the coverage callback.",
-        "",
-    ]
-    try:
-        patch = patch_path.read_text(errors="replace")
-    except OSError as e:
-        return lines + [f"_Could not read {patch_path}: {e}_", ""]
+def _patch_section(patch_path: Path, full: bool = False) -> list[str]:
+    """The branch, as the pieces you need rather than as 30KB of diff.
 
-    lines += [f"Source: `{patch_path}`", "", "```diff", patch.rstrip(), "```", ""]
+    Inlining the whole patch was half the document, and most of it is context
+    lines around one-line edits — a reader has to reconstruct what each hunk
+    means. The one file that is worth having verbatim is `TestEnv.h`, because
+    the patch adds it outright: its diff *is* the file, so it can be handed
+    over as C++, and it is the class the test constructs. The rest is a
+    manifest of what changed and why, pinned so it can be checked.
+    """
+    from hookz import env_tests_ref as ref
+
+    lines = [
+        f"Vendored as the branch's diff against `{ref.BASE_REF}`, so it "
+        f"applies to a current checkout. Pinned separately from the xahaud "
+        f"port revision, because a branch moves for its own reasons.",
+        "",
+        f"- branch: `{ref.BRANCH}` @ `{ref.BRANCH_COMMIT[:12]}` "
+        f"({ref.BRANCH_COMMIT_DATE})",
+        f"- patch: `{patch_path}`",
+        f"- sha256: `{ref.PATCH_SHA256}`",
+    ]
+
+    try:
+        text = patch_path.read_text(errors="replace")
+    except OSError as e:
+        return lines + ["", f"_Could not read the patch: {e}_", ""]
+
+    drift = ref.check_pin()
+    if drift:
+        lines += ["", "> **The vendored patch does not match its pin.** "
+                  "Everything below is read from the patch as it is on disk, "
+                  "so it is accurate — but it is not the revision this "
+                  "registry describes:", ""]
+        lines += [f"> - {d}" for d in drift]
+
+    rows = ref.files_in_patch(text)
+    lines += [
+        "",
+        f"### What it changes ({len(rows)} files)",
+        "",
+        "| file | +/- | what it is for |",
+        "|---|---|---|",
+    ]
+    for path, added, removed, is_new in rows:
+        churn = f"+{added}" + (f" −{removed}" if removed else "")
+        note = ref.FILES.get(path, "_not described in env_tests_ref.FILES_")
+        lines.append(f"| `{path}`{' **(new)**' if is_new else ''} "
+                     f"| {churn} | {note} |")
+
+    harness = ref.new_file(ref.HARNESS_HEADER, text)
+    if harness:
+        lines += [
+            "",
+            f"### `{ref.HARNESS_HEADER}`",
+            "",
+            "The whole file, not a diff — the patch adds it outright, so this "
+            "is exactly what your test compiles against. It is the class the "
+            "skeleton below constructs.",
+            "",
+            "```cpp",
+            harness.rstrip(),
+            "```",
+            "",
+        ]
+
+    if full:
+        lines += ["### The full diff", "", "```diff", text.rstrip(), "```", ""]
+    else:
+        lines += [
+            f"The remaining changes are one- and two-line edits inside "
+            f"existing files; `--full-patch` inlines the complete diff "
+            f"({len(text):,} bytes), or read it at `{patch_path}`.",
+            "",
+        ]
     return lines
 
 
@@ -446,8 +559,11 @@ def _harness_section(suite: str, name: str, stem: str) -> list[str]:
         "failure says which phase produced it.",
         "- `env.account(\"alice\")` — creates and reuses by name, and the log "
         "transform rewrites r-addresses to `Account(alice)` in all output.",
-        "- `-DHOOKS_COVERAGE=ON` with `HOOKS_COVERAGE_DIR` set — per-hook line "
-        "hits; the dump API is in the applyHook.h part of the patch.",
+        "- `-DHOOKS_COVERAGE=ON` instruments the hooks; **writing the hits "
+        "out is the test's job**, not xahaud's. `HOOKS_COVERAGE_DIR` is a "
+        "convention the skeleton's `run()` implements — nothing in the branch "
+        "reads it — and without `coverageReset`/`coverageLabel`/`coverageDump` "
+        "the hits accumulate and are dropped at exit with no error.",
         "",
     ]
 
@@ -458,6 +574,7 @@ def build_context(
     *,
     include_impl: bool = True,
     include_patch: bool = True,
+    full_patch: bool = False,
     patch_path: Path | None = None,
 ) -> str:
     """Assemble the document. Raises ContextError for anything the caller fixes.
@@ -504,8 +621,19 @@ def build_context(
     except Exception as e:                                     # noqa: BLE001
         raise ContextError(f"{target} is not a wasm module hookz can read: {e}") from e
 
-    signatures = get_function_signatures()
-    whitelist = get_import_signatures(coverage=True)
+    # Both read the configured checkout's macro file, and the second also
+    # reads the amendment manifest. Outside a handler they escaped as
+    # WhitelistError/ManifestError past this function's documented contract —
+    # `main()` renders both, but a caller told "raises ContextError" got
+    # something else.
+    try:
+        signatures = get_function_signatures()
+        whitelist = get_import_signatures(coverage=True)
+    except ValueError as e:
+        raise ContextError(
+            f"the API whitelist could not be built: {e}\n"
+            "That is the configured xahaud checkout or the vendored amendment "
+            "manifest, not the hook.") from None
 
     counts: dict[str, int] = {}
     for _, call in sites:
@@ -552,7 +680,8 @@ def build_context(
     sections: list[tuple[str, list[str]]] = [
         ("The surface this hook uses",
          _surface_section(imports, signatures, whitelist,
-                          counts if sites else None)),
+                          counts if sites else None,
+                          impl_below=include_impl)),
     ]
     if sites:
         sections.append(("Where it calls them", _call_site_section(sites, target)))
@@ -562,7 +691,8 @@ def build_context(
                                                signatures)))
     if include_patch:
         sections.append(("What the external-env-tests branch adds",
-                         _patch_section(_default_patch(patch_path))))
+                         _patch_section(_default_patch(patch_path),
+                                        full=full_patch)))
     sections.append(("A test to start from",
                      _harness_section(suite, stem, stem)))
 
@@ -573,7 +703,21 @@ def build_context(
     return "\n".join(out)
 
 
+PATCH_NAME = "xahaud-external-env-tests.patch"
+
+
 def _default_patch(patch_path: Path | None) -> Path:
-    return patch_path or (
-        Path(__file__).resolve().parents[3]
-        / "patches" / "xahaud-external-env-tests.patch")
+    """Where the vendored branch patch lives, installed or in a checkout.
+
+    Packaged copy first: `patches/` sits outside `src/hookz`, so a wheel gets
+    it only via the force-include in pyproject, and only under `hookz/data/`.
+    A source checkout has no packaged copy, so it falls through to the repo
+    path — which is also the one `git diff origin/dev … > patches/…` writes,
+    so a developer who regenerates it sees the new one immediately.
+    """
+    if patch_path is not None:
+        return patch_path
+    packaged = Path(__file__).resolve().parent.parent / "data" / PATCH_NAME
+    if packaged.is_file():
+        return packaged
+    return Path(__file__).resolve().parents[3] / "patches" / PATCH_NAME
