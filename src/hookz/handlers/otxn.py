@@ -241,6 +241,15 @@ def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
     if val is None:
         rt._write_memory(write_ptr, b"\xAB" * min(write_len, 32))
         return 32
+    if len(val) != 32:
+        # A short or long value here would make otxn_id and
+        # otxn_field(sfTransactionHash) disagree about one purported
+        # Hash256 — a state no ledger can serve. A malformed-id guard shape
+        # belongs in a handler override, where its non-ledger status is
+        # explicit.
+        raise ValueError(
+            f"rt.otxn_id_val must be exactly 32 bytes (Hash256), got "
+            f"{len(val)}")
     if write_len < 32:
         return hookapi.TOO_SMALL
     rt._write_memory(write_ptr, val)

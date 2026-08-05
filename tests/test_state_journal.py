@@ -110,6 +110,15 @@ class TestWhatIsRecorded:
             "foreign", None)
         assert foreign_delete.account == FOREIGN_ACC
 
+    def test_local_namespace_is_the_configured_hook_namespace(self, wasm):
+        """Zeros by default — a correlation key only when a test sets the
+        installed namespace, never a resolved on-ledger claim."""
+        rt = HookRuntime()
+        rt.hook_namespace = bytes([0xCC]) * 32
+        rt.run(wasm)
+        assert rt.state_journal[0].namespace == bytes([0xCC]) * 32
+        assert rt.state_journal[0].scope == "local"
+
     def test_the_export_is_attributed(self, wasm):
         rt = HookRuntime()
         rt.run(wasm)

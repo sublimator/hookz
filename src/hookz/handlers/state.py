@@ -43,13 +43,6 @@ def _journal(rt: HookRuntime, scope: str, account: bytes, namespace: bytes,
     ))
 
 
-#: The namespace journaled for local writes. The mock's local store is not
-#: namespaced; on chain a hook's own state lives under its installed
-#: namespace, and zeros is the convention `state_foreign` already uses for
-#: "the local default".
-_LOCAL_NS = b"\x00" * 32
-
-
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
     if kread_len < 1:
         return hookapi.TOO_SMALL
@@ -64,7 +57,8 @@ def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kre
     else:
         val = rt._read_memory(read_ptr, read_len)
         rt.state_db[key] = val
-    _journal(rt, "local", rt.hook_account, _LOCAL_NS, key, val, read_len)
+    _journal(rt, "local", rt.hook_account, rt.hook_namespace, key, val,
+             read_len)
     return read_len
 
 

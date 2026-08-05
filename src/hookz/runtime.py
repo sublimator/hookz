@@ -142,9 +142,12 @@ class StateWrite:
 
     `value is None` marks a delete. `result` is the host return code the
     hook saw. `export` names the execution that performed it (`"hook"`,
-    `"cbak"`). Writes made through a test's own handler override bypass the
-    builtin and therefore do not journal — an interceptor that wants its
-    refusals on the record must add them itself.
+    `"cbak"`). For local writes `namespace` is the runtime's
+    `hook_namespace` — zeros unless the test configured the installed
+    namespace, so it is a correlation key only when someone set it, not a
+    resolved on-ledger namespace. Writes made through a test's own handler
+    override bypass the builtin and therefore do not journal — an
+    interceptor that wants its refusals on the record must add them itself.
     """
     scope: str                  # "local" | "foreign"
     account: bytes
@@ -244,6 +247,25 @@ class HookResult:
             f"checkpoint {tag!r} was never reached: exit code "
             f"{self.return_code}, msg {self.return_msg_str!r}; {detail}"
         )
+
+
+def _emission_fields(blob: bytes) -> dict[int, bytes]:
+    """Top-level fields of a serialized transaction, as `otxn_fields` payloads.
+
+    Walked with the same walker `slot_subfield` navigates with, so the direct
+    and slotted views of one transaction cannot disagree — upstream they are
+    the same `applyCtx.tx`, and a mock that let them drift apart would let a
+    test pass against a callback world the ledger cannot deliver. Payload
+    conventions match what `otxn_field` serves: accounts arrive without their
+    length prefix, fixed-width types as their raw big-endian bytes.
+    """
+    from hookz.handlers.slot import _walk_slot_fields
+
+    return {
+        fid: blob[pay_off:pay_off + pay_len]
+        for fid, _type, _fc, _off, _total, pay_off, pay_len
+        in _walk_slot_fields(blob)
+    }
 
 
 def provisional_meta(transaction_result: str | int) -> bytes:
@@ -381,6 +403,12 @@ class HookRuntime:
         self.params: dict[bytes, bytes] = {}
         self.tx_params: dict[bytes, bytes] = {}
         self.hook_account: bytes = b"\x00" * 20
+        # The installed hook's namespace, journaled with every local state
+        # write. Zeros is the unconfigured default — the same convention
+        # `state_foreign` uses for "the local default" — not a claim about
+        # the on-ledger install; set it when a test correlates journal
+        # records across installations.
+        self.hook_namespace: bytes = b"\x00" * 32
         self.otxn_account: bytes = b"\x00" * 20
         self.otxn_type: int = 0
         # Fields of the originating transaction, by sfCode, as serialized
@@ -639,12 +667,15 @@ class HookRuntime:
         What each mode exposes, and where the shape comes from:
 
         *Applied* (`ctx & 1 == 0`): the transaction being applied **is** the
-        emission, so `otxn_slot` serves `emitted_tx` whole, and `otxn_id`
+        emission, so `otxn_slot` serves `emitted_tx` whole, `otxn_id`
         answers its hash (`getTransactionID()`,
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547). Direct
-        `otxn_field` reads still answer from `rt.otxn_fields` — populate any
-        field the callback reads directly (`sfDestination`, `sfAmount`)
-        there before calling; entries set by the caller survive the restore.
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547), and direct
+        `otxn_field` reads derive from the emission's own serialized fields
+        — upstream all three describe one `applyCtx.tx`, so the blob is the
+        authority for both the direct and the slotted view, and a
+        caller-populated `rt.otxn_fields` entry that disagrees with the
+        emission is overridden for the delivery (it is restored after).
+        Entries for fields the emission does not carry still serve.
 
         *Not applied* (`ctx & 1 == 1`): the applied transaction is the
         `ttEMIT_FAILURE` pseudo-transaction, carrying the current ledger
@@ -674,6 +705,12 @@ class HookRuntime:
                 "to call back about")
         if tx_hash is None:
             tx_hash = emitted_txn_id(emitted_tx)
+        elif len(tx_hash) != 32:
+            raise ValueError(
+                f"tx_hash must be a 32-byte Hash256, got {len(tx_hash)} "
+                "bytes — a delivery with a malformed hash is not something "
+                "the ledger can produce; shape one through a handler "
+                "override if a guard needs it")
 
         saved_fields = dict(self.otxn_fields)
         saved = (self.otxn_blob, self.otxn_type, self.otxn_id_val,
@@ -692,10 +729,6 @@ class HookRuntime:
                     from xrpl.core.binarycodec.definitions import definitions
                     self.otxn_type = definitions.get_transaction_type_code(
                         tx_type)
-                source_tag = parsed.get("SourceTag")
-                if isinstance(source_tag, int):
-                    self.otxn_fields[hookapi.sfSourceTag] = (
-                        source_tag.to_bytes(4, "big"))
             if ctx & 1:
                 self.otxn_fields[hookapi.sfLedgerSequence] = (
                     self.ledger_seq_val.to_bytes(4, "big"))
@@ -705,6 +738,12 @@ class HookRuntime:
                         {hookapi.sfEmittedTxn: emitted_tx + b"\xE1"})
             elif emitted_tx is not None:
                 self.otxn_blob = emitted_tx
+                # The emission is the authority for every field it carries:
+                # a caller-set value that disagrees with the blob would be a
+                # delivery the ledger cannot make, so the overlay wins.
+                # Caller entries for fields the emission does not carry
+                # still serve.
+                self.otxn_fields.update(_emission_fields(emitted_tx))
             with self.callback(ctx):
                 return self.run(hook, coverage=coverage,
                                 export="cbak", arg=ctx)

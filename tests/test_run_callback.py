@@ -24,7 +24,7 @@ int64_t hook(uint32_t reserved)
     _g(1, 1);
     etxn_reserve(1);
     uint8_t key[2] = {'T', 'X'};
-    uint8_t tx[64];
+    uint8_t tx[128];
     int64_t len = hook_param(SBUF(tx), SBUF(key));
     if (len <= 0)
         return rollback(SBUF("no tx param"), 1);
@@ -82,6 +82,32 @@ int64_t cbak(uint32_t ctx)
     INT64_TO_BUF(drc_buf, drc);
     k[0] = 0x05;
     state_set(SBUF(drc_buf), SBUF(k));
+    if (drc == 20)
+    {
+        k[0] = 0x0A;
+        state_set(SBUF(dest), SBUF(k));
+    }
+
+    uint8_t acct[20];
+    if (otxn_field(SBUF(acct), sfAccount) == 20)
+    {
+        k[0] = 0x0B;
+        state_set(SBUF(acct), SBUF(k));
+    }
+
+    uint8_t flg[4];
+    if (otxn_field(SBUF(flg), sfFlags) == 4)
+    {
+        k[0] = 0x0C;
+        state_set(SBUF(flg), SBUF(k));
+    }
+
+    uint8_t amt[8];
+    if (otxn_field(SBUF(amt), sfAmount) == 8)
+    {
+        k[0] = 0x0D;
+        state_set(SBUF(amt), SBUF(k));
+    }
 
     uint8_t tag[4];
     if (otxn_field(SBUF(tag), sfSourceTag) == 4)
@@ -123,8 +149,16 @@ K_TAG = bytes([0x06]) + b"\x00" * 31
 K_TYPE = bytes([0x07]) + b"\x00" * 31
 K_SEQ = bytes([0x08]) + b"\x00" * 31
 K_HASH = bytes([0x09]) + b"\x00" * 31
+K_DEST = bytes([0x0A]) + b"\x00" * 31
+K_ACCT = bytes([0x0B]) + b"\x00" * 31
+K_FLAGS = bytes([0x0C]) + b"\x00" * 31
+K_AMOUNT = bytes([0x0D]) + b"\x00" * 31
 
 DEST = bytes([0xDD]) + b"\x00" * 19
+ACCT = bytes([0xAA]) + b"\x00" * 19
+FLAGS = (5).to_bytes(4, "big")
+#: 1000 drops in the native STAmount encoding (positive-XRP bit set).
+AMOUNT = (1000 | (1 << 62)).to_bytes(8, "big")
 
 
 def i64buf(value: int) -> bytes:
@@ -134,9 +168,12 @@ def i64buf(value: int) -> bytes:
 
 def payment_blob(*, source_tag: int | None = None,
                  tx_type: int = 0) -> bytes:
-    """A minimal serialized transaction the cbak can slot and echo."""
+    """A serialized transaction the cbak can slot, echo, and field-read."""
     fields = {
         hookapi.sfTransactionType: tx_type.to_bytes(2, "big"),
+        hookapi.sfFlags: FLAGS,
+        hookapi.sfAmount: AMOUNT,
+        hookapi.sfAccount: ACCT,
         hookapi.sfDestination: DEST,
     }
     if source_tag is not None:
@@ -194,19 +231,41 @@ class TestAppliedMode:
         rt.run_callback(wasm, emitted_tx=payment_blob(tx_type=remit))
         assert rt.state_db[K_TYPE] == i64buf(remit)
 
-    def test_direct_field_reads_answer_from_otxn_fields(self, wasm):
-        """The blob feeds the slot; direct reads come from `rt.otxn_fields`,
-        which the caller populates for whatever the cbak reads directly."""
+    def test_direct_field_reads_derive_from_the_emission(self, wasm):
+        """Upstream, `otxn_field` and `otxn_slot` describe the same
+        `applyCtx.tx` — so every field the emission carries is directly
+        readable, without the caller repeating it."""
         rt = HookRuntime()
-        rt.run_callback(wasm, emitted_tx=payment_blob())
-        assert rt.state_db[K_DEST_RC] == i64buf(hookapi.DOESNT_EXIST)
+        rt.run_callback(wasm, emitted_tx=payment_blob(source_tag=777))
 
-        rt2 = HookRuntime()
-        rt2.otxn_fields[hookapi.sfDestination] = DEST
-        rt2.run_callback(wasm, emitted_tx=payment_blob())
-        assert rt2.state_db[K_DEST_RC] == i64buf(20)
-        # Caller-set entries survive the restore.
-        assert rt2.otxn_fields[hookapi.sfDestination] == DEST
+        assert rt.state_db[K_DEST_RC] == i64buf(20)
+        assert rt.state_db[K_DEST] == DEST
+        assert rt.state_db[K_ACCT] == ACCT
+        assert rt.state_db[K_FLAGS] == FLAGS
+        assert rt.state_db[K_AMOUNT] == AMOUNT
+        assert rt.state_db[K_TAG] == (777).to_bytes(4, "big")
+
+    def test_the_emission_overrides_a_conflicting_caller_field(self, wasm):
+        """A caller-set field that disagrees with the emission is a delivery
+        the ledger cannot make: the blob is the authority for both the
+        direct and the slotted view. The caller's value comes back with the
+        restore — it configures later plain runs, not this delivery."""
+        other = bytes([0xEE]) + b"\x00" * 19
+        rt = HookRuntime()
+        rt.otxn_fields[hookapi.sfDestination] = other
+        rt.run_callback(wasm, emitted_tx=payment_blob())
+
+        assert rt.state_db[K_DEST] == DEST
+        assert rt.state_db[K_OTXN] == payment_blob()
+        assert rt.otxn_fields[hookapi.sfDestination] == other
+
+    def test_a_caller_field_absent_from_the_emission_still_serves(self, wasm):
+        rt = HookRuntime()
+        rt.otxn_fields[hookapi.sfSourceTag] = (999).to_bytes(4, "big")
+        rt.run_callback(wasm, emitted_tx=payment_blob())
+
+        assert rt.state_db[K_TAG] == (999).to_bytes(4, "big")
+        assert rt.otxn_fields[hookapi.sfSourceTag] == (999).to_bytes(4, "big")
 
     def test_an_explicit_tx_hash_wins(self, wasm):
         custom = bytes(range(32))
@@ -278,6 +337,24 @@ class TestArguments:
     def test_neither_blob_nor_hash_is_an_error(self, wasm):
         with pytest.raises(TypeError, match="emitted_tx"):
             HookRuntime().run_callback(wasm)
+
+    def test_a_malformed_tx_hash_is_refused(self, wasm):
+        """A short or long hash is a delivery no ledger can produce."""
+        for bad in (b"abc", bytes(31), bytes(33)):
+            with pytest.raises(ValueError, match="32-byte Hash256"):
+                HookRuntime().run_callback(
+                    wasm, emitted_tx=payment_blob(), tx_hash=bad)
+
+    def test_a_malformed_otxn_id_val_fails_loudly(self, wasm):
+        """Setting the serving field directly bypasses run_callback's gate;
+        the handler itself must refuse rather than let otxn_id and
+        otxn_field(sfTransactionHash) disagree about one Hash256."""
+        for bad in (b"abc", bytes(33)):
+            rt = HookRuntime()
+            rt.otxn_id_val = bad
+            result = rt.run(wasm, export="cbak", arg=0)
+            assert result.error is not None
+            assert "32 bytes" in str(result.error)
 
 
 class TestRestoration:
