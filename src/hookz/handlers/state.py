@@ -44,19 +44,30 @@ def _journal(rt: HookRuntime, scope: str, account: bytes, namespace: bytes,
 
 
 def _state_set_error(rt: HookRuntime, read_ptr: int, read_len: int,
-                     kread_ptr: int, kread_len: int) -> int | None:
-    """The admission half of `state_set`, shared with the fault layer.
+                     kread_ptr: int, kread_len: int,
+                     ns_ptr: int = 0, ns_len: int = 0,
+                     aread_ptr: int = 0, aread_len: int = 0) -> int | None:
+    """The admission half of `state_set`/`state_foreign_set`, shared with the
+    fault layer.
 
-    The host refuses malformed arguments before any question of whether the
-    write itself would succeed, and in the pinned wrapper's order —
-    `state_set` delegates to the `state_foreign_set` wrapper
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1248), which checks the
-    value buffer's bounds (unless the call is the zero/zero delete
-    spelling), then the key width, then the key buffer's bounds
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1293-1314). The value
-    size cap sits later in the host, but no overlapping failure can
-    distinguish that from checking it here. A wrapper that re-implemented
-    any of this would drift from it.
+    One implementation for both, because the host has one: `state_set` *is* a
+    call to the `state_foreign_set` wrapper with four zeros
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1257). The host refuses
+    malformed arguments before any question of whether the write itself would
+    succeed, in that wrapper's order
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1293-1322):
+
+    1. the value buffer's bounds — skipped for the zero/zero spelling, which
+       is a *bounds-check exemption* and not, by itself, what makes a call a
+       delete (see `state_set` for the delete test the host actually uses);
+    2. the key width, then the namespace and account widths;
+    3. the key buffer's bounds, then the namespace/account pairing rule, then
+       the namespace and account buffers' bounds.
+
+    The value size cap sits later in the host (…:1334), behind an account
+    lookup that cannot fail here, and no overlapping failure distinguishes
+    that from checking it last. A wrapper that re-implemented any of this
+    would drift from it.
     """
     from hookz.handlers.core import _not_in_bounds
 
@@ -67,11 +78,38 @@ def _state_set_error(rt: HookRuntime, read_ptr: int, read_len: int,
         return hookapi.TOO_BIG
     if kread_len < 1:
         return hookapi.TOO_SMALL
+    if ns_len != 0 and ns_len != 32:
+        return hookapi.INVALID_ARGUMENT
+    if aread_len != 0 and aread_len != 20:
+        return hookapi.INVALID_ARGUMENT
     if _not_in_bounds(rt, kread_ptr, kread_len):
+        return hookapi.OUT_OF_BOUNDS
+    # a namespace may be omitted if and only if this is a local set
+    if ns_ptr == 0 and ns_len == 0 and not (aread_ptr == 0 and aread_len == 0):
+        return hookapi.INVALID_ARGUMENT
+    if ((ns_len and _not_in_bounds(rt, ns_ptr, ns_len))
+            or (aread_len and _not_in_bounds(rt, aread_ptr, aread_len))):
         return hookapi.OUT_OF_BOUNDS
     if read_len > 256:
         return hookapi.TOO_BIG
     return None
+
+
+def _is_delete(read_len: int) -> bool:
+    """Does this admitted `state_set` erase the entry rather than write it?
+
+    The host's test is the *blob*, not the pointer: `state_foreign_set` slices
+    `[memory + read_ptr, memory + read_ptr + read_len)`
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1358) and `setHookState`
+    deletes when that slice is empty — "if the blob is nil then delete the
+    entry if it exists"
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:903). So any zero length is a
+    delete, however the caller spelled the pointer. The zero/zero form is only
+    the one spelling that also skips the value buffer's bounds check (…:1293);
+    reading it as the definition made `state_set(ptr, 0, key)` store an empty
+    value where the network erases the entry.
+    """
+    return read_len == 0
 
 
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
@@ -79,7 +117,7 @@ def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kre
     if err is not None:
         return err
     key = rt._read_memory(kread_ptr, kread_len)
-    if read_ptr == 0 and read_len == 0:
+    if _is_delete(read_len):
         rt.state_db.pop(key, None)
         val = None
     else:
@@ -144,20 +182,14 @@ def state_foreign_set(
 ) -> int:
     """Write state to another account.
 
-    read_ptr=0, read_len=0 is a delete operation.
+    A zero read_len is a delete operation — see `_is_delete`. Admission is
+    `_state_set_error`, the same implementation `state_set` uses, because the
+    host reaches this wrapper by both routes.
     """
-    if kread_len < 1:
-        return hookapi.TOO_SMALL
-    if kread_len > 32:
-        return hookapi.TOO_BIG
-    if ns_len != 0 and ns_len != 32:
-        return hookapi.INVALID_ARGUMENT
-    if aread_len != 0 and aread_len != 20:
-        return hookapi.INVALID_ARGUMENT
-    if ns_ptr == 0 and ns_len == 0 and not (aread_ptr == 0 and aread_len == 0):
-        return hookapi.INVALID_ARGUMENT
-    if read_len > 256:
-        return hookapi.TOO_BIG
+    err = _state_set_error(rt, read_ptr, read_len, kread_ptr, kread_len,
+                           ns_ptr, ns_len, aread_ptr, aread_len)
+    if err is not None:
+        return err
 
     key = rt._read_memory(kread_ptr, kread_len)
     ns = rt._read_memory(ns_ptr, ns_len) if ns_len else b"\x00" * 32
@@ -166,7 +198,7 @@ def state_foreign_set(
     db = rt._foreign_state_db
     composite_key = (account, ns, key)
 
-    if read_ptr == 0 and read_len == 0:
+    if _is_delete(read_len):
         db.pop(composite_key, None)
         val = None
     else:

@@ -112,6 +112,40 @@ class TestStateSet:
         result = state_set(rt, 0, 0, 100, 5)
         assert result == 0  # No error, just no-op
 
+    def test_a_zero_length_deletes_whatever_the_pointer_says(self, rt):
+        """The host slices [read_ptr, read_ptr + read_len) and deletes when
+        the slice is empty (applyHook.cpp:1358, :903-904), so a non-null
+        pointer with a zero length is a delete too. Reading the zero/zero
+        spelling as the definition stored an empty value instead."""
+        rt.state_db[b"k"] = b"val"
+        rt._write_memory(100, b"k")
+        result = state_set(rt, 64, 0, 100, 1)
+        assert result == 0
+        assert b"k" not in rt.state_db
+
+    def test_a_zero_length_delete_is_not_an_empty_write(self, rt):
+        """The distinction the store can see: absent, not present-and-empty."""
+        rt._write_memory(100, b"k")
+        state_set(rt, 64, 0, 100, 1)
+        assert state(rt, 200, 128, 100, 1) == hookapi.DOESNT_EXIST
+
+    def test_out_of_bounds_value_buffer(self, rt):
+        rt._write_memory(100, b"k")
+        assert state_set(rt, 0xFFFFFF00, 4, 100, 1) == hookapi.OUT_OF_BOUNDS
+
+    def test_out_of_bounds_key_buffer(self, rt):
+        rt._write_memory(0, b"val")
+        assert state_set(rt, 0, 3, 0xFFFFFF00, 32) == hookapi.OUT_OF_BOUNDS
+
+    def test_value_bounds_precede_the_key_width(self, rt):
+        """Overlapping failures resolve in the wrapper's order: the value
+        buffer's bounds come before the key width (applyHook.cpp:1293-1303)."""
+        assert state_set(rt, 0xFFFFFF00, 4, 100, 0) == hookapi.OUT_OF_BOUNDS
+
+    def test_oversized_value(self, rt):
+        rt._write_memory(100, b"k")
+        assert state_set(rt, 0, 257, 100, 1) == hookapi.TOO_BIG
+
     def test_set_at_ptr_zero(self, rt):
         """Value at memory address 0 should work."""
         rt._write_memory(0, b"val")
@@ -258,6 +292,56 @@ class TestStateForeignSet:
 
     def test_invalid_aread_len(self, rt):
         result = state_foreign_set(rt, 0, 5, 100, 5, 200, 32, 300, 10)
+        assert result == hookapi.INVALID_ARGUMENT
+
+    def test_a_zero_length_deletes_whatever_the_pointer_says(self, rt):
+        key = b"k"
+        rt._foreign_state_db = {(ACCOUNT_A, NAMESPACE, key): b"old"}
+        rt._write_memory(100, key)
+        rt._write_memory(200, NAMESPACE)
+        rt._write_memory(300, ACCOUNT_A)
+        result = state_foreign_set(rt, 64, 0, 100, 1, 200, 32, 300, 20)
+        assert result == 0
+        assert (ACCOUNT_A, NAMESPACE, key) not in rt._foreign_state_db
+
+    def test_out_of_bounds_value_buffer(self, rt):
+        """The same admission the local wrapper runs — the host reaches this
+        function by both routes (applyHook.cpp:1257), so one implementation
+        answers both."""
+        rt._write_memory(100, b"k")
+        rt._write_memory(200, NAMESPACE)
+        rt._write_memory(300, ACCOUNT_A)
+        result = state_foreign_set(rt, 0xFFFFFF00, 4, 100, 1, 200, 32, 300, 20)
+        assert result == hookapi.OUT_OF_BOUNDS
+
+    def test_out_of_bounds_key_buffer(self, rt):
+        rt._write_memory(0, b"val")
+        rt._write_memory(200, NAMESPACE)
+        rt._write_memory(300, ACCOUNT_A)
+        result = state_foreign_set(rt, 0, 3, 0xFFFFFF00, 32, 200, 32, 300, 20)
+        assert result == hookapi.OUT_OF_BOUNDS
+
+    def test_out_of_bounds_namespace_or_account(self, rt):
+        rt._write_memory(0, b"val")
+        rt._write_memory(100, b"k")
+        rt._write_memory(200, NAMESPACE)
+        rt._write_memory(300, ACCOUNT_A)
+        assert state_foreign_set(
+            rt, 0, 3, 100, 1, 0xFFFFFF00, 32, 300, 20) == hookapi.OUT_OF_BOUNDS
+        assert state_foreign_set(
+            rt, 0, 3, 100, 1, 200, 32, 0xFFFFFF00, 20) == hookapi.OUT_OF_BOUNDS
+
+    def test_value_bounds_precede_the_key_width(self, rt):
+        rt._write_memory(200, NAMESPACE)
+        rt._write_memory(300, ACCOUNT_A)
+        result = state_foreign_set(rt, 0xFFFFFF00, 4, 100, 0, 200, 32, 300, 20)
+        assert result == hookapi.OUT_OF_BOUNDS
+
+    def test_a_namespace_may_be_omitted_only_for_a_local_set(self, rt):
+        rt._write_memory(0, b"val")
+        rt._write_memory(100, b"k")
+        rt._write_memory(300, ACCOUNT_A)
+        result = state_foreign_set(rt, 0, 3, 100, 1, 0, 0, 300, 20)
         assert result == hookapi.INVALID_ARGUMENT
 
     def test_roundtrip(self, rt):

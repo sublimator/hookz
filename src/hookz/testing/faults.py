@@ -28,11 +28,22 @@ it actually reached the host boundary.
 
 The injectors wrap the builtin handlers — they never re-implement their
 validation, so a call the host itself would refuse (a bad key width, an
-oversized value, an emit with no reservation, an exhausted reserved count,
-a short output buffer, a transaction failing the emission rules) receives
-the host's own answer *before* any fault is considered, exactly as on
-chain, and never appears in the fault log. The selector is only ever asked
-about a call that would otherwise have succeeded.
+oversized value, an out-of-bounds buffer, an emit with no reservation, an
+exhausted reserved count, a short output buffer, a transaction failing the
+emission rules) receives the host's own answer *before* any fault is
+considered, exactly as on chain, and never appears in the fault log. The
+selector is only ever asked about a call that would have succeeded.
+
+"Would have succeeded" means *in this run, against the history the faults
+have already produced* — not against the same run with nothing injected.
+The distinction is only observable for `emit`, and only through the
+reservation: a refused emit is never queued, so it does not consume its
+reserved slot. Reserve one, emit twice, refuse the first, and the second is
+admitted and committed, where the unfaulted run answers it
+TOO_MANY_EMITTED_TXN. That is faithful — a refusal on chain would not
+consume the reservation either — but it means a selective emit predicate
+can let through an emit the unfaulted run never reaches. Where the count is
+the thing under test, refuse nothing and drive the reservation instead.
 """
 
 from __future__ import annotations
@@ -115,7 +126,7 @@ def refuse_state_set(rt: HookRuntime,
 
     Returns the live log; it fills in as the hook runs.
     """
-    from hookz.handlers.state import _journal, _state_set_error
+    from hookz.handlers.state import _is_delete, _journal, _state_set_error
     from hookz.handlers.state import state_set as builtin
 
     log: list[FaultCall] = []
@@ -125,8 +136,8 @@ def refuse_state_set(rt: HookRuntime,
         if err is not None:
             return err
         key = rt._read_memory(kread_ptr, kread_len)
-        is_delete = read_ptr == 0 and read_len == 0
-        val = None if is_delete else rt._read_memory(read_ptr, read_len)
+        val = (None if _is_delete(read_len)
+               else rt._read_memory(read_ptr, read_len))
         call = FaultCall(name="state_set", index=len(log), key=key, value=val)
         if when is not None and when(call):
             call.refused = True
@@ -159,7 +170,9 @@ def refuse_emit(rt: HookRuntime,
     answer (OUT_OF_BOUNDS, TOO_SMALL, PREREQUISITE_NOT_MET,
     TOO_MANY_EMITTED_TXN, EMISSION_FAILURE with its diagnostics), never
     the injected code, and never appears in the log. The selector is only
-    ever asked about an emit that would otherwise have succeeded.
+    ever asked about an emit that would have succeeded at that point in
+    this run — a refused emit is not queued and so leaves its reserved
+    slot free for the next one, which the module docstring spells out.
 
     Returns the live log; it fills in as the hook runs.
     """
@@ -185,20 +198,35 @@ def refuse_emit(rt: HookRuntime,
     return log
 
 
-#: Hosts with a typed injector; the blunt form refuses to touch them,
-#: because it would bypass exactly the admission ordering, diagnostics,
-#: and decoded receipts the typed wrapper exists to preserve.
-_TYPED_HOSTS = {"state_set": "refuse_state_set", "emit": "refuse_emit"}
+#: Hosts with a typed injector, as `name -> (refuse_*, refusing_*)`; the
+#: blunt form refuses to touch them, because it would bypass exactly the
+#: admission ordering, diagnostics, and decoded receipts the typed wrapper
+#: exists to preserve.
+_TYPED_HOSTS = {
+    "state_set": ("refuse_state_set", "refusing_state_set"),
+    "emit": ("refuse_emit", "refusing_emit"),
+}
 
 
-def _reject_typed(name: str) -> None:
+def _reject_typed(caller: str, name: str) -> None:
+    """Refuse a typed host, naming the replacement matching `caller`'s shape.
+
+    `caller` is the blunt entry point the user actually called, so the
+    message points at a drop-in rather than at a function with a different
+    signature — a `setup=`-only driver cannot use `refuse_state_set`.
+    """
     typed = _TYPED_HOSTS.get(name)
     if typed is not None:
+        direct, setup_shaped = typed
+        suggested = setup_shaped if caller == "refusing" else direct
+        unconditional = ("" if caller == "refusing"
+                         else " (with when=faults.every for an "
+                              "unconditional refusal)")
         raise ValueError(
-            f"refuse_host cannot inject into {name!r}: use faults.{typed} "
-            f"(with when=faults.every for an unconditional refusal) — the "
-            f"blunt form would bypass the host's own admission checks, its "
-            f"diagnostics, and the decoded receipts")
+            f"{caller} cannot inject into {name!r}: use "
+            f"faults.{suggested}{unconditional} — the blunt form would "
+            f"bypass the host's own admission checks, its diagnostics, and "
+            f"the decoded receipts")
 
 
 def refuse_host(rt: HookRuntime, name: str, code: int) -> list[FaultCall]:
@@ -210,7 +238,7 @@ def refuse_host(rt: HookRuntime, name: str, code: int) -> list[FaultCall]:
     purpose; use the typed form, which still runs the host's admission
     checks first.
     """
-    _reject_typed(name)
+    _reject_typed("refuse_host", name)
     log: list[FaultCall] = []
 
     def handler(*args):
@@ -226,8 +254,9 @@ def refusing(name: str, code: int) -> Callable[["HookRuntime"], None]:
     """A `setup(rt)` callable for `refuse_host` — the shape suite drivers
     take, so `setup=faults.refusing("etxn_reserve", TOO_SMALL)` is a
     drop-in for the local one-off factories it replaces. Typed hosts are
-    rejected eagerly; see `refusing_emit` for the emit boundary."""
-    _reject_typed(name)
+    rejected eagerly; see `refusing_emit` and `refusing_state_set` for the
+    setup-shaped typed boundaries."""
+    _reject_typed("refusing", name)
 
     def setup(rt: HookRuntime) -> None:
         refuse_host(rt, name, code)
@@ -240,9 +269,25 @@ def refusing_emit(code: int = hookapi.EMISSION_FAILURE) -> Callable[["HookRuntim
     `refusing`'s typed counterpart for the emit boundary: the preflight
     still answers first (buffer bounds, output width, reservation, count,
     the emission rules, with their diagnostics), and only an emit the host
-    would have accepted comes back `code`. The log is discarded — a driver that needs receipts
-    calls `refuse_emit` directly.
+    would have accepted comes back `code`. The log is discarded — a driver
+    that needs receipts calls `refuse_emit` directly.
     """
     def setup(rt: HookRuntime) -> None:
         refuse_emit(rt, when=every, code=code)
+    return setup
+
+
+def refusing_state_set(code: int = hookapi.RESERVE_INSUFFICIENT
+                       ) -> Callable[["HookRuntime"], None]:
+    """A `setup(rt)` callable that refuses every *admitted* write with `code`.
+
+    `refusing`'s typed counterpart for the state boundary, and the drop-in
+    a `setup=`-only driver needs: admission still answers first (key width,
+    buffer bounds, value size), refused writes leave state untouched, and
+    each one lands on the runtime's state journal with the refusal as its
+    result. The log is discarded — a driver that needs receipts calls
+    `refuse_state_set` directly.
+    """
+    def setup(rt: HookRuntime) -> None:
+        refuse_state_set(rt, when=every, code=code)
     return setup

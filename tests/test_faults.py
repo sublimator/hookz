@@ -7,6 +7,8 @@ it actually reached the host boundary.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from hookz import hookapi
@@ -126,6 +128,41 @@ int64_t hook(uint32_t reserved)
         state_set(SBUF(out), SBUF(rk));
         return accept(SBUF("xfl"), 0);
     }
+    if (reserved == 9)
+    {
+        /* Both delete spellings: zero/zero, and a live pointer with a zero
+           length. The host slices an empty blob either way. */
+        uint8_t k1[32] = {0x0A};
+        uint8_t k2[32] = {0x0B};
+        uint8_t v[4] = {0xEE};
+        state_set(SBUF(v), SBUF(k1));
+        state_set(SBUF(v), SBUF(k2));
+        int64_t d1 = state_set(0, 0, SBUF(k1));
+        int64_t d2 = state_set(v, 0, SBUF(k2));
+        uint8_t out[16];
+        INT64_TO_BUF(out, d1);
+        INT64_TO_BUF(out + 8, d2);
+        rk[1] = 9;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("deletes"), 0);
+    }
+    if (reserved == 8)
+    {
+        /* one emission reserved, two attempts: the second is refused by the
+           count unless the first never made it into the queue. */
+        etxn_reserve(1);
+        uint8_t h[32];
+        uint8_t t1[16] = {0x81};
+        uint8_t t2[16] = {0x82};
+        int64_t e1 = emit(SBUF(h), SBUF(t1));
+        int64_t e2 = emit(SBUF(h), SBUF(t2));
+        uint8_t out[16];
+        INT64_TO_BUF(out, e1);
+        INT64_TO_BUF(out + 8, e2);
+        rk[1] = 8;
+        state_set(SBUF(out), SBUF(rk));
+        return accept(SBUF("reserve"), 0);
+    }
     if (reserved == 6)
     {
         etxn_reserve(1);
@@ -159,6 +196,11 @@ RK4 = bytes([0xF0, 0x04]) + b"\x00" * 30
 RK5 = bytes([0xF0, 0x05]) + b"\x00" * 30
 RK6 = bytes([0xF0, 0x06]) + b"\x00" * 30
 RK7 = bytes([0xF0, 0x07]) + b"\x00" * 30
+RK8 = bytes([0xF0, 0x08]) + b"\x00" * 30
+RK9 = bytes([0xF0, 0x09]) + b"\x00" * 30
+DK1 = bytes([0x0A]) + b"\x00" * 31
+DK2 = bytes([0x0B]) + b"\x00" * 31
+DV = bytes([0xEE]) + b"\x00" * 3
 V = bytes([0xAA]) + b"\x00" * 3
 T1 = bytes([0x11]) + b"\x00" * 15
 T2 = bytes([0x22]) + b"\x00" * 15
@@ -464,18 +506,26 @@ class TestHighBitArguments:
 
 class TestTypedBoundary:
     def test_refuse_host_rejects_typed_hosts(self, wasm):
-        for name in ("emit", "state_set"):
-            with pytest.raises(ValueError, match=f"faults.refuse_"):
+        for name, typed in (("emit", "refuse_emit"),
+                            ("state_set", "refuse_state_set")):
+            with pytest.raises(ValueError, match=f"faults.{typed} "):
                 faults.refuse_host(HookRuntime(), name, -1)
 
-    def test_refusing_rejects_typed_hosts_eagerly(self, wasm):
-        with pytest.raises(ValueError, match="refuse_emit"):
-            faults.refusing("emit", -1)
+    def test_refusing_is_pointed_at_the_setup_shaped_counterpart(self, wasm):
+        """`refusing` is rejected eagerly, and names a replacement of its own
+        shape — `refuse_emit` takes a runtime, so a `setup=`-only driver
+        cannot use it, and a message naming it sends the reader nowhere."""
+        for name, typed in (("emit", "faults.refusing_emit"),
+                            ("state_set", "faults.refusing_state_set")):
+            with pytest.raises(ValueError, match=re.escape(typed)) as excinfo:
+                faults.refusing(name, -1)
+            assert str(excinfo.value).startswith("refusing cannot inject")
 
     def test_refusing_emit_refuses_only_admitted_calls(self, wasm):
-        """arg 3 again: the short output buffer and the exhausted count
-        still answer with the host's codes; only the admitted middle emit
-        comes back with the injected one."""
+        """arg 3 again: the short output buffer answers with the host's own
+        code, and only admitted emits come back with the injected one. The
+        third is admitted *because* the second was refused — a refusal is
+        never queued, so it leaves its reserved slot free."""
         rt = emit_rt()
         faults.refusing_emit(hookapi.INTERNAL_ERROR)(rt)
         result = rt.run(wasm, arg=3)
@@ -483,8 +533,88 @@ class TestTypedBoundary:
         _rr, e1, e2, e3 = codes(rt.state_db[RK3])
         assert e1 == hookapi.TOO_SMALL
         assert e2 == hookapi.INTERNAL_ERROR
-        assert e3 == hookapi.INTERNAL_ERROR  # nothing committed, count free
+        assert e3 == hookapi.INTERNAL_ERROR
         assert result.emitted_txns == []
+
+    def test_a_refused_emit_frees_its_reserved_slot(self, wasm):
+        """The paired control for the sentence above, stated as a contrast:
+        with one emission reserved, the unfaulted run refuses the second
+        emit outright, while refusing the first admits and commits it."""
+        rt = emit_rt()
+        rt.run(wasm, arg=8)
+        assert codes(rt.state_db[RK8]) == [32, hookapi.TOO_MANY_EMITTED_TXN]
+        assert len(rt.emitted_txns) == 1
+
+        faulted = emit_rt()
+        log = faults.refuse_emit(faulted, when=faults.nth(0),
+                                 code=hookapi.INTERNAL_ERROR)
+        faulted.run(wasm, arg=8)
+        assert codes(faulted.state_db[RK8]) == [hookapi.INTERNAL_ERROR, 32]
+        assert [c.refused for c in log] == [True, False]
+        assert len(faulted.emitted_txns) == 1
+
+    def test_refusing_state_set_refuses_only_admitted_writes(self, wasm):
+        """arg 2's illegally wide key still answers TOO_BIG; the setup-shaped
+        typed injector never sees it."""
+        rt = HookRuntime()
+        faults.refusing_state_set(hookapi.TOO_MANY_STATE_MODIFICATIONS)(rt)
+        result = rt.run(wasm, arg=2)
+
+        assert result.return_code == hookapi.TOO_BIG
+        assert rt.state_db == {}
+
+    def test_refusing_state_set_journals_its_refusals(self, wasm):
+        rt = HookRuntime()
+        faults.refusing_state_set()(rt)
+        rt.run(wasm)
+
+        assert rt.state_db == {}
+        assert [w.result for w in rt.state_journal] == [
+            hookapi.RESERVE_INSUFFICIENT] * 4
+
+
+class TestBothDeleteSpellings:
+    """A zero length is a delete however the pointer was spelled — the fault
+    layer classifies on the same test the builtin applies, so a predicate
+    that selects deletes cannot miss half of them."""
+
+    def test_the_control_deletes_both(self, wasm):
+        rt = HookRuntime()
+        rt.run(wasm, arg=9)
+        assert DK1 not in rt.state_db and DK2 not in rt.state_db
+        assert codes(rt.state_db[RK9]) == [0, 0]
+
+    def test_both_are_classified_as_deletes(self, wasm):
+        rt = HookRuntime()
+        log = faults.refuse_state_set(rt)
+        rt.run(wasm, arg=9)
+
+        deletes = [c for c in log if c.is_delete]
+        assert [c.key for c in deletes] == [DK1, DK2]
+        assert all(c.value is None for c in deletes)
+
+    def test_the_deletes_predicate_refuses_both(self, wasm):
+        rt = HookRuntime()
+        log = faults.refuse_state_set(
+            rt, when=faults.deletes, code=hookapi.TOO_MANY_STATE_MODIFICATIONS)
+        rt.run(wasm, arg=9)
+
+        assert [c.key for c in log if c.refused] == [DK1, DK2]
+        # neither delete was applied, so both values survive
+        assert rt.state_db[DK1] == DV and rt.state_db[DK2] == DV
+        assert codes(rt.state_db[RK9]) == [
+            hookapi.TOO_MANY_STATE_MODIFICATIONS] * 2
+
+    def test_a_refused_pointer_spelled_delete_journals_as_a_delete(self, wasm):
+        rt = HookRuntime()
+        faults.refuse_state_set(rt, when=faults.deletes,
+                                code=hookapi.TOO_MANY_STATE_MODIFICATIONS)
+        rt.run(wasm, arg=9)
+
+        refused = [w for w in rt.state_journal
+                   if w.result == hookapi.TOO_MANY_STATE_MODIFICATIONS]
+        assert [(w.key, w.value) for w in refused] == [
+            (DK1, None), (DK2, None)]
 
 
 class TestStockPredicates:

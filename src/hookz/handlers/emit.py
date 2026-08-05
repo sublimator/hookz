@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 
 from hookz import hookapi
 from hookz.emission import check_emission, emitted_txn_id
+from hookz.handlers.core import _not_in_bounds
 
 if TYPE_CHECKING:
     from hookz.runtime import HookRuntime
@@ -129,9 +130,6 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
 
     rt._write_memory(write_ptr, data)
     return len(data)
-
-
-from hookz.handlers.core import _not_in_bounds
 
 
 def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
