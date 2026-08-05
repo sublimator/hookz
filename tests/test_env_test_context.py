@@ -128,7 +128,7 @@ class TestTheSurfaceIsTheHooksOwn:
 
         doc = _doc(checkout)
 
-        assert "not in the API whitelist" in doc
+        assert "in no version of the API whitelist" in doc
         assert "> - `env.emit`" in doc, "the offending import is named"
 
     def test_the_control_flow_calls_get_a_family(self, checkout):
@@ -289,9 +289,14 @@ class TestTheDocumentDoesNotOverclaim:
         test, and nothing asserted the table was total.
         """
         from hookz.cli.env_test_context import _family
-        from hookz.wasm.whitelist import get_import_signatures
+        from hookz.wasm.whitelist import get_function_signatures
 
-        unfamilied = sorted(n for n in get_import_signatures()
+        # get_function_signatures, not get_import_signatures: the latter is
+        # amendment-filtered against the mainnet manifest, so it excluded
+        # `prepare` — which was the one function still without a family. A
+        # totality test whose filter hides the untotal case is the shape this
+        # file keeps finding.
+        unfamilied = sorted(n for n in get_function_signatures()
                             if not _family(n)[0])
         assert unfamilied == [], unfamilied
 
@@ -302,9 +307,11 @@ class TestTheDocumentDoesNotOverclaim:
         from fnmatch import fnmatchcase
 
         from hookz.cli.env_test_context import _FAMILIES
-        from hookz.wasm.whitelist import get_import_signatures
+        from hookz.wasm.whitelist import get_function_signatures
 
-        names = list(get_import_signatures())
+        # Every function the API defines, not the mainnet-enabled subset —
+        # `prepare` is gated out of the latter, so its pattern read as dead.
+        names = list(get_function_signatures())
         dead = [p for patterns, _, _ in _FAMILIES for p in patterns
                 if not any(fnmatchcase(n, p) for n in names)]
         assert dead == [], dead
@@ -634,3 +641,155 @@ class TestTheDocumentIsReproducible:
         assert "## 3. Where it calls them" in doc
         assert "(?" in doc or ", ?" in doc, "premise: unresolved args render"
         assert "- `?` —" in doc, "the glyph is never defined"
+        # A call inlined from an included header reports the header's line,
+        # because the instrumentation marker carries the line but not the
+        # file. Verified: a 12-line main.c reported two calls at line 11 and
+        # one at 12, all three actually in helper.h. The section says so
+        # rather than presenting every number as a line in the target.
+        assert "inlined from an included header" in doc
+
+
+class TestTheWhitelistIsScopedToTheTestNotToMainnet:
+    """xahaud's APIWhitelist is amendment-conditional
+    (`getImportWhitelist(Rules const&)`), and the skeleton runs under
+    `supported_amendments()`, which enables every `Supported::yes` feature
+    regardless of how it is voting on the live network.
+
+    Scoping the check to the mainnet manifest made the document print, in
+    bold, that xahaud "refuses a hook that imports anything outside it, so the
+    test cannot get as far as running this hook" — for `prepare`, which is
+    gated on featureHooksUpdate2 and works fine in any jtx Env. It told an
+    agent to delete a working call, while the amendment column two cells away
+    named the amendment that makes it work.
+    """
+
+    def test_the_two_whitelists_actually_differ(self):
+        """Premise. If mainnet ever enables everything the API defines, these
+        tests stop proving anything and should be revisited rather than
+        quietly passing."""
+        from hookz.wasm.whitelist import (
+            derive_amendments, get_import_signatures, load_from_config)
+
+        mainnet = set(get_import_signatures())
+        test_env = set(get_import_signatures(
+            amendments=derive_amendments(load_from_config())))
+
+        assert test_env - mainnet == {"prepare"}, sorted(test_env - mainnet)
+
+    def test_a_gated_import_is_not_called_a_refusal(self):
+        from hookz.cli.env_test_context import _surface_section
+        from hookz.wasm.whitelist import (
+            derive_amendments, get_function_signatures, get_import_signatures,
+            load_from_config)
+
+        imports = [("env", "prepare", (0x7F,) * 4, (0x7E,))]
+        lines = "\n".join(_surface_section(
+            imports, get_function_signatures(),
+            get_import_signatures(
+                amendments=derive_amendments(load_from_config()),
+                coverage=True),
+            mainnet=get_import_signatures(coverage=True)))
+
+        assert "in no version of the API whitelist" not in lines
+        assert "not in the whitelist" not in lines
+        assert "available to your test" in lines
+        assert "needs `featureHooksUpdate2`" in lines
+        assert "supported_amendments()" in lines
+
+    def test_a_genuinely_unknown_import_is_still_a_refusal(self):
+        """The loud banner has to survive for the case it was written for."""
+        from hookz.cli.env_test_context import _surface_section
+        from hookz.wasm.whitelist import (
+            derive_amendments, get_function_signatures, get_import_signatures,
+            load_from_config)
+
+        imports = [("env", "definitely_not_an_api", (0x7F,), (0x7E,))]
+        lines = "\n".join(_surface_section(
+            imports, get_function_signatures(),
+            get_import_signatures(
+                amendments=derive_amendments(load_from_config()),
+                coverage=True),
+            mainnet=get_import_signatures(coverage=True)))
+
+        assert "in no version of the API whitelist" in lines
+        assert "> - `env.definitely_not_an_api`" in lines
+
+    def test_prepare_has_a_family_like_everything_else(self):
+        from hookz.cli.env_test_context import _family
+
+        assert _family("prepare")[0] == "emitted transactions"
+
+
+class TestBuildContextWiresTheRightWhitelists:
+    """The scoping fix lives in `build_context`, and every test of the new
+    behaviour called `_surface_section` directly with whitelists it built
+    itself — so reverting `build_context` to the mainnet set left them all
+    green. Testing a fix below the function that chose wrong is not testing
+    the fix.
+    """
+
+    def test_it_passes_the_test_environment_whitelist(self, checkout,
+                                                      monkeypatch):
+        import hookz.cli.env_test_context as etc
+
+        captured = {}
+        real = etc._surface_section
+
+        def spy(imports, signatures, whitelist, *a, **kw):
+            captured["whitelist"] = set(whitelist)
+            captured["mainnet"] = set(kw.get("mainnet") or ())
+            return real(imports, signatures, whitelist, *a, **kw)
+
+        monkeypatch.setattr(etc, "_surface_section", spy)
+        _doc(checkout)
+
+        assert "prepare" in captured["whitelist"], (
+            "the surface is judged against mainnet, not against the env the "
+            "skeleton runs in")
+        assert "prepare" not in captured["mainnet"], (
+            "the mainnet set is what makes a gated import distinguishable")
+
+
+class TestTheQuotedSourceIsLabelledWithItsOwnFile:
+    """Two hardcoded path strings said which file each quoted body came from.
+    Swapping them left the whole suite green — a confidently-stated filename
+    with nothing pinning it. They read from XahaudFile now, but that only
+    removes the duplication; this pins the pairing.
+
+    Hermetic: the vendored xahaud_lite tree carries both files.
+    """
+
+    @staticmethod
+    def _section():
+        from hookz.cli.env_test_context import _related_code_section
+        from hookz.wasm.whitelist import get_function_signatures
+        from hookz.xahaud_files import _vendored_root
+        from hookz.xrpl.xahaud import XahaudRepo
+
+        imports = [("env", "otxn_field", (0x7F,) * 3, (0x7E,))]
+        return "\n".join(_related_code_section(
+            imports, XahaudRepo(str(_vendored_root())),
+            get_function_signatures()))
+
+    def test_the_wrapper_is_labelled_applyhook_cpp(self):
+        from hookz.xahaud_files import XahaudFile
+
+        text = self._section()
+        label = f"`{XahaudFile.APPLY_HOOK_CPP.value}`:"
+        assert label in text
+
+        after = text.split(label, 1)[1]
+        assert "DEFINE_HOOK_FUNCTION" in after.split("```")[1], (
+            "the applyHook.cpp label sits above something that is not a "
+            "DEFINE_HOOK_FUNCTION body")
+
+    def test_the_implementation_is_labelled_hookapi_cpp(self):
+        from hookz.xahaud_files import XahaudFile
+
+        text = self._section()
+        label = f"`{XahaudFile.HOOK_API_CPP.value}`:"
+        assert label in text
+
+        after = text.split(label, 1)[1]
+        assert "DEFINE_HOOK_FUNCTION" not in after.split("```")[1], (
+            "the HookAPI.cpp label sits above a wrapper body")

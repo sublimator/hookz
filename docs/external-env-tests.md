@@ -108,8 +108,10 @@ still works and drops section 3; the remaining headings renumber, so it emits
 1–5 with no gap.
 
 `--no-impl` drops "What those calls do" and `--no-patch` drops the branch
-section — on `tip.c` that is 37,181 → 11,437 bytes, which matters if the document is going
-into a context window alongside other things. Section numbers always run
+section — on a hook the size of `tip.c` that is roughly 38K → 12K, which
+matters if the document is going into a context window alongside other things.
+(Deliberately rounded: the exact figures were stated once and were wrong two
+commits later, with nothing to catch it.) Section numbers always run
 contiguously, so they shift with what you omit; the headings are the stable
 reference.
 

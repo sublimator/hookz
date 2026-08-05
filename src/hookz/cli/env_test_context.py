@@ -58,7 +58,10 @@ _FAMILIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("state*", "hook_*"), "hook state / installation",
      "needs the hook installed on an account with reserve for the state it "
      "writes"),
-    (("emit*", "etxn_*"), "emitted transactions",
+    # `prepare` has no emit/etxn prefix and builds the transaction the other
+    # two send. It was invisible to the totality test as well, because that
+    # test filtered on the mainnet whitelist and `prepare` is gated out of it.
+    (("emit*", "etxn_*", "prepare"), "emitted transactions",
      "needs etxn_reserve and a ledger close after the triggering transaction "
      "for emitted results to apply"),
     # Glob rather than prefix because the API puts `slot` on both ends:
@@ -340,6 +343,11 @@ def _call_site_section(sites, source: Path) -> list[str]:
         "runtime, so the binary does not carry a value to resolve.",
         "- a trailing `*` — the value came from a single-assignment local "
         "rather than off the stack at the call, which is weaker evidence.",
+        f"- a line number is the line in whichever file the call was *written* "
+        f"in. A call inlined from an included header reports the header's "
+        f"line, not a line in `{source.name}` — the instrumentation marker "
+        f"carries the line but not the file, so two calls can report the same "
+        f"number and a number can exceed the file's length.",
         "",
         "```",
     ]
@@ -352,7 +360,23 @@ def _call_site_section(sites, source: Path) -> list[str]:
 
 
 def _surface_section(imports, signatures, whitelist, counts=None,
-                     impl_below: bool = True) -> list[str]:
+                     impl_below: bool = True, mainnet=None) -> list[str]:
+    """The table, scoped to the environment the test will actually run in.
+
+    `whitelist` is xahaud's APIWhitelist for the amendments `supported_
+    amendments()` enables — which is what the skeleton passes — and `mainnet`
+    is the set enabled on the live network. They differ, and the difference is
+    the interesting part: an import in the first but not the second works in
+    the test and would be refused on mainnet today.
+
+    This used to take only the mainnet set, which is right for `build` and
+    `guard-check` and wrong here. It printed "xahaud refuses a hook that
+    imports anything outside it, so the test cannot get as far as running this
+    hook" for `prepare` — gated on featureHooksUpdate2, which is
+    Supported::yes and therefore on in every jtx Env. The banner told an agent
+    to delete a call that works, while the amendment column two cells away
+    named the amendment that makes it work.
+    """
     lines = [
         "Every host function in the wasm's import section. `family` groups by "
         "what a test has to arrange to reach the call — a routing hint, not "
@@ -364,7 +388,10 @@ def _surface_section(imports, signatures, whitelist, counts=None,
         + (" calls |" if counts else ""),
         "|---|---|---|---|" + ("---|" if counts else ""),
     ]
-    unknown = []
+    # Same set by default: a caller that gives only one whitelist is saying
+    # it does not know the difference, and inventing one would be worse.
+    mainnet = whitelist if mainnet is None else mainnet
+    unknown, gated = [], []
     for module, name, params, results in imports:
         fn = signatures.get(name)
         sig = _c_signature(fn) if fn else _wasm_signature(name, params, results)
@@ -373,6 +400,8 @@ def _surface_section(imports, signatures, whitelist, counts=None,
         if name not in whitelist:
             unknown.append((module, name))
             label = label or "**not in the whitelist**"
+        elif name not in mainnet:
+            gated.append((name, fn.amendment if fn else "?"))
         row = f"| `{name}` | `{sig}` | {label or '—'} | {gate} |"
         if counts is not None:
             # Noise is filtered out of the call-site listing, so a count of 0
@@ -392,12 +421,24 @@ def _surface_section(imports, signatures, whitelist, counts=None,
         if label in shown:
             lines.append(f"- **{label}** — {note}")
 
+    if gated:
+        lines += [
+            "",
+            "> **Amendment-gated, and available to your test.** These are not "
+            "enabled on mainnet today, so `hookz build` and `hookz "
+            "guard-check` will refuse them — but the skeleton below runs under "
+            "`supported_amendments()`, which enables every `Supported::yes` "
+            "feature regardless of how it is voting. They work here:",
+            "",
+        ] + [f"> - `{n}` — needs `{a}`" for n, a in gated]
+
     if unknown:
         lines += [
             "",
-            "> **These imports are not in the API whitelist.** xahaud refuses "
-            "a hook that imports anything outside it, so the test cannot get "
-            "as far as running this hook until they are resolved:",
+            "> **These imports are in no version of the API whitelist.** "
+            "xahaud refuses a hook that imports anything outside it, under any "
+            "amendment set, so the test cannot get as far as running this hook "
+            "until they are resolved:",
             "",
         ] + [f"> - `{m}.{n}`" for m, n in unknown]
     lines.append("")
@@ -406,6 +447,8 @@ def _surface_section(imports, signatures, whitelist, counts=None,
 
 def _related_code_section(imports, repo, signatures) -> list[str]:
     """The implementation of each call, quoted from the configured checkout."""
+    from hookz.xahaud_files import XahaudFile
+
     lines = [
         "Quoted from the configured checkout, so it is the code the test will "
         "actually run against rather than a description of it.",
@@ -423,9 +466,13 @@ def _related_code_section(imports, repo, signatures) -> list[str]:
         lines.append(f"```c\n{_c_signature(signatures[name])}\n```")
         lines.append("")
         quoted = False
+        # From XahaudFile, not repeated string literals. The labels are a
+        # claim about which file each body came from, and a mutation swapping
+        # the two left the whole suite green — nothing pinned them, and they
+        # duplicated the enum they were copied from.
         for finder, path in (
-            (repo.find_hook_function, "src/xrpld/app/hook/detail/applyHook.cpp"),
-            (repo.find_api_method, "src/xrpld/app/hook/detail/HookAPI.cpp"),
+            (repo.find_hook_function, XahaudFile.APPLY_HOOK_CPP.value),
+            (repo.find_api_method, XahaudFile.HOOK_API_CPP.value),
         ):
             try:
                 body = finder(name)
@@ -686,8 +733,15 @@ def build_context(
     # `main()` renders both, but a caller told "raises ContextError" got
     # something else.
     try:
+        from hookz.wasm.whitelist import derive_amendments, load_from_config
+
         signatures = get_function_signatures()
-        whitelist = get_import_signatures(coverage=True)
+        # The whitelist the *test* runs under, not the one mainnet runs under:
+        # jtx's supported_amendments() turns on every Supported::yes feature,
+        # and both amendments the hook API gates on are Supported::yes.
+        whitelist = get_import_signatures(
+            amendments=derive_amendments(load_from_config()), coverage=True)
+        mainnet = get_import_signatures(coverage=True)
     except ValueError as e:
         raise ContextError(
             f"the API whitelist could not be built: {e}\n"
@@ -737,7 +791,7 @@ def build_context(
         ("The surface this hook uses",
          _surface_section(imports, signatures, whitelist,
                           counts if sites else None,
-                          impl_below=include_impl)),
+                          impl_below=include_impl, mainnet=mainnet)),
     ]
     if sites:
         sections.append(("Where it calls them", _call_site_section(sites, target)))
