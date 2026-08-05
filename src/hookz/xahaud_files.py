@@ -43,6 +43,8 @@ class XahaudFile(str, Enum):
     LEDGER_FORMATS_H = "include/xrpl/protocol/LedgerFormats.h"
     HASH_PREFIX_H = "include/xrpl/protocol/HashPrefix.h"
     STTX_CPP = "src/libxrpl/protocol/STTx.cpp"
+    TX_META_CPP = "src/libxrpl/protocol/TxMeta.cpp"
+    TXQ_CPP = "src/xrpld/app/misc/detail/TxQ.cpp"
 
 
 # Logical groups

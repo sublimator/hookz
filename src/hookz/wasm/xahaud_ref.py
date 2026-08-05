@@ -115,6 +115,8 @@ CITED_FILES = (
     "include/xrpl/protocol/TxFlags.h",            # flags.py, tf*/asf* citations
     "include/xrpl/protocol/LedgerFormats.h",      # flags.py, lsf* citations
     "include/xrpl/protocol/HashPrefix.h",         # emission.py, emitted_txn_id
+    "src/libxrpl/protocol/TxMeta.cpp",            # runtime.py, provisional TxMeta shape
+    "src/xrpld/app/misc/detail/TxQ.cpp",          # runtime.py, ttEMIT_FAILURE pseudo-txn
 )
 
 

@@ -217,7 +217,33 @@ def otxn_type(rt: HookRuntime) -> int:
 
 
 def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
-    rt._write_memory(write_ptr, b"\xAB" * min(write_len, 32))
+    """The hash of the originating transaction.
+
+    During a callback both modes answer with the *emitted* transaction's hash.
+    Applied, the transaction being applied is the emission itself, so its
+    transaction ID is the answer; not applied, the `ttEMIT_FAILURE`
+    pseudo-transaction carries the failed emission's hash as
+    `sfTransactionHash`, and that is served unless `flags` asks for the
+    pseudo-transaction's own ID:
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547
+            (hookCtx.emitFailure && !flags
+                 ? hookCtx.applyCtx.tx.getFieldH256(sfTransactionHash)
+                 : hookCtx.applyCtx.tx.getTransactionID());
+
+    `run_callback` sets `rt.otxn_id_val` to that hash for the delivery. Unset
+    — an ordinary run — the historical sentinel fill stays, so a hook that
+    stores the ID gets a stable 32-byte value without every test inventing
+    one. The `flags` distinction is not modelled: the mock has no
+    pseudo-transaction with an ID of its own to serve.
+    """
+    val = rt.otxn_id_val
+    if val is None:
+        rt._write_memory(write_ptr, b"\xAB" * min(write_len, 32))
+        return 32
+    if write_len < 32:
+        return hookapi.TOO_SMALL
+    rt._write_memory(write_ptr, val)
     return 32
 
 

@@ -182,18 +182,27 @@ class TestXpopSlot:
 
 
 class TestMetaSlot:
-    """meta_slot: load transaction metadata into a slot."""
+    """meta_slot: emplace the provisional transaction metadata."""
 
-    def test_returns_slot_no(self, rt):
-        """Stub returns the slot number passed in."""
-        assert meta_slot(rt, 1) == 1
+    def test_no_metadata_is_prerequisite_not_met(self, rt):
+        """The strong-execution answer: the hook runs before the transaction
+        applies, so there is no metadata yet — whatever slot is asked for
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378)."""
+        assert meta_slot(rt, 0) == hookapi.PREREQUISITE_NOT_MET
+        assert meta_slot(rt, 5) == hookapi.PREREQUISITE_NOT_MET
+
+    def test_metadata_is_emplaced(self, rt):
+        rt._callback_meta = b"\x03\x10\x00"
         assert meta_slot(rt, 5) == 5
-        assert meta_slot(rt, 0) == 0
+        from hookz.handlers.slot import _get_slot_data
+        assert _get_slot_data(rt, 5) == b"\x03\x10\x00"
 
-    def test_different_slot_numbers(self, rt):
-        """Each slot number is returned as-is."""
-        for i in range(10):
-            assert meta_slot(rt, i) == i
+    def test_slot_zero_allocates(self, rt):
+        rt._callback_meta = b"\x03\x10\x00"
+        chosen = meta_slot(rt, 0)
+        assert chosen > 0
+        from hookz.handlers.slot import _get_slot_data
+        assert _get_slot_data(rt, chosen) == b"\x03\x10\x00"
 
 
 # ---------------------------------------------------------------------------

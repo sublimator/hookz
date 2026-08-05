@@ -246,6 +246,48 @@ class HookResult:
         )
 
 
+def provisional_meta(transaction_result: str | int) -> bytes:
+    """Serialized provisional TxMeta carrying `transaction_result`.
+
+    The object the ledger serves a callback is TxMeta::getAsObject —
+    `sfTransactionIndex`, `sfTransactionResult`, and the affected-nodes array
+    (empty here, as befits metadata that is provisional):
+
+        xahaud:src/libxrpl/protocol/TxMeta.cpp:232
+            STObject metaData(sfTransactionMetaData);
+            metaData.setFieldU8(sfTransactionResult, mResult);
+            metaData.setFieldU32(sfTransactionIndex, mIndex);
+            metaData.emplace_back(mNodes);
+
+    built for the delivery at xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2357
+    (`TxMeta meta = ctx_.generateProvisionalMeta(); meta.setResult(result, 0)`).
+
+    Public so a test that shapes a delivery by hand (no `run_callback`)
+    can still serve honest bytes: assign the result to
+    `rt._callback_meta` and the builtin `meta_slot` does the rest.
+
+    A `str` goes through the binary codec, which knows the result codes by
+    name; an `int` is serialized directly, so a code the codec has never
+    heard of is still expressible. Both paths produce identical bytes for a
+    code both know — pinned by test.
+    """
+    from hookz import hookapi
+    from hookz.xrpl.txn_builder import serialize_fields
+
+    if isinstance(transaction_result, str):
+        from xrpl.core.binarycodec import encode
+        return bytes.fromhex(encode({
+            "TransactionIndex": 0,
+            "TransactionResult": transaction_result,
+            "AffectedNodes": [],
+        }))
+    return serialize_fields({
+        hookapi.sfTransactionIndex: (0).to_bytes(4, "big"),
+        hookapi.sfTransactionResult: bytes([transaction_result & 0xFF]),
+        hookapi.sfAffectedNodes: b"\xF1",
+    })
+
+
 # Amendments enabled by default: whatever mainnet has, read off a live node
 # and vendored as data/amendments-mainnet.json. See hookz.amendments — the
 # short version is that a hand-curated list was wrong in both directions at
@@ -356,6 +398,16 @@ class HookRuntime:
         # bytes rather than a field map. Left None, otxn_slot serializes
         # otxn_fields instead, so the two views agree by construction.
         self.otxn_blob: bytes | None = None
+        # The 32-byte hash `otxn_id` serves. None keeps the historical
+        # sentinel fill (see handlers.otxn.otxn_id); `run_callback` sets the
+        # emitted transaction's hash here for the delivery and restores it.
+        self.otxn_id_val: bytes | None = None
+        # Serialized provisional TxMeta served by `meta_slot`, or None for
+        # PREREQUISITE_NOT_MET — the answer a strong execution gets, since it
+        # runs before the transaction applies and no metadata exists yet
+        # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378). Set by
+        # `run_callback` for the duration of the delivery.
+        self._callback_meta: bytes | None = None
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
@@ -542,6 +594,125 @@ class HookRuntime:
         finally:
             self.emit_failure = previous
 
+    def run_callback(self, hook: Hook | bytes, *,
+                     emitted_tx: bytes | None = None,
+                     ctx: int = 0,
+                     transaction_result: str | int | None = "tesSUCCESS",
+                     tx_hash: bytes | None = None,
+                     coverage: bool = False) -> HookResult:
+        """Deliver one `cbak` for an emitted transaction.
+
+        The second execution the ledger owes an emitting hook: after the
+        emission either applies or expires, `cbak` runs against what actually
+        happened (`doHookCallback(proMeta)` under `if (applied && ...)`,
+        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2355-2365 — the pseudo-
+        transaction's own application for a failure). This method derives
+        everything the ledger would expose, runs `run(hook, export="cbak",
+        arg=ctx)` inside the `callback(ctx)` scope, and restores the runtime's
+        transaction context afterwards, so a reused runtime is not left in
+        callback shape.
+
+        Args:
+            hook: the emitting hook — the module's `cbak` export is called.
+            emitted_tx: the emitted transaction, serialized — usually an entry
+                of a previous run's `result.emitted_txns`. Its
+                `TransactionType` becomes `otxn_type` (SourceTag is passed
+                through to `otxn_fields`), and the hook can slot it. May be
+                omitted when the callback under test only reads hashes, in
+                which case `tx_hash` is required.
+            ctx: what `cbak` receives. `CALLBACK_APPLIED` (0) means the
+                emission reached a ledger — **including as a `tec`**; see
+                `callback()` for why 0 does not mean success. Under
+                `CALLBACK_NOT_APPLIED` (1) the ledger applies a
+                `ttEMIT_FAILURE` pseudo-transaction instead and almost no
+                field of the original is readable.
+            transaction_result: what the provisional metadata says the ledger
+                did — `meta_slot` serves a serialized TxMeta whose
+                `sfTransactionResult` carries it (str or TER int; see
+                `provisional_meta`). None serves no metadata at all:
+                `meta_slot` answers PREREQUISITE_NOT_MET.
+            tx_hash: the emitted transaction's hash. Defaults to
+                `emitted_txn_id(emitted_tx)`, which is how the ledger derives
+                it (xahaud:src/libxrpl/protocol/STTx.cpp:65).
+            coverage: as in `run`.
+
+        What each mode exposes, and where the shape comes from:
+
+        *Applied* (`ctx & 1 == 0`): the transaction being applied **is** the
+        emission, so `otxn_slot` serves `emitted_tx` whole, and `otxn_id`
+        answers its hash (`getTransactionID()`,
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547). Direct
+        `otxn_field` reads still answer from `rt.otxn_fields` — populate any
+        field the callback reads directly (`sfDestination`, `sfAmount`)
+        there before calling; entries set by the caller survive the restore.
+
+        *Not applied* (`ctx & 1 == 1`): the applied transaction is the
+        `ttEMIT_FAILURE` pseudo-transaction, carrying the current ledger
+        sequence and the failed emission's hash
+        (`obj[sfLedgerSequence] = seq; obj[sfTransactionHash] = txnHash`,
+        xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1656) — `sfLedgerSequence`
+        here is `rt.ledger_seq_val`. Field visibility collapses to exactly
+        those two (see `handlers.otxn.EMIT_FAILURE_FIELDS`), `otxn_id` still
+        answers the emission's hash (HookAPI.cpp:1547), and `otxn_slot`
+        serves the emitted-transaction *ledger entry* — the original wrapped
+        in `sfEmittedTxn`, which is what the entry holds
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1521-1541) and what
+        the host slots on failure (`hookCtx.emitFailure ? *(hookCtx.emitFailure)
+        : ...tx`, xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1583). A
+        repair path that navigates to the original must therefore descend
+        through `sfEmittedTxn` — exactly as it would on chain.
+        """
+        from hookz import hookapi
+        from hookz.emission import emitted_txn_id
+        from hookz.xrpl.txn_builder import serialize_fields
+        from hookz.xrpl.txn_parser import parse_object
+
+        if emitted_tx is None and tx_hash is None:
+            raise TypeError(
+                "run_callback needs emitted_tx (to derive the hash from) or "
+                "an explicit tx_hash — without either there is no emission "
+                "to call back about")
+        if tx_hash is None:
+            tx_hash = emitted_txn_id(emitted_tx)
+
+        saved_fields = dict(self.otxn_fields)
+        saved = (self.otxn_blob, self.otxn_type, self.otxn_id_val,
+                 self._callback_meta)
+        try:
+            self.otxn_id_val = tx_hash
+            self._callback_meta = (
+                None if transaction_result is None
+                else provisional_meta(transaction_result))
+            if emitted_tx is not None:
+                parsed = parse_object(emitted_tx, strict=False).fields
+                tx_type = parsed.get("TransactionType")
+                if isinstance(tx_type, int):
+                    self.otxn_type = tx_type
+                elif isinstance(tx_type, str):
+                    from xrpl.core.binarycodec.definitions import definitions
+                    self.otxn_type = definitions.get_transaction_type_code(
+                        tx_type)
+                source_tag = parsed.get("SourceTag")
+                if isinstance(source_tag, int):
+                    self.otxn_fields[hookapi.sfSourceTag] = (
+                        source_tag.to_bytes(4, "big"))
+            if ctx & 1:
+                self.otxn_fields[hookapi.sfLedgerSequence] = (
+                    self.ledger_seq_val.to_bytes(4, "big"))
+                self.otxn_fields[hookapi.sfTransactionHash] = tx_hash
+                if emitted_tx is not None:
+                    self.otxn_blob = serialize_fields(
+                        {hookapi.sfEmittedTxn: emitted_tx + b"\xE1"})
+            elif emitted_tx is not None:
+                self.otxn_blob = emitted_tx
+            with self.callback(ctx):
+                return self.run(hook, coverage=coverage,
+                                export="cbak", arg=ctx)
+        finally:
+            (self.otxn_blob, self.otxn_type, self.otxn_id_val,
+             self._callback_meta) = saved
+            self.otxn_fields = saved_fields
+
     def run(self, hook: Hook | bytes, label: str | None = None,
             coverage: bool = False, export: str = "hook",
             arg: int = 0) -> HookResult:
@@ -586,6 +757,11 @@ class HookRuntime:
         callback on the same runtime must see the state and accepted
         emissions the first one left, and a later rejecting run must not be
         able to reclassify or clear them.
+
+        The transaction-context fields (`otxn_fields`, `otxn_blob`,
+        `otxn_type`, `otxn_id_val`, `_callback_meta`) are durable
+        configuration too — `run` never touches them. `run_callback` sets
+        them for a delivery and restores them on the way out.
         """
         if isinstance(hook, Hook):
             wasm_bytes = hook.wasm

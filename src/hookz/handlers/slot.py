@@ -99,6 +99,10 @@ def _walk_array_elements(data: bytes):
 def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) -> int:
     """Find a field in a parent slot's data and store it in new_slot.
 
+    `new_slot == 0` means "allocate a free slot", the same convention every
+    slot-emplacing call uses (`if (new_slot == 0) ... get_free_slot()`,
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2253).
+
     Override: set rt._slot_overrides["slot_subfield:{parent}:{field_id}"]
     to force a specific return value.
     """
@@ -117,6 +121,13 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
     parent_data = _get_slot_data(rt, parent)
     if parent_data is None:
         return hookapi.DOESNT_EXIST
+
+    if new_slot == 0:
+        from hookz.handlers.otxn import MAX_SLOTS
+        new_slot = next((n for n in range(1, MAX_SLOTS + 1)
+                         if _get_slot_data(rt, n) is None), 0)
+        if new_slot == 0:
+            return hookapi.NO_FREE_SLOTS
 
     try:
         for fid, type_code, _fc, offset, total_len, pay_off, pay_len in _walk_slot_fields(parent_data):
@@ -349,11 +360,39 @@ def slot_type(rt: HookRuntime, slot_no: int, flags: int) -> int:
 
 
 # ---------------------------------------------------------------------------
-# meta_slot / xpop_slot (stubs)
+# meta_slot / xpop_slot
 # ---------------------------------------------------------------------------
 
 def meta_slot(rt: HookRuntime, slot_no: int) -> int:
-    """Load transaction metadata into a slot. Stub: returns slot_no."""
+    """Emplace the provisional transaction metadata into a slot.
+
+    The refusals come in the host's order — no metadata first, before any
+    slot question is asked:
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378
+            if (!hookCtx.result.provisionalMeta)
+                return Unexpected(PREREQUISITE_NOT_MET);
+
+    and that refusal is the *correct* answer for an ordinary strong
+    execution, which runs before the transaction applies: there is no
+    metadata yet. Metadata exists only for the executions the ledger runs
+    after application — callbacks and weak TSH
+    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2355-2365). Here that
+    means `rt._callback_meta`, which `run_callback` sets to the serialized
+    provisional TxMeta for the duration of the delivery.
+    """
+    from hookz.handlers.otxn import MAX_SLOTS
+
+    if rt._callback_meta is None:
+        return hookapi.PREREQUISITE_NOT_MET
+    if slot_no > MAX_SLOTS:
+        return hookapi.INVALID_ARGUMENT
+    if slot_no == 0:
+        slot_no = next((n for n in range(1, MAX_SLOTS + 1)
+                        if _get_slot_data(rt, n) is None), 0)
+        if slot_no == 0:
+            return hookapi.NO_FREE_SLOTS
+    _set_slot_data(rt, slot_no, rt._callback_meta)
     return slot_no
 
 

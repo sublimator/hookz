@@ -6,7 +6,9 @@ Execute, instrument, and assert on Xahau hooks from Python.
 import logging
 import os
 
-from hookz.runtime import HookRuntime, Hook, ParamMap, StateWrite
+from hookz.runtime import (
+    HookRuntime, Hook, ParamMap, StateWrite, provisional_meta,
+)
 from hookz.coverage.rewriter import instrument_wasm
 from hookz.coverage.tracker import CoverageTracker
 # The canonical "ctx 0 means applied, not successful" documentation lives on
@@ -25,6 +27,7 @@ __all__ = [
     "StateWrite",
     "emitted_txn_id",
     "instrument_wasm",
+    "provisional_meta",
 ]
 
 # Enable hook trace output: HOOKZ_TRACE=1 or pytest --log-cli-level=INFO
