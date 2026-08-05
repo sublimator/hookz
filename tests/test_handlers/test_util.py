@@ -100,6 +100,47 @@ class TestUtilKeylet:
     def test_account_keylet_wrong_len(self, rt):
         assert util_keylet(rt, 0, 34, hookapi.KEYLET_ACCOUNT, 100, 19, 0, 0, 0, 0) == hookapi.INVALID_ARGUMENT
 
+    def test_quality_keylet_replaces_rightmost_eight_index_bytes(self, rt):
+        from hookz.ledger import LT, quality_keylet
+
+        base = LT.DIR_NODE.to_bytes(2, "big") + bytes(range(32))
+        rt._write_memory(100, base)
+
+        result = util_keylet(
+            rt, 0, 34, hookapi.KEYLET_QUALITY,
+            100, 34, 0x01234567, 0x89ABCDEF, 0, 0,
+        )
+
+        assert result == 34
+        assert rt._read_memory(0, 34) == quality_keylet(
+            base, 0x0123456789ABCDEF
+        )
+        assert rt._read_memory(0, 34)[:26] == base[:26]
+
+    def test_quality_keylet_rejects_non_directory_keylet(self, rt):
+        from hookz.ledger import LT
+
+        base = LT.OFFER.to_bytes(2, "big") + b"\x11" * 32
+        rt._write_memory(100, base)
+
+        assert util_keylet(
+            rt, 0, 34, hookapi.KEYLET_QUALITY,
+            100, 34, 0, 1, 0, 0,
+        ) == hookapi.INVALID_ARGUMENT
+
+    @pytest.mark.parametrize(
+        "a,b,e,f",
+        [(0, 34, 0, 0), (100, 0, 0, 0), (100, 33, 0, 0),
+         (100, 35, 0, 0), (100, 34, 1, 0), (100, 34, 0, 1)],
+    )
+    def test_quality_keylet_rejects_invalid_arguments(self, rt, a, b, e, f):
+        rt._write_memory(100, b"\x00\x64" + b"\x22" * 32)
+
+        assert util_keylet(
+            rt, 0, 34, hookapi.KEYLET_QUALITY,
+            a, b, 0, 1, e, f,
+        ) == hookapi.INVALID_ARGUMENT
+
     def test_line_keylet(self, rt):
         """KEYLET_LINE computes a real 34-byte trust line keylet."""
         acc2 = to_accid("rPT1Sjq2YGrBMTttX4GZHjKu9dyfzbpAYe")
@@ -428,19 +469,62 @@ class TestHookSkip:
 
 
 class TestLedgerKeylet:
-    """ledger_keylet: construct a keylet from components."""
+    """ledger_keylet: search the ledger's ordered index range."""
 
-    def test_returns_34(self, rt):
-        rt._write_memory(100, b"\x00" * 34)
-        rt._write_memory(200, b"\x00" * 34)
+    def test_returns_first_index_in_range_in_ledger_order(self, rt):
+        lo = b"\x00\x64" + b"\x10" * 32
+        first = b"\x00\x64" + b"\x20" * 32
+        second = b"\x00\x64" + b"\x30" * 32
+        hi = b"\x00\x64" + b"\x40" * 32
+        rt.ledger[second] = b"second"
+        rt.ledger[first] = b"first"
+        rt._write_memory(100, lo)
+        rt._write_memory(200, hi)
+
         result = ledger_keylet(rt, 0, 34, 100, 34, 200, 34)
-        assert result == 34
 
-    def test_writes_34_zero_bytes(self, rt):
-        rt._write_memory(100, b"\x00" * 34)
-        rt._write_memory(200, b"\x00" * 34)
-        ledger_keylet(rt, 0, 34, 100, 34, 200, 34)
-        assert rt._read_memory(0, 34) == b"\x00" * 34
+        assert result == 34
+        assert rt._read_memory(0, 34) == first
+
+    def test_lower_bound_is_exclusive_and_upper_bound_is_inclusive(self, rt):
+        lo = b"\x00\x64" + b"\x10" * 32
+        hi = b"\x00\x64" + b"\x20" * 32
+        rt.ledger[lo] = b"lower"
+        rt.ledger[hi] = b"upper"
+        rt._write_memory(100, lo)
+        rt._write_memory(200, hi)
+
+        assert ledger_keylet(rt, 0, 34, 100, 34, 200, 34) == 34
+        assert rt._read_memory(0, 34) == hi
+
+    def test_returns_doesnt_exist_for_empty_or_reversed_range(self, rt):
+        lo = b"\x00\x64" + b"\x20" * 32
+        hi = b"\x00\x64" + b"\x10" * 32
+        rt.ledger[b"\x00\x64" + b"\x18" * 32] = b"outside"
+        rt._write_memory(100, lo)
+        rt._write_memory(200, hi)
+
+        assert ledger_keylet(
+            rt, 0, 34, 100, 34, 200, 34
+        ) == hookapi.DOESNT_EXIST
+
+    def test_returns_does_not_match_for_different_keylet_types(self, rt):
+        rt._write_memory(100, b"\x00\x64" + b"\x00" * 32)
+        rt._write_memory(200, b"\x00\x6f" + b"\xff" * 32)
+
+        assert ledger_keylet(
+            rt, 0, 34, 100, 34, 200, 34
+        ) == hookapi.DOES_NOT_MATCH
+
+    def test_returns_lower_bound_type_for_matching_index(self, rt):
+        lo = b"\x00\x64" + b"\x10" * 32
+        hi = b"\x00\x64" + b"\x30" * 32
+        rt.ledger[b"\x00\x6f" + b"\x20" * 32] = b"offer"
+        rt._write_memory(100, lo)
+        rt._write_memory(200, hi)
+
+        assert ledger_keylet(rt, 0, 34, 100, 34, 200, 34) == 34
+        assert rt._read_memory(0, 34) == b"\x00\x64" + b"\x20" * 32
 
     def test_too_small_write(self, rt):
         assert ledger_keylet(rt, 0, 33, 100, 34, 200, 34) == hookapi.TOO_SMALL

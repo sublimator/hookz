@@ -46,6 +46,8 @@ def _walk_slot_fields(data: bytes):
 # (type 14, field 1) — the byte that closes an STObject.
 _OBJECT_END = 0xE1
 _STI_OBJECT = 0xE
+_STI_VL = 0x7
+_STI_VECTOR256 = 0x13
 
 
 def _walk_array_elements(data: bytes):
@@ -122,6 +124,16 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
                 # For arrays (type 0xF), store the whole field including header
                 if type_code == 0xF:
                     _set_slot_data(rt, new_slot, parent_data[offset:offset + total_len])
+                elif type_code in (_STI_VL, _STI_VECTOR256):
+                    # STBlob::add and STVector256::add serialize their value
+                    # with the VL length prefix.  slot() serializes that STBase
+                    # value, not merely its decoded payload.
+                    header_len = 1 + (type_code >= 16) + (_fc >= 16)
+                    value_off = offset + header_len
+                    _set_slot_data(
+                        rt, new_slot,
+                        parent_data[value_off:offset + total_len],
+                    )
                 else:
                     # Store just the payload (what slot() would return)
                     _set_slot_data(rt, new_slot, parent_data[pay_off:pay_off + pay_len])

@@ -409,6 +409,28 @@ class TestSlotRealParsing:
         assert result == 2
         assert slot_size(rt, 2) == 8
 
+    def test_subfield_preserves_vector256_length_prefix(self, rt):
+        """STVector256::add includes its VL prefix when slot() serializes it."""
+        from hookz.ledger import book_directory
+
+        indexes = [b"\x11" * 32, b"\x22" * 32]
+        _keylet, data = book_directory(b"\x42" * 32, 1, indexes)
+        rt._slot_overrides["slot_data:1"] = data
+
+        assert slot_subfield(rt, 1, hookapi.sfIndexes, 2) == 2
+        assert slot_size(rt, 2) == 65
+        assert rt._slot_overrides["slot_data:2"] == b"\x40" + b"".join(indexes)
+
+    def test_subfield_preserves_blob_length_prefix(self, rt):
+        """STBlob::add includes its VL prefix when slot() serializes it."""
+        data = bytes.fromhex(encode(self.PAYMENT_WITH_MEMOS))
+        rt._slot_overrides["slot_data:1"] = data
+        assert slot_subfield(rt, 1, hookapi.sfMemos, 2) == 2
+        assert slot_subarray(rt, 2, 0, 3) == 3
+
+        assert slot_subfield(rt, 3, hookapi.sfMemoData, 4) == 4
+        assert rt._slot_overrides["slot_data:4"] == b"\x02\xAA\xBB"
+
     def test_subfield_missing_field(self, rt):
         """sfOfferSequence not in payment → DOESNT_EXIST."""
         data = bytes.fromhex(encode(self.PAYMENT))

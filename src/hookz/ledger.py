@@ -111,6 +111,8 @@ def _index_hash(namespace: int, *args: bytes) -> bytes:
 
 def _make_keylet(lt_type: int, index: bytes) -> bytes:
     """Build 34-byte keylet: 2-byte type prefix + 32-byte index."""
+    if len(index) != 32:
+        raise ValueError(f"Keylet index must be 32 bytes, got {len(index)}")
     return lt_type.to_bytes(2, "big") + index
 
 
@@ -251,6 +253,27 @@ def unchecked_keylet(key: bytes) -> bytes:
     return _make_keylet(LT.ANY, key)
 
 
+def quality_keylet(keylet: bytes, quality: int) -> bytes:
+    """keylet::quality(k, q) → directory keylet with a 64-bit quality.
+
+    Xahau stores the unsigned quality in big-endian order in the rightmost
+    eight bytes of a DirectoryNode index.  The preceding 24 index bytes are
+    the book-directory base.
+    """
+    if len(keylet) != 34:
+        raise ValueError(f"Keylet must be 34 bytes, got {len(keylet)}")
+    if keylet[:2] != LT.DIR_NODE.to_bytes(2, "big"):
+        raise ValueError("Quality requires a DirectoryNode keylet")
+    if not 0 <= quality <= 0xFFFFFFFFFFFFFFFF:
+        raise ValueError("Quality must fit in an unsigned 64-bit integer")
+    return keylet[:26] + quality.to_bytes(8, "big")
+
+
+def book_directory_keylet(book_base: bytes, quality: int) -> bytes:
+    """Build a quality-directory keylet from a 32-byte book base index."""
+    return quality_keylet(_make_keylet(LT.DIR_NODE, book_base), quality)
+
+
 # --- Hook state ---
 
 def hook_state_keylet(account: str | bytes, key: bytes, namespace: bytes) -> bytes:
@@ -362,4 +385,46 @@ def ripple_state(
         **fields,
     }
     kl = trust_line_keylet(account1, account2, currency)
+    return kl, bytes.fromhex(encode(obj))
+
+
+def book_directory(
+    book_base: bytes,
+    quality: int,
+    indexes: list[bytes],
+    **fields: Any,
+) -> tuple[bytes, bytes]:
+    """Build a book DirectoryNode containing the supplied Offer indexes."""
+    encoded_indexes: list[str] = []
+    for index in indexes:
+        if len(index) != 32:
+            raise ValueError(f"Directory index must be 32 bytes, got {len(index)}")
+        encoded_indexes.append(index.hex().upper())
+    obj: dict[str, Any] = {
+        "LedgerEntryType": "DirectoryNode",
+        "Indexes": encoded_indexes,
+        **fields,
+    }
+    kl = book_directory_keylet(book_base, quality)
+    return kl, bytes.fromhex(encode(obj))
+
+
+def offer(
+    account: str,
+    sequence: int,
+    taker_pays: str | dict[str, str],
+    taker_gets: str | dict[str, str],
+    **fields: Any,
+) -> tuple[bytes, bytes]:
+    """Build an Offer ledger entry addressable by its standard keylet."""
+    obj: dict[str, Any] = {
+        "LedgerEntryType": "Offer",
+        "Account": account,
+        "Sequence": sequence,
+        "TakerPays": taker_pays,
+        "TakerGets": taker_gets,
+        "Flags": fields.pop("Flags", 0),
+        **fields,
+    }
+    kl = offer_keylet(account, sequence)
     return kl, bytes.fromhex(encode(obj))

@@ -40,9 +40,20 @@ def util_keylet(
     kl = None
     kt = keylet_type
 
+    # --- Directory keylet + unsigned 64-bit quality ---
+    if kt == hookapi.KEYLET_QUALITY:
+        if a == 0 or b == 0 or e or f:
+            return hookapi.INVALID_ARGUMENT
+        if b != 34:
+            return hookapi.INVALID_ARGUMENT
+        base = rt._read_memory(a, b)
+        if base[:2] != L.LT.DIR_NODE.to_bytes(2, "big"):
+            return hookapi.INVALID_ARGUMENT
+        kl = L.quality_keylet(base, ((c & 0xFFFFFFFF) << 32) + (d & 0xFFFFFFFF))
+
     # --- 20-byte account keylets: ACCOUNT, OWNER_DIR, SIGNERS, HOOK ---
-    if kt in (hookapi.KEYLET_ACCOUNT, hookapi.KEYLET_OWNER_DIR,
-              hookapi.KEYLET_SIGNERS, hookapi.KEYLET_HOOK):
+    elif kt in (hookapi.KEYLET_ACCOUNT, hookapi.KEYLET_OWNER_DIR,
+                hookapi.KEYLET_SIGNERS, hookapi.KEYLET_HOOK):
         if b != 20:
             return hookapi.INVALID_ARGUMENT
         if c or d or e or f:
@@ -267,16 +278,28 @@ def ledger_keylet(
     lread_ptr: int, lread_len: int,
     hread_ptr: int, hread_len: int,
 ) -> int:
-    """Construct a keylet from two input keylets (lo/hi range).
-
-    Stub: writes 34 zero bytes to the output buffer and returns 34.
-    The real implementation searches the ledger between the two keylet bounds.
-    """
+    """Return the first ledger key strictly above ``lo`` and at most ``hi``."""
     if write_len < 34 or lread_len < 34 or hread_len < 34:
         return hookapi.TOO_SMALL
     if write_len > 34 or lread_len > 34 or hread_len > 34:
         return hookapi.TOO_BIG
-    rt._write_memory(write_ptr, b"\x00" * 34)
+
+    lo = rt._read_memory(lread_ptr, lread_len)
+    hi = rt._read_memory(hread_ptr, hread_len)
+    if lo[:2] != hi[:2]:
+        return hookapi.DOES_NOT_MATCH
+
+    lo_index = lo[2:]
+    hi_index = hi[2:]
+    candidates = sorted(
+        keylet[2:]
+        for keylet in rt.ledger
+        if len(keylet) == 34 and lo_index < keylet[2:] <= hi_index
+    )
+    if not candidates:
+        return hookapi.DOESNT_EXIST
+
+    rt._write_memory(write_ptr, lo[:2] + candidates[0])
     return 34
 
 
