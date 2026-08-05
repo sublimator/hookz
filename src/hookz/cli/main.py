@@ -159,11 +159,6 @@ def waiver_options(fn):
         "--ignore-guard-calls", is_flag=True,
         help="Waive the 1,024 guard-call limit.",
     )(fn)
-    fn = click.option(
-        "--depth32", is_flag=True,
-        help="Override: assume fixGuardDepth32 is in force (nesting limit 32). "
-             "Normally read from the network's amendments.",
-    )(fn)
     return fn
 
 
@@ -179,17 +174,27 @@ def _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls):
     return frozenset(selected)
 
 
-def _rules(depth32: bool) -> int:
-    """The network's guard rules, plus whatever the user asked to assume.
+def _rules() -> int:
+    """The guard rules the network is actually running.
 
     The base used to be the constant GUARD_RULE_FIX_20250131, which is what
     mainnet happens to run — right by coincidence, and unable to notice the
-    network moving. --depth32 stays as an override because "what would this
-    hook do under depth32" is a legitimate question to ask of a network that
-    has not voted it in.
+    network moving.
+
+    There is deliberately no override. `--depth32` used to OR in
+    GUARD_RULE_DEPTH_32 here, and it was a debugging crutch from a period when
+    hookz's own WCE was wrong and hooks the official C++ checker accepted were
+    failing ours. It outlived the bug. On `wce` it was disclosed; on `build`
+    and `guard-check` it silently turned REJECTED into "PASSED" with exit 0,
+    for a hook SetHook refuses — fixGuardDepth32 is DefaultNo and mainnet has
+    never voted it in.
+
+    When it is voted in, nothing here changes: the manifest gains the
+    amendment, resolve_rules returns the bit, and nesting_limit reads 32. That
+    is the whole point of deriving rather than overriding.
     """
-    from hookz.wasm.guard import GUARD_RULE_DEPTH_32, resolve_rules
-    return resolve_rules(None) | (GUARD_RULE_DEPTH_32 if depth32 else 0)
+    from hookz.wasm.guard import resolve_rules
+    return resolve_rules(None)
 
 
 def _report_waived(result, log=print) -> None:
@@ -716,7 +721,7 @@ def debug_compile(source, output):
 @waiver_options
 def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
           buildbox_options, explain, ignore_depth, ignore_wce_overage,
-          ignore_guard_calls, depth32):
+          ignore_guard_calls):
     """Compile, clean, and guard-check a hook.
 
     SOURCE can be a file path or '-' for stdin. Output goes to stdout
@@ -743,7 +748,7 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
         raise click.UsageError("--buildbox-url requires --buildbox")
 
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
-    rules = _rules(depth32)
+    rules = _rules()
 
     if source == "-":
         stdin_data = sys.stdin.buffer.read()
@@ -1080,7 +1085,7 @@ def clean(input_wasm, output):
 @click.argument("hook_wasm", type=click.Path(exists=True))
 @waiver_options
 def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
-                ignore_guard_calls, depth32):
+                ignore_guard_calls):
     """Validate guard calls in a hook WASM binary."""
     from hookz.wasm.guard import validate_guards, GuardError
 
@@ -1089,7 +1094,7 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
 
     try:
-        result = validate_guards(wasm, rules_version=_rules(depth32), ignore=ignore)
+        result = validate_guards(wasm, rules_version=_rules(), ignore=ignore)
     except GuardError as e:
         print(f"Guard check FAILED: {e}")
         if e.codesec >= 0:
@@ -1133,7 +1138,7 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
 @waiver_options
 def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
         buildbox_url, buildbox_options, ignore_depth, ignore_wce_overage,
-        ignore_guard_calls, depth32):
+        ignore_guard_calls):
     """Weigh exact WASM, or build C production-style and weigh the result.
 
     WCE belongs to the final WASM artifact. Source/DWARF mapping is a separate,
@@ -1265,7 +1270,7 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
             f"{caveat}"
         )
 
-    rules = _rules(depth32)
+    rules = _rules()
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
 
     digest = hashlib.sha256(wasm).hexdigest()
@@ -1291,7 +1296,6 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
     console.print(
         f"  [dim]rules:[/dim] 0x{rules:02X} "
         f"(nesting limit {nesting_limit(rules)})"
-        + (" [yellow]--depth32 assumed[/yellow]" if depth32 else "")
     )
     if trace is not None:
         console.print()

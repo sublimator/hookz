@@ -93,9 +93,11 @@ it the same way, from the manifest `hookz.amendments` reads:
 | `0x02` | `fixGuardDepth32` | DefaultNo | **not enabled** | nesting 16 → 32 |
 
 So mainnet runs `rulesVersion = 0x01` and the nesting limit is 16. Pass
-`rules_version=None` — the default everywhere — to get that; pass an explicit
-int to ask what a hook would do under different rules, which is what
-`--depth32` does. `hookz doctor` prints the mask and which vote produced it.
+`rules_version=None` — the default everywhere — to get that. An explicit int
+asks what a hook would do under rules the network is not running; the library
+allows it, and no CLI command offers it. `--depth32` used to, and it silently
+turned REJECTED into PASSED with exit 0 on `build` and `guard-check`.
+`hookz doctor` prints the mask and which vote produced it.
 
 Getting this wrong is quiet: a checker running rules the network does not have
 refuses hooks it would accept, and one missing rules it does have accepts hooks

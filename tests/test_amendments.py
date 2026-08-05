@@ -208,11 +208,16 @@ class TestTheDefaultSet:
         assert resolve_rules(None) == 0x00
         assert nesting_limit(None) == 16
 
-    def test_an_unreadable_manifest_falls_back_to_the_stricter_reading(
+    def test_an_unreadable_manifest_falls_back_to_zero_and_says_it_is_degraded(
         self, monkeypatch
     ):
-        """Refusing a hook the network would accept is a visible failure.
-        Accepting one it would reject is not."""
+        """Zero is NOT simply "the stricter reading", which is what this test
+        used to be called. The two bits point opposite ways: 0x02 raises the
+        nesting limit, so zero is strict; 0x01 *bans* memory.copy/memory.fill,
+        so zero turns the ban off and is looser than the network.
+
+        The value is still zero — a missing manifest is not grounds to invent
+        rules — but it must not pass for a read of the network."""
         import hookz.amendments as amd
         from hookz.wasm.guard import nesting_limit, resolve_rules
 
@@ -221,8 +226,29 @@ class TestTheDefaultSet:
 
         monkeypatch.setattr(amd, "enabled_on", boom)
 
-        assert resolve_rules(None) == 0
-        assert nesting_limit(None) == 16
+        with pytest.warns(RuntimeWarning, match="more permissive than the network"):
+            assert resolve_rules(None) == 0
+        with pytest.warns(RuntimeWarning):
+            assert nesting_limit(None) == 16
+
+    def test_the_degraded_fallback_names_the_ban_it_switches_off(
+        self, monkeypatch
+    ):
+        """The warning has to say which direction it is wrong in, or a reader
+        takes "fell back" for "was cautious"."""
+        import hookz.amendments as amd
+        from hookz.wasm.guard import resolve_rules
+
+        monkeypatch.setattr(
+            amd, "enabled_on",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("gone")))
+
+        with pytest.warns(RuntimeWarning) as caught:
+            resolve_rules(None)
+
+        message = str(caught[0].message)
+        assert "memory.copy" in message
+        assert "x-inspect-net amendments" in message
 
     def test_an_explicit_rules_version_still_wins(self):
         """Asking what a hook would do under other rules is legitimate."""

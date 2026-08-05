@@ -1053,26 +1053,30 @@ class TestTheVerdictNamesItsRules:
 
         assert seen["rules_version"] == amd.guard_rules_version()
 
-    def test_depth32_is_an_override_and_says_so(self, artifact, monkeypatch):
-        from hookz.wasm.guard import GUARD_RULE_DEPTH_32
-
-        seen = {}
-
-        def spy(wasm, **kw):
-            seen.update(kw)
-            return result()
-
-        monkeypatch.setattr("hookz.wasm.guard.validate_guards", spy)
-
-        out = run(artifact, "--depth32")
-
-        assert seen["rules_version"] & GUARD_RULE_DEPTH_32
-        assert "nesting limit 32" in out.output
-        assert "--depth32 assumed" in out.output
-
-    def test_without_the_override_nothing_claims_an_assumption(
+    def test_there_is_no_way_to_assume_a_rule_the_network_lacks(
         self, artifact, monkeypatch
     ):
+        """`--depth32` is gone. It was a debugging crutch from when hookz's own
+        WCE was wrong, and on `build`/`guard-check` it silently turned REJECTED
+        into PASSED with exit 0 for a hook SetHook refuses. When mainnet votes
+        fixGuardDepth32 in, the manifest carries it and nothing here changes."""
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
+        )
+
+        for command in (
+            ["wce", str(artifact), "--depth32"],
+            ["guard-check", str(artifact), "--depth32"],
+            ["build", "x.c", "--depth32"],
+        ):
+            from click.testing import CliRunner
+            from hookz.cli.main import cli
+
+            out = CliRunner().invoke(cli, command)
+            assert out.exit_code == 2, f"{command}: {out.output}"
+            assert "no such option" in out.output.lower(), out.output
+
+    def test_the_verdict_never_claims_an_assumption(self, artifact, monkeypatch):
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
@@ -1080,6 +1084,7 @@ class TestTheVerdictNamesItsRules:
         out = run(artifact)
 
         assert "assumed" not in out.output
+        assert "nesting limit 16" in out.output
 
     def test_waivers_reach_the_checker_too(self, artifact, monkeypatch):
         from hookz.wasm.guard import IGNORE_DEPTH
@@ -1101,6 +1106,8 @@ class TestTheVerdictNamesItsRules:
     ):
         """The rejected path is exactly when the depth verdict is in question,
         and it used to bound depth at 16 whatever the network ran."""
+        import hookz.amendments as amd
+
         seen = {}
 
         monkeypatch.setattr(
@@ -1114,8 +1121,6 @@ class TestTheVerdictNamesItsRules:
 
         monkeypatch.setattr("hookz.wasm.guard.analyze_wce", spy)
 
-        run(artifact, "--depth32")
+        run(artifact)
 
-        from hookz.wasm.guard import GUARD_RULE_DEPTH_32
-
-        assert seen["rules_version"] & GUARD_RULE_DEPTH_32
+        assert seen["rules_version"] == amd.guard_rules_version()

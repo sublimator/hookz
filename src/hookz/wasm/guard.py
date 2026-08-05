@@ -112,19 +112,43 @@ def resolve_rules(rules_version: int | None) -> int:
     Same convention, for the same reason, as `whitelist._resolve`. xahaud
     derives this per-ledger from the amendments in force
     (xahaud:include/xrpl/hook/Enum.h:451); a constant baked in here is a claim
-    about a network that may have moved. An explicit int still wins, because
-    asking "what would this hook do under depth32" is a legitimate question.
+    about a network that may have moved. An explicit int still wins, so a
+    caller can ask what a hook would do under a rules version the network is
+    not running — but no CLI command offers that, because a speculative
+    verdict printed as a verdict is how a hook SetHook refuses gets shipped.
 
-    Falls back to the stricter reading if no manifest is vendored: refusing a
-    hook the network would accept is a visible failure, accepting one it would
-    reject is not.
+    THE ZERO FALLBACK IS NOT THE STRICT READING
+    -------------------------------------------
+    This used to claim it "falls back to the stricter reading", on the
+    reasoning that refusing a hook the network accepts is a visible failure
+    while accepting one it rejects is not. The reasoning is right; the claim
+    was only half true, because the two bits point opposite ways:
+
+        0x01 fix20250131     BANS memory.copy / memory.fill
+        0x02 fixGuardDepth32 RAISES the nesting limit 16 -> 32
+
+    Zero is the strict reading of 0x02 (limit stays 16) and the *loose* one of
+    0x01 — it turns the ban off, so a hook carrying bulk-memory ops passes
+    here and mainnet refuses it. That is exactly the failure the sentence
+    claimed to be avoiding. Kept as the return value anyway: a missing
+    manifest is not grounds to invent rules, and inventing 0x01 would be a
+    claim about a network nobody read. But it is a degraded answer, so it says
+    so rather than passing for one.
     """
     if rules_version is not None:
         return rules_version
     try:
         from hookz.amendments import guard_rules_version
         return guard_rules_version()
-    except Exception:                                          # noqa: BLE001
+    except Exception as exc:                                   # noqa: BLE001
+        import warnings
+        warnings.warn(
+            f"no amendment manifest could be read ({exc}), so guard rules "
+            "fall back to 0x00 — the memory.copy/memory.fill ban is OFF and "
+            "this check is more permissive than the network. Regenerate with: "
+            "x-inspect-net amendments --net mainnet "
+            "--json src/hookz/data/amendments-mainnet.json",
+            RuntimeWarning, stacklevel=2)
         return 0
 
 
