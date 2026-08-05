@@ -74,6 +74,42 @@ Beyond the CMake mechanism, the branch adds test-writing quality of life:
   `__on_source_line` and xahaud records line:col hits per hook — see
   [Coverage pipeline](#coverage-pipeline).
 
+## Starting a test: `hookz env-test-context`
+
+Everything above, plus what your particular hook needs, as one document:
+
+```bash
+hookz env-test-context hooks/tip.c > context.md
+```
+
+It emits, in order:
+
+1. **The surface** — every host function the compiled hook imports, grouped by
+   what a test has to arrange to reach it (a transaction, hook state, slots,
+   or nothing).
+2. **Where it calls them** — each call site with its source line and the
+   constants the source hid behind macros resolved, from the same
+   instrumentation `hookz surface` uses.
+3. **What those calls do** — the `applyHook.cpp` wrapper and `HookAPI.cpp`
+   implementation of each one, quoted from your checkout.
+4. **The branch patch**, inlined — the same
+   `patches/xahaud-external-env-tests.patch` described below.
+5. **A test skeleton** — includes, the `HOOK_WASM` macro, `TestEnv` setup and
+   the CMake invocation, copied from `examples/tipbot/env-tests` rather than
+   reconstructed.
+
+Pass the `.c`, not the built `.wasm`: call-site attribution comes from
+instrumentation markers that a finished artifact does not carry. A `.wasm`
+still works and yields sections 1 and 3–5.
+
+`--no-impl` drops section 3 and `--no-patch` drops section 4; on a hook the
+size of `tip.c` that is 59KB → 10KB, which matters if the document is going
+into a context window alongside other things.
+
+This needs `paths.xahaud` pointing at a real checkout — the vendored
+`xahaud_lite/` tree has no `src/test/jtx`, and the command refuses it rather
+than emitting a document that looks complete without the harness half.
+
 ## Branch status & vendored patch
 
 The canonical branch is [`external-env-tests` on Xahau/xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests).

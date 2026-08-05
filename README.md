@@ -134,6 +134,8 @@ hookz show float_multiply            Show C++ source + xahaud test vectors
 hookz show --list                    All 68 functions: implemented vs stub
 hookz coverage                       Tests + uncovered line report
 hookz find-tests tip.c:225-400       Which tests cover these lines?
+hookz surface hook.c                 Every host call, with the constants resolved
+hookz env-test-context hook.c        One document to write a C++ env test from
 hookz debug-compile hook.c           Debug build for testing (not for deployment)
 ```
 
