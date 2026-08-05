@@ -169,6 +169,31 @@ class HookResult:
     def checkpoints_for(self, tag: str) -> list:
         return [c for c in self.checkpoints if c.tag == tag]
 
+    def require_checkpoint(self, tag: str):
+        """`checkpoint(tag)`, but say why when it was never reached.
+
+        A checkpoint the run never hit comes back `None`, and indexing `None`
+        fails with "'NoneType' object is not subscriptable" — which buries the
+        one thing the test needed to report: which exit the hook took before
+        the interesting line. The error here carries the exit code and
+        message, and distinguishes "this checkpoint did not run" (others did)
+        from "no checkpoints ran at all", which usually means the binary was
+        not an instrumented dev build.
+        """
+        found = self.checkpoint(tag)
+        if found is not None:
+            return found
+        reached = sorted({c.tag for c in self.checkpoints})
+        detail = (
+            f"checkpoints reached: {reached}" if reached else
+            "no checkpoints were reached at all — was the hook compiled "
+            "with its hookz: directives rendered (compile_hook_dev)?"
+        )
+        raise AssertionError(
+            f"checkpoint {tag!r} was never reached: exit code "
+            f"{self.return_code}, msg {self.return_msg_str!r}; {detail}"
+        )
+
 
 # Amendments enabled by default: whatever mainnet has, read off a live node
 # and vendored as data/amendments-mainnet.json. See hookz.amendments — the
@@ -450,13 +475,41 @@ class HookRuntime:
         finally:
             self.emit_failure = previous
 
-    def run(self, hook: Hook | bytes, label: str | None = None, coverage: bool = False) -> HookResult:
-        """Execute a hook and return the result.
+    def run(self, hook: Hook | bytes, label: str | None = None,
+            coverage: bool = False, export: str = "hook",
+            arg: int = 0) -> HookResult:
+        """Execute an exported hook function and return the result.
 
         Args:
             hook: Hook object or raw WASM bytes
             label: human-readable name (ignored if hook is a Hook object)
             coverage: If True, instrument the WASM for line:col coverage tracking
+            export: which exported function to call — `"hook"` for an ordinary
+                delivery, `"cbak"` for a callback. `run` is the only supported
+                lifecycle for either; a test that instantiates the module
+                itself loses the per-run reset, the module cache, and the
+                coverage merge, and the copies of that code drift apart.
+            arg: the u32 the export receives. The ledger passes `cbak` a ctx
+                whose low bit means the emitted transaction was *not* applied
+                (`ctx_.tx.getTxnType() == ttEMIT_FAILURE ? 1UL : 0UL`,
+                xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1584) — see
+                `callback()` for deriving the field-visibility mask from it,
+                and CALLBACK_APPLIED / CALLBACK_NOT_APPLIED for what the
+                values do and do not mean.
+
+        Field lifecycle — what a run resets and what it deliberately keeps:
+
+        *Per-run* (fresh on every call): `call_log`, `traces`, `checkpoints`,
+        `dev_events`, per-run coverage (markers survive), the wasm store and
+        memory, and `_has_cbak`, which is re-derived from the instantiated
+        module because emission validation depends on it.
+
+        *Durable* (carried across runs on one runtime, on purpose):
+        `state_db`, `_foreign_state_db`, `ledger`, `params`/`tx_params`,
+        `handlers`, `amendments`, `_slot_overrides`, `emitted_txns` and the
+        emission reservation/nonce counters. Multi-delivery tests depend on
+        exactly this — a second callback on the same runtime must see the
+        state and emissions the first one left.
         """
         if isinstance(hook, Hook):
             wasm_bytes = hook.wasm
@@ -510,17 +563,20 @@ class HookRuntime:
         if isinstance(memory, wasmtime.Memory):
             self._memory = memory
 
-        # Get hook export
         # xahaud attaches sfEmitCallback to an emitted transaction exactly
         # when the emitting hook exports cbak, and refuses the emit if the
-        # two disagree. The module is the only place that is knowable.
+        # two disagree ("true iff this hook wasm has a cbak function",
+        # xahaud:src/xrpld/app/hook/applyHook.h:166,
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914). The module is
+        # the only place that is knowable, so it is derived here on every run
+        # — including cbak runs, whose own emits are validated against it.
         self._has_cbak = instance.exports(store).get("cbak") is not None
-        hook_fn = instance.exports(store).get("hook")
+        hook_fn = instance.exports(store).get(export)
         if hook_fn is None:
-            raise RuntimeError("WASM module does not export 'hook'")
+            raise RuntimeError(f"WASM module does not export {export!r}")
 
         try:
-            ret = hook_fn(store, 0)
+            ret = hook_fn(store, arg)
             result.return_code = ret if isinstance(ret, int) else 0
         except HookAccepted as e:
             result.accepted = True
