@@ -43,13 +43,24 @@ def _journal(rt: HookRuntime, scope: str, account: bytes, namespace: bytes,
     ))
 
 
-def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
+def _state_set_error(read_len: int, kread_len: int) -> int | None:
+    """The argument-validation half of `state_set`, shared with the fault
+    layer — the host refuses malformed arguments before any question of
+    whether the write itself would succeed, and a wrapper that re-implemented
+    these checks would drift from them."""
     if kread_len < 1:
         return hookapi.TOO_SMALL
     if kread_len > 32:
         return hookapi.TOO_BIG
     if read_len > 256:
         return hookapi.TOO_BIG
+    return None
+
+
+def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
+    err = _state_set_error(read_len, kread_len)
+    if err is not None:
+        return err
     key = rt._read_memory(kread_ptr, kread_len)
     if read_ptr == 0 and read_len == 0:
         rt.state_db.pop(key, None)

@@ -147,7 +147,10 @@ class StateWrite:
     namespace, so it is a correlation key only when someone set it, not a
     resolved on-ledger namespace. Writes made through a test's own handler
     override bypass the builtin and therefore do not journal — an
-    interceptor that wants its refusals on the record must add them itself.
+    interceptor that wants its refusals on the record must add them itself,
+    which is exactly what `hookz.testing.faults` does: a write it refuses
+    appears here with the refusal code as `result` and no database effect,
+    so an attempted-and-ignored delete is provable from one record.
     """
     scope: str                  # "local" | "foreign"
     account: bytes
