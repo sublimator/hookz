@@ -251,17 +251,61 @@ class XahaudRepo:
                 body = node.child_by_field_name("body")
                 if body is None:
                     return
+                # A body containing parse errors (LedgerEntryType defines an
+                # in-enum macro and populates itself through it) yields
+                # error-recovery enumerator nodes whose names and neighbours
+                # cannot be trusted. In that mode only explicitly
+                # initialized, evaluable entries are kept and nothing is
+                # implicit — a name that is absent fails loudly at import
+                # time, a name with an invented value fails never. A cleanly
+                # parsed body keeps loud failures: an unknown identifier
+                # there is a real cross-header reference that needs `env`
+                # seeding, not something to skip.
+                broken = body.has_error
                 next_value = 0
                 for entry in body.named_children:
                     if entry.type != "enumerator":
                         continue
-                    entry_name = _node_text(
-                        entry.child_by_field_name("name"), source
-                    )
+                    name_node = entry.child_by_field_name("name")
+                    entry_name = _node_text(name_node, source)
                     value_node = entry.child_by_field_name("value")
-                    value = next_value if value_node is None else evaluate(
-                        value_node
-                    )
+                    if value_node is not None:
+                        try:
+                            value = evaluate(value_node)
+                        except ValueError:
+                            if broken:
+                                continue
+                            raise
+                    else:
+                        # An attributed enumerator — `ltNICKNAME
+                        # [[deprecated(...)]] = 0x006e,` — parses as a bare
+                        # identifier: tree-sitter drops the attribute AND
+                        # the initializer from the node. An implicit
+                        # increment would silently invent a value, so the
+                        # initializer is recovered from the rest of the
+                        # source line instead.
+                        rest = source[name_node.end_byte:].split(b"\n", 1)[0]
+                        if b"=" in rest:
+                            literal = rest.rsplit(b"=", 1)[1]
+                            literal = literal.split(b",")[0].strip()
+                            token = literal.decode(errors="replace")
+                            try:
+                                value = int(token.rstrip("uUlL"), 0)
+                            except ValueError:
+                                if token in env:
+                                    value = env[token]
+                                elif broken:
+                                    continue
+                                else:
+                                    raise ValueError(
+                                        f"{rel_path}: enumerator "
+                                        f"{entry_name!r} has an initializer "
+                                        f"this parser cannot read: {token!r}"
+                                    )
+                        elif broken:
+                            continue
+                        else:
+                            value = next_value
                     if unsigned:
                         value &= 0xFFFFFFFF
                     env[entry_name] = value
@@ -639,9 +683,16 @@ class XahaudRepo:
             Path(output_path).write_text(content)
         return content
 
+    #: The generated surface of flags.py. LedgerFormats.h in particular
+    #: contains other enums (LedgerEntryType is built through an in-enum
+    #: macro) whose error-recovery parse yields artifact enumerators; the
+    #: filter keeps the module to exactly what its title declares.
+    FLAG_PREFIXES = ("tf", "asf", "lsf")
+
     def generate_flags_py(self, output_path: str | Path | None = None) -> str:
         """Generate `hookz/flags.py` — tf*/asf* transaction flags and lsf*
-        ledger-object flags, cited per constant.
+        ledger-object flags, cited per constant. Names outside FLAG_PREFIXES
+        are not emitted.
         """
         lines = self._generated_header(
             "Transaction flags (tf*/asf*) and ledger-entry flags (lsf*) "
@@ -666,6 +717,8 @@ class XahaudRepo:
         for header in (self.TX_FLAGS_HEADER, self.LEDGER_FORMATS_HEADER):
             current_enum = None
             for c in parsed[header]:
+                if not c.name.startswith(self.FLAG_PREFIXES):
+                    continue
                 if c.name in seen:
                     if seen[c.name] != c.value:
                         raise ValueError(

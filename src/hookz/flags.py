@@ -143,14 +143,6 @@ tfClearAccountCreateAmount = 0x00010000  # xahaud:include/xrpl/protocol/TxFlags.
 # ---- constexpr (include/xrpl/protocol/TxFlags.h) ----
 tfBridgeModifyMask = 0x7FFEFFFF  # xahaud:include/xrpl/protocol/TxFlags.h:276
 
-# ---- LedgerEntryType (include/xrpl/protocol/LedgerFormats.h) ----
-value = 0  # xahaud:include/xrpl/protocol/LedgerFormats.h:59
-name = 1  # xahaud:include/xrpl/protocol/LedgerFormats.h:59
-rpcName = 2  # xahaud:include/xrpl/protocol/LedgerFormats.h:59
-fields = 0  # xahaud:include/xrpl/protocol/LedgerFormats.h:59
-ltANY = 0  # xahaud:include/xrpl/protocol/LedgerFormats.h:78
-ltCHILD = 7378  # xahaud:include/xrpl/protocol/LedgerFormats.h:91
-ltNICKNAME = 7379  # xahaud:include/xrpl/protocol/LedgerFormats.h:100
 # ---- LedgerSpecificFlags (include/xrpl/protocol/LedgerFormats.h) ----
 lsfPasswordSpent = 0x00010000  # xahaud:include/xrpl/protocol/LedgerFormats.h:125
 lsfRequireDestTag = 0x00020000  # xahaud:include/xrpl/protocol/LedgerFormats.h:126

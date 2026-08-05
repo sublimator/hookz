@@ -215,6 +215,71 @@ constexpr std::uint32_t inverted = ~(bit | third);
         assert parsed["inverted"].value == 0x7FFFFFEF
         assert parsed["combined"].enum == "constexpr"
 
+    def test_an_attributed_enumerator_keeps_its_declared_value(self, tmp_path):
+        """`x [[deprecated(...)]] = 0x006e` loses its initializer to
+        tree-sitter error recovery; the parser must recover the declared
+        value from the line, never invent one by implicit increment."""
+        from hookz.xrpl.xahaud import XahaudRepo
+
+        (tmp_path / "attributed.h").write_text(
+            "enum L {\n"
+            "    first = 0x0061,\n"
+            '    tagged [[deprecated("gone")]] = 0x006e,\n'
+            "};\n"
+        )
+        parsed = {
+            c.name: c.value
+            for c in XahaudRepo(tmp_path).parse_enum_constants("attributed.h")
+        }
+        assert parsed["tagged"] == 0x006E, (
+            "the attributed enumerator's declared value was not recovered")
+
+    def test_a_broken_enum_body_yields_no_invented_values(self, tmp_path):
+        """An enum populated through an in-body macro (LedgerEntryType's
+        shape) parses with errors; its error-recovery enumerator nodes must
+        not surface as constants with implicit or unevaluable values."""
+        from hookz.xrpl.xahaud import XahaudRepo
+
+        (tmp_path / "broken.h").write_text(
+            "enum B : std::uint16_t {\n"
+            "#define ENTRY(tag, value, name, rpcName, fields) tag = value,\n"
+            "    ENTRY(ltFIRST, 0x0061, First, first, ({}))\n"
+            '    explicitly [[deprecated("x")]] = 0x006e,\n'
+            "};\n"
+        )
+        parsed = {
+            c.name: c.value
+            for c in XahaudRepo(tmp_path).parse_enum_constants("broken.h")
+        }
+        for artifact in ("value", "name", "rpcName", "fields", "tag"):
+            assert artifact not in parsed, (
+                f"macro artifact {artifact!r} surfaced as a constant")
+
+    def test_the_real_ledger_formats_header_parses_without_artifacts(self):
+        """The vendored LedgerFormats.h is the case that shipped artifacts:
+        macro parameters as constants and an attributed enumerator with an
+        invented value. Its error-recovery shape is content-dependent, so
+        the real file is the regression, not a synthetic reduction."""
+        from hookz.xahaud_files import _vendored_root
+        from hookz.xrpl.xahaud import XahaudRepo
+
+        repo = XahaudRepo(_vendored_root())
+        parsed = {
+            c.name: c.value
+            for c in repo.parse_enum_constants(repo.LEDGER_FORMATS_HEADER)
+        }
+        for artifact in ("value", "name", "rpcName", "fields", "tag"):
+            assert artifact not in parsed, (
+                f"macro artifact {artifact!r} surfaced as a constant")
+        assert parsed.get("ltNICKNAME") in (None, 0x006E), (
+            "an attributed enumerator surfaced with an invented value")
+        assert parsed["lsfDisallowIncomingRemit"] == 0x80000000
+        assert parsed["lsfRequireDestTag"] == 0x00020000
+
+    def test_the_flags_surface_is_exactly_its_declared_prefixes(self):
+        for line in _constant_assignments(SRC / "flags.py"):
+            assert line.startswith(("tf", "asf", "lsf")), line
+
     def test_a_shared_environment_crosses_files(self, tmp_path):
         repo = self._repo(tmp_path)
         (tmp_path / "other.h").write_text(
