@@ -128,6 +128,7 @@ class XahaudRepo:
 
     def parse_enum_constants(
         self, rel_path: str, env: dict[str, int] | None = None,
+        constexpr_too: bool = False,
     ) -> list[EnumConstant]:
         """Every enumerator in `rel_path`, in declaration order, values resolved.
 
@@ -139,7 +140,14 @@ class XahaudRepo:
         compiler stores — a `~x` mask must come out as the uint32 the chain
         compares against, not a negative Python int.
 
-        `env` seeds identifier resolution and accumulates every enumerator
+        `constexpr_too` also collects file-scope `constexpr <int type> name =
+        expr;` declarations, in the same declaration order and environment —
+        TxFlags.h defines the AMM flags and every transaction mask that way,
+        not as enumerators. Opt-in because other headers use constexpr for
+        functions and non-integer values this evaluator has no business
+        guessing at.
+
+        `env` seeds identifier resolution and accumulates every constant
         parsed — pass one dict across files when a header references another
         header's constants (TxFlags.h reads lsf* from LedgerFormats.h).
         """
@@ -198,7 +206,39 @@ class XahaudRepo:
                         return evaluate(child)
             raise ValueError(f"unsupported expression node {kind!r}")
 
+        def constexpr_declaration(node) -> None:
+            """`constexpr std::uint32_t [const] name = expr;` at file scope."""
+            if not any(c.type == "type_qualifier"
+                       and _node_text(c, source) == "constexpr"
+                       for c in node.children):
+                return
+            type_node = node.child_by_field_name("type")
+            declarator = node.child_by_field_name("declarator")
+            if type_node is None or declarator is None:
+                return
+            if declarator.type != "init_declarator":
+                return                      # a constexpr function, not a value
+            name_node = declarator.child_by_field_name("declarator")
+            value_node = declarator.child_by_field_name("value")
+            if (name_node is None or name_node.type != "identifier"
+                    or value_node is None):
+                return
+            name = _node_text(name_node, source)
+            value = evaluate(value_node)
+            if "uint" in _node_text(type_node, source):
+                value &= 0xFFFFFFFF
+            env[name] = value
+            constants.append(EnumConstant(
+                name=name,
+                value=value,
+                line=node.start_point[0] + 1,
+                enum="constexpr",
+            ))
+
         def walk(node) -> None:
+            if constexpr_too and node.type == "declaration":
+                constexpr_declaration(node)
+                return
             if node.type == "enum_specifier":
                 name_node = node.child_by_field_name("name")
                 enum_name = (
@@ -610,6 +650,8 @@ class XahaudRepo:
         )
         # TxFlags.h references lsf* names, so LedgerFormats.h parses first to
         # seed the shared environment; emission order below is tf then lsf.
+        # TxFlags.h defines the AMM flags and the transaction masks as
+        # constexpr rather than enumerators, so those are collected too.
         env: dict[str, int] = {}
         parsed = {
             self.LEDGER_FORMATS_HEADER: self.parse_enum_constants(
@@ -617,7 +659,7 @@ class XahaudRepo:
             ),
         }
         parsed[self.TX_FLAGS_HEADER] = self.parse_enum_constants(
-            self.TX_FLAGS_HEADER, env
+            self.TX_FLAGS_HEADER, env, constexpr_too=True
         )
 
         seen: dict[str, int] = {}

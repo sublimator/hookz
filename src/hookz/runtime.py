@@ -85,6 +85,26 @@ class ParamMap(dict):
         for key, value in kwargs.items():
             self[key] = value
 
+    # dict's own union/copy return plain dicts and skip __setitem__, which
+    # would silently drop normalization for every later write — the exact
+    # invisible-parameter bug this class exists to prevent.
+    def copy(self) -> "ParamMap":
+        return ParamMap(self)
+
+    def __or__(self, other) -> "ParamMap":
+        merged = ParamMap(self)
+        merged.update(other)
+        return merged
+
+    def __ror__(self, other) -> "ParamMap":
+        merged = ParamMap(other)
+        merged.update(self)
+        return merged
+
+    def __ior__(self, other) -> "ParamMap":
+        self.update(other)
+        return self
+
 
 class HookAccepted(Exception):
     """Raised when hook calls accept()."""
@@ -308,9 +328,19 @@ class HookRuntime:
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
         self.call_log: list[HostCall] = []
+        # Accepted emissions, accumulated across every run on this runtime —
+        # the durable history a multi-delivery test reads. During a run the
+        # current invocation's emits append here too (so handlers and
+        # interceptors see the live queue), but everything past
+        # `_emitted_mark` is that run's pending slice: kept on accept,
+        # withdrawn into `attempted_emissions` otherwise, mirroring how the
+        # ledger applies a hook's queue only on success
+        # (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2026).
         self.emitted_txns: list[bytes] = []
-        # Emissions from a run that rolled back. See the note in `run`.
+        # The *last* run's emissions when that run did not accept — per-run,
+        # reset on every run. See the note in `run`.
         self.attempted_emissions: list[bytes] = []
+        self._emitted_mark: int = 0
         self.traces: list = []  # list[Trace] from handlers.core
         # HOOKZ_CHECK recording. `checkpoint_observers` lets a caller react as
         # each one closes — a live model comparison, a log — without the
@@ -501,15 +531,22 @@ class HookRuntime:
 
         *Per-run* (fresh on every call): `call_log`, `traces`, `checkpoints`,
         `dev_events`, per-run coverage (markers survive), the wasm store and
-        memory, and `_has_cbak`, which is re-derived from the instantiated
-        module because emission validation depends on it.
+        memory, `_has_cbak` (re-derived from the instantiated module because
+        emission validation depends on it), and the whole emission context —
+        the pending queue, `attempted_emissions`, the `etxn_reserve` flag and
+        count (once per hook execution on chain), the nonce counter
+        (`emit_nonce_counter` lives on the per-execution HookContext,
+        xahaud:src/xrpld/app/hook/applyHook.h:203), and the
+        `emission_rejections` / `emission_undecided` diagnostics.
 
         *Durable* (carried across runs on one runtime, on purpose):
         `state_db`, `_foreign_state_db`, `ledger`, `params`/`tx_params`,
-        `handlers`, `amendments`, `_slot_overrides`, `emitted_txns` and the
-        emission reservation/nonce counters. Multi-delivery tests depend on
-        exactly this — a second callback on the same runtime must see the
-        state and emissions the first one left.
+        `handlers`, `amendments`, `_slot_overrides`, and `emitted_txns` — the
+        accepted-emission history, which only ever grows by the runs that
+        accepted. Multi-delivery tests depend on exactly this: a second
+        callback on the same runtime must see the state and accepted
+        emissions the first one left, and a later rejecting run must not be
+        able to reclassify or clear them.
         """
         if isinstance(hook, Hook):
             wasm_bytes = hook.wasm
@@ -525,6 +562,13 @@ class HookRuntime:
         self.checkpoints = []
         self.dev_events = []
         self._dev_pending_events = []
+        self._emitted_mark = len(self.emitted_txns)
+        self.attempted_emissions = []
+        self.emission_rejections = []
+        self.emission_undecided = []
+        self._etxn_reserved = False
+        self._etxn_count = 0
+        self._emit_nonce_counter = 0
         # share the lists so a caller can read checkpoints mid-run via an
         # observer, and off the result afterwards
         result.checkpoints = self.checkpoints
@@ -552,44 +596,54 @@ class HookRuntime:
         # cache it against them. (Hooks are large because nothing inside one
         # can be a function, so everything is inlined.)
         engine, module = _module_for(wasm_bytes)
-        store = wasmtime.Store(engine)
-        self._store = store
-        linker = self._make_host_functions(store, module)
-
-        instance = linker.instantiate(store, module)
-
-        # Get memory export
-        memory = instance.exports(store).get("memory")
-        if isinstance(memory, wasmtime.Memory):
-            self._memory = memory
-
-        # xahaud attaches sfEmitCallback to an emitted transaction exactly
-        # when the emitting hook exports cbak, and refuses the emit if the
-        # two disagree ("true iff this hook wasm has a cbak function",
-        # xahaud:src/xrpld/app/hook/applyHook.h:166,
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914). The module is
-        # the only place that is knowable, so it is derived here on every run
-        # — including cbak runs, whose own emits are validated against it.
-        self._has_cbak = instance.exports(store).get("cbak") is not None
-        hook_fn = instance.exports(store).get(export)
-        if hook_fn is None:
-            raise RuntimeError(f"WASM module does not export {export!r}")
-
+        # Everything from here to the end of execution runs under one
+        # finally: whatever the exit — a missing export, an instantiation
+        # failure, a trap — the runtime must not keep a stale store or memory
+        # attached, or the next run (or a stray handler call between runs)
+        # reads the corpse of this one.
         try:
-            ret = hook_fn(store, arg)
-            result.return_code = ret if isinstance(ret, int) else 0
-        except HookAccepted as e:
-            result.accepted = True
-            result.return_msg = e.msg
-            result.return_code = e.code
-        except HookRejected as e:
-            result.rejected = True
-            result.return_msg = e.msg
-            result.return_code = e.code
-        except wasmtime.Trap as e:
-            result.error = e
-        except Exception as e:
-            result.error = e
+            store = wasmtime.Store(engine)
+            self._store = store
+            linker = self._make_host_functions(store, module)
+
+            instance = linker.instantiate(store, module)
+
+            # Get memory export
+            memory = instance.exports(store).get("memory")
+            if isinstance(memory, wasmtime.Memory):
+                self._memory = memory
+
+            # xahaud attaches sfEmitCallback to an emitted transaction
+            # exactly when the emitting hook exports cbak, and refuses the
+            # emit if the two disagree ("true iff this hook wasm has a cbak
+            # function", xahaud:src/xrpld/app/hook/applyHook.h:166,
+            # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914). The module
+            # is the only place that is knowable, so it is derived here on
+            # every run — including cbak runs, whose own emits are validated
+            # against it.
+            self._has_cbak = instance.exports(store).get("cbak") is not None
+            hook_fn = instance.exports(store).get(export)
+            if hook_fn is None:
+                raise RuntimeError(f"WASM module does not export {export!r}")
+
+            try:
+                ret = hook_fn(store, arg)
+                result.return_code = ret if isinstance(ret, int) else 0
+            except HookAccepted as e:
+                result.accepted = True
+                result.return_msg = e.msg
+                result.return_code = e.code
+            except HookRejected as e:
+                result.rejected = True
+                result.return_msg = e.msg
+                result.return_code = e.code
+            except wasmtime.Trap as e:
+                result.error = e
+            except Exception as e:
+                result.error = e
+        finally:
+            self._store = None
+            self._memory = None
 
         # Emitted transactions are held until the hook finishes and applied
         # only if it succeeded: `finalizeHookResult(hookResult, ctx_,
@@ -598,15 +652,21 @@ class HookRuntime:
         # commented "etx stored here until accept/rollback"
         # (xahaud:src/xrpld/app/hook/applyHook.h:149).
         #
-        # So a hook that rolls back emits nothing. Leaving them here would let
-        # a test assert a payout happened on a run the hook refused. They move
-        # to `attempted_emissions`, because "it tried to pay and then rolled
-        # back" is a thing a test may legitimately want to prove.
-        if not result.accepted and self.emitted_txns:
-            self.attempted_emissions = list(self.emitted_txns)
-            self.emitted_txns = []
-        result.emitted_txns = self.emitted_txns
-        result.attempted_emissions = self.attempted_emissions
+        # So a hook that rolls back emits nothing. This run's queue is the
+        # slice past `_emitted_mark`: on accept it stays in the runtime's
+        # durable accepted history; on anything else it is withdrawn into
+        # this run's `attempted_emissions`, because "it tried to pay and then
+        # rolled back" is a thing a test may legitimately want to prove.
+        # Either way the result carries only what *this* run did — an earlier
+        # run's accepted emissions are history, not something a later
+        # rejection can reclassify or clear.
+        pending = self.emitted_txns[self._emitted_mark:]
+        if result.accepted:
+            result.emitted_txns = pending
+        else:
+            del self.emitted_txns[self._emitted_mark:]
+            self.attempted_emissions = pending
+            result.attempted_emissions = pending
 
         result.call_log = self.call_log
 
@@ -626,6 +686,4 @@ class HookRuntime:
                             tracker.hit(line, col)
                     break
 
-        self._store = None
-        self._memory = None
         return result

@@ -134,7 +134,9 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
 def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
     if not rt._etxn_reserved:
         return hookapi.PREREQUISITE_NOT_MET
-    if len(rt.emitted_txns) >= rt._etxn_count:
+    # The reservation covers this hook execution only, so the count is taken
+    # over this run's slice of the queue, not the runtime's whole history.
+    if len(rt.emitted_txns) - rt._emitted_mark >= rt._etxn_count:
         return hookapi.TOO_MANY_EMITTED_TXN
     if hash_len < 32:
         return hookapi.TOO_SMALL

@@ -110,6 +110,11 @@ CITED_FILES = (
     "src/libxrpl/protocol/Feature.cpp",           # amendments.py, the naming rule
     "include/xrpl/protocol/detail/features.macro",  # amendments.py, the name index
     "include/xrpl/protocol/detail/sfields.macro",  # xrpl/server_definitions.json
+    "include/xrpl/protocol/detail/transactions.macro",  # handlers/otxn.py, ttEMIT_FAILURE
+    "include/xrpl/protocol/TER.h",                # ter.py, per-constant citations
+    "include/xrpl/protocol/TxFlags.h",            # flags.py, tf*/asf* citations
+    "include/xrpl/protocol/LedgerFormats.h",      # flags.py, lsf* citations
+    "include/xrpl/protocol/HashPrefix.h",         # emission.py, emitted_txn_id
 )
 
 
