@@ -422,45 +422,105 @@ class TestTheDisclosureHasOneSource:
     the difference.
     """
 
-    def test_every_renderer_goes_through_the_one_formatter(self):
+    # Whole modules, not `vars(module)`. The first version walked module
+    # globals and filtered on `hasattr(fn, "__code__")` — which every
+    # @cli.command() fails, because click replaces the function with a
+    # `Command` instance. So the scan set was 26 helpers and excluded `build`,
+    # `wce` and `guard_check`: the two functions that had ever held a copy
+    # were the two it could not see. Restoring either offender verbatim left
+    # the whole suite green.
+    MODULES = ["hookz.cli.main", "hookz.cli.doctor"]
+
+    @staticmethod
+    def _statements(module_name, excluding="_rules_line"):
+        """Source statements with continuations joined, minus the formatter.
+
+        Per-line matching was evadable by splitting the f-string one token
+        earlier — `log("  rules: " f"0x{v:02X} …")` matched nothing. `ast`
+        joins them. The formatter's own body is excluded or it reports itself.
+        """
+        import ast
+        import importlib
         import inspect
 
-        from hookz.cli import main as cli_main
+        src = inspect.getsource(importlib.import_module(module_name))
+        tree = ast.parse(src)
 
-        # Anything that emits the word "rules:" must get the text from
-        # _rules_line rather than formatting its own.
-        offenders = []
-        for name, fn in vars(cli_main).items():
-            if not callable(fn) or not hasattr(fn, "__code__"):
-                continue
-            try:
-                src = inspect.getsource(fn)
-            except (OSError, TypeError):
-                continue
-            for line in src.splitlines():
-                if "rules:" in line and "_rules_line" not in line:
-                    if "nesting limit" in line or "0x{" in line:
-                        offenders.append(f"{name}: {line.strip()}")
-        assert not offenders, "hand-formatted rules line(s): " + "; ".join(offenders)
+        skip = range(0)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == excluding:
+                skip = range(node.lineno, (node.end_lineno or node.lineno) + 1)
 
-    def test_no_local_name_shadows_the_helper(self):
+        return [
+            (n.lineno, ast.unparse(n))
+            for n in ast.walk(tree)
+            if isinstance(n, ast.stmt) and n.lineno not in skip
+            and not isinstance(n, (ast.FunctionDef, ast.ClassDef))
+        ]
+
+    def test_nothing_in_the_cli_formats_its_own_rules_line(self):
+        """Positive rule: the numbers come from _rules_line or not at all."""
+        # "nesting limit {" — interpolated, so the --ignore-depth help text
+        # ("Waive the block nesting limit …") is prose and not a renderer.
+        offenders = [
+            f"main.py:{lineno} {stmt.splitlines()[0]}"
+            for lineno, stmt in self._statements("hookz.cli.main")
+            if "nesting limit {" in stmt and "_rules_line" not in stmt
+        ]
+        assert not offenders, (
+            "hand-formatted rules line(s): " + "; ".join(offenders))
+
+    def test_the_formatter_is_the_only_producer_of_the_label(self):
+        """Counted, so a second producer is a failure rather than a shape the
+        blacklist happened not to match."""
+        producers = [
+            stmt for _, stmt in self._statements("hookz.cli.main")
+            if "  rules:" in stmt or "rules:[/dim]" in stmt
+        ]
+        assert producers == [], producers
+
+    def test_doctor_reports_the_same_numbers_in_its_own_layout(self):
+        """doctor renders labelled report rows, not the one-line disclosure —
+        a different presentation, legitimately. What must not differ is the
+        numbers, so bind those rather than the string.
+        """
+        from hookz.cli.main import _nesting_limit, _rules
+
+        rows = []
+
+        class _Rep:
+            def section(self, *a):
+                pass
+
+            def info(self, label, value):
+                rows.append((label, value))
+
+            def optional(self, *a):
+                rows.append(("optional", a))
+
+        from hookz.cli.doctor import _check_guard_rules
+
+        _check_guard_rules(_Rep())
+        reported = dict(rows)
+        assert reported["rulesVersion"] == f"0x{_rules():02X}"
+        assert reported["nesting limit"] == str(_nesting_limit(_rules()))
+
+    @pytest.mark.parametrize("module_name", MODULES)
+    def test_no_name_shadows_the_helper(self, module_name):
         """`guard_check` defined its own `_say_rules(emit=print)` inside a
-        module that already had `_say_rules(rules_version, log)`."""
+        module that already had `_say_rules(rules_version, log)` — a nested
+        def, invisible to a scan that never reached the command."""
+        import ast
+        import importlib
         import inspect
 
-        from hookz.cli import main as cli_main
-
-        for name, fn in vars(cli_main).items():
-            if not callable(fn) or not hasattr(fn, "__code__"):
-                continue
-            try:
-                src = inspect.getsource(fn)
-            except (OSError, TypeError):
-                continue
-            if name in ("_say_rules", "_rules_line"):
-                continue
-            assert "def _say_rules" not in src, f"{name} shadows _say_rules"
-            assert "def _rules_line" not in src, f"{name} shadows _rules_line"
+        src = inspect.getsource(importlib.import_module(module_name))
+        defs = [
+            n.name for n in ast.walk(ast.parse(src))
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for helper in ("_say_rules", "_rules_line"):
+            assert defs.count(helper) <= 1, f"{helper} defined twice"
 
     def test_the_dim_variant_says_the_same_numbers(self):
         from rich.markup import render
@@ -563,3 +623,61 @@ class TestTheRulesLineFollowsItsVerdict:
         for art in (deep, shallow):
             r = TestBuildAndWceAgree._run(["guard-check", str(art)])
             self._assert_rules_after_verdict(r.output)
+
+
+class TestWriteFailuresAreVerdicts:
+    """The last unguarded stage, and the worst place to traceback: the build
+    succeeded, the guard check passed, the verdict and rules printed — then
+    the process died on `-o` naming a directory that does not exist.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args, catch_exceptions=False)
+
+    @pytest.mark.parametrize("extra", TestBuildAndWceAgree.COMPILING)
+    def test_a_missing_output_directory_is_reported(self, tmp_path, extra):
+        r = self._run(
+            ["build", str(SOURCE),
+             "-o", str(tmp_path / "no" / "such" / "dir" / "h.wasm"), *extra]
+        )
+
+        assert r.exit_code == 1
+        assert "Write FAILED" in r.output
+        # the distinction that matters: nothing was wrong with the binary
+        assert "passed every check" in r.output
+
+    def test_an_unwritable_path_is_reported(self, tmp_path):
+        locked = tmp_path / "locked"
+        locked.mkdir()
+        locked.chmod(0o500)
+        try:
+            r = self._run(
+                ["build", str(SOURCE), "-o", str(locked / "h.wasm")]
+            )
+            assert r.exit_code == 1
+            assert "Write FAILED" in r.output
+        finally:
+            locked.chmod(0o700)
+
+    def test_clean_reports_it_too(self, tmp_path):
+        art = tmp_path / "in.wasm"
+        TestBuildAndWceAgree._run(
+            ["build", str(SOURCE), "-o", str(art)]
+        )
+
+        r = self._run(
+            ["clean", str(art), "-o", str(tmp_path / "no" / "dir" / "o.wasm")]
+        )
+
+        assert r.exit_code == 1
+        assert "Write FAILED" in r.output
+
+    def test_a_writable_path_still_writes(self, tmp_path):
+        out = tmp_path / "h.wasm"
+        r = self._run(["build", str(SOURCE), "-o", str(out)])
+        assert r.exit_code == 0, r.output
+        assert out.read_bytes()[:4] == b"\x00asm"

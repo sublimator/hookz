@@ -860,8 +860,25 @@ def pipelines():
         )
 
 
+def _write_artifact(output, wasm: bytes, log, stdout_mode: bool) -> None:
+    """Write the validated binary, or say why it could not be written.
+
+    Bare `output.write_bytes` on every path until a reviewer went looking for
+    a fourth unguarded stage. It is the worst place to traceback: the build
+    succeeded, the guard check passed, the verdict and rules printed, and then
+    the process dies on `-o` naming a directory that does not exist — an
+    ordinary typo, same as a read-only path or a full disk.
+    """
+    try:
+        Path(output).write_bytes(wasm)
+    except OSError as e:
+        log(f"  Write FAILED: {e}")
+        log("  The binary passed every check; only writing it failed.")
+        sys.exit(1)
+
+
 def _build_fail(log, output, stdout_mode: bool, message: str,
-                rules_version: int | None = None) -> None:
+                *, rules_version: int | None = None) -> None:
     """Report a build-stage failure and exit without writing an artifact.
 
     Nothing is written on failure, so a pre-existing file at `output` is a
@@ -954,7 +971,7 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
         _say_rules(rules_version, log)
     except GuardError as e:
         _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}",
-                    rules_version)
+                    rules_version=rules_version)
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -963,7 +980,7 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     if stdout_mode:
         sys.stdout.buffer.write(cleaned)
     else:
-        output.write_bytes(cleaned)
+        _write_artifact(output, cleaned, log, stdout_mode)
         log(f"  → {output} ({len(cleaned)} bytes)")
     _report_waived(result, log)
     # Non-zero on waivers: this binary is for analysis, and CI that treats
@@ -1032,14 +1049,14 @@ def _build_buildbox(
     except GuardError as exc:
         _build_fail(
             log, output, stdout_mode, f"Local guard check FAILED: {exc}",
-            rules_version,
+            rules_version=rules_version,
         )
 
     _validate_wasm(wasm, source.name, log)
     if stdout_mode:
         sys.stdout.buffer.write(wasm)
     else:
-        output.write_bytes(wasm)
+        _write_artifact(output, wasm, log, stdout_mode)
         log(f"  → {output} ({len(wasm)} bytes)")
     _report_waived(validation, log)
     sys.exit(1 if validation.waived else 0)
@@ -1106,7 +1123,7 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
         _say_rules(rules_version, log)
     except GuardError as e:
         _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}",
-                    rules_version)
+                    rules_version=rules_version)
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -1115,7 +1132,7 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
     if stdout_mode:
         sys.stdout.buffer.write(cleaned)
     else:
-        output.write_bytes(cleaned)
+        _write_artifact(output, cleaned, log, stdout_mode)
         log(f"  → {output} ({len(cleaned)} bytes, coverage-instrumented)")
     _report_waived(result, log)
     sys.exit(1 if result.waived else 0)
@@ -1141,7 +1158,7 @@ def clean(input_wasm, output):
         print(f"Clean failed: {e}")
         sys.exit(1)
 
-    output.write_bytes(cleaned)
+    _write_artifact(output, cleaned, print, stdout_mode=False)
     print(f"Cleaned {source.name}: {len(wasm)} → {len(cleaned)} bytes → {output}")
     sys.exit(0)
 

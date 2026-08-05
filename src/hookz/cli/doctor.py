@@ -300,11 +300,15 @@ def _check_guard_rules(rep: _Report) -> None:
     it 16 rather than having to trust a constant.
     """
     from hookz import amendments as amd
-    from hookz.wasm.guard import nesting_limit
+    from hookz.wasm.guard import nesting_limit, resolve_rules
 
     rep.section("Guard rules (xahaud:include/xrpl/hook/Enum.h:451)")
     try:
-        version = amd.guard_rules_version()
+        # Through resolve_rules, not guard_rules_version directly: that is the
+        # function every verdict uses, and it warns when it degrades to 0x00.
+        # Reading the manifest by a second route meant doctor could report
+        # health that no build path would agree with.
+        version = resolve_rules(None)
     except Exception as e:                                     # noqa: BLE001
         rep.optional("rules", f"could not read the manifest: {e}",
                      "regenerate with x-inspect-net amendments")
