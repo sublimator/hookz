@@ -479,31 +479,111 @@ class TestTheDisclosureHasOneSource:
         ]
         assert producers == [], producers
 
-    def test_doctor_reports_the_same_numbers_in_its_own_layout(self):
+    class _Rep:
+        """Enough of _Report to record what doctor tried to say."""
+
+        def __init__(self):
+            self.rows = []
+
+        def section(self, *a):
+            pass
+
+        def info(self, label, value):
+            self.rows.append((label, value))
+
+        def optional(self, label, detail="", hint=""):
+            self.rows.append(("optional", detail))
+
+    @staticmethod
+    def _doctor_rows():
+        from hookz.cli.doctor import _check_guard_rules
+
+        rep = TestTheDisclosureHasOneSource._Rep()
+        _check_guard_rules(rep)
+        return rep.rows
+
+    def test_doctor_reports_the_same_numbers_in_its_own_layout(
+        self, monkeypatch
+    ):
         """doctor renders labelled report rows, not the one-line disclosure —
         a different presentation, legitimately. What must not differ is the
         numbers, so bind those rather than the string.
+
+        Asserted twice, the second time off the constant. On today's manifest
+        this reads `0x01 == 0x01`, which a hardcoded literal satisfies just as
+        well as a derivation — the same vacuity `TestTheRulesFollowTheNetwork`
+        exists to rule out, reintroduced here because one assertion looked
+        obviously sufficient.
         """
         from hookz.cli.main import _nesting_limit, _rules
 
-        rows = []
-
-        class _Rep:
-            def section(self, *a):
-                pass
-
-            def info(self, label, value):
-                rows.append((label, value))
-
-            def optional(self, *a):
-                rows.append(("optional", a))
-
-        from hookz.cli.doctor import _check_guard_rules
-
-        _check_guard_rules(_Rep())
-        reported = dict(rows)
+        reported = dict(self._doctor_rows())
         assert reported["rulesVersion"] == f"0x{_rules():02X}"
         assert reported["nesting limit"] == str(_nesting_limit(_rules()))
+
+        TestTheRulesFollowTheNetwork._with_depth32(monkeypatch)
+        moved = dict(self._doctor_rows())
+        assert moved["rulesVersion"] == "0x03"
+        assert moved["nesting limit"] == "32"
+
+    def test_a_corrupt_manifest_is_a_row_not_a_traceback(self, monkeypatch):
+        """The regression this class's own change caused.
+
+        `resolve_rules` catches the read failure and returns 0, so the handler
+        it was wrapped in became unreachable and `provenance()` — the very next
+        line, same file, a route that does raise — took the process out. A
+        diagnostic command tracebacking on a broken environment is the worst
+        available failure mode: it is the state the command exists to name.
+        """
+        import hookz.amendments as amd
+
+        def _corrupt(*a, **k):
+            raise ValueError("Expecting property name: line 1 column 3")
+
+        monkeypatch.setattr(amd, "manifest", _corrupt)
+
+        with pytest.warns(RuntimeWarning):
+            rows = self._doctor_rows()
+
+        assert rows == [("optional", "could not read the manifest: "
+                         "Expecting property name: line 1 column 3")], rows
+
+    def test_the_degraded_report_is_not_half_a_report(self, monkeypatch):
+        """guard_rules_explained() reads the manifest too, and it is called
+        after two rows are already on the page. Rendering nothing until every
+        read has succeeded is what keeps a failure from printing a network
+        line and a rulesVersion and then giving up mid-section."""
+        import hookz.amendments as amd
+
+        monkeypatch.setattr(
+            amd, "guard_rules_explained",
+            lambda *a, **k: (_ for _ in ()).throw(OSError("gone")))
+
+        rows = self._doctor_rows()
+
+        assert [label for label, _ in rows] == ["optional"], rows
+
+    def test_doctor_degrades_by_the_same_route_every_verdict_uses(
+        self, monkeypatch
+    ):
+        """The whole point of routing through `resolve_rules`, and the only
+        consequence of it that is observable at all.
+
+        Both routes return 0x01 today, so no assertion on the number can tell
+        them apart. They differ in exactly one place: `resolve_rules` warns
+        that its answer is degraded before returning 0, and
+        `guard_rules_version` just raises. Reverting doctor to the direct call
+        still produces the diagnostic row — the try covers it — but silently.
+        """
+        import hookz.amendments as amd
+
+        monkeypatch.setattr(
+            amd, "manifest",
+            lambda *a, **k: (_ for _ in ()).throw(ValueError("bad json")))
+
+        with pytest.warns(RuntimeWarning, match="more permissive than the "
+                          "network"):
+            self._doctor_rows()
 
     @pytest.mark.parametrize("module_name", MODULES)
     def test_no_name_shadows_the_helper(self, module_name):

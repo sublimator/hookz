@@ -308,17 +308,28 @@ def _check_guard_rules(rep: _Report) -> None:
         # function every verdict uses, and it warns when it degrades to 0x00.
         # Reading the manifest by a second route meant doctor could report
         # health that no build path would agree with.
+        #
+        # resolve_rules swallowing that failure is what made the try too
+        # narrow: it returns 0 rather than raising, so the handler below went
+        # unreachable and the next line — provenance(), reading the same file
+        # by a route that does raise — tracebacked out of the one command
+        # whose entire job is to report a broken environment. Every read is
+        # inside the try now, and nothing renders until all four succeed, so
+        # the section is either complete or one diagnostic row.
         version = resolve_rules(None)
+        network = amd.provenance()
+        explained = amd.guard_rules_explained()
+        limit = nesting_limit(version)
     except Exception as e:                                     # noqa: BLE001
         rep.optional("rules", f"could not read the manifest: {e}",
                      "regenerate with x-inspect-net amendments")
         return
 
-    rep.info("network", amd.provenance())
+    rep.info("network", network)
     rep.info("rulesVersion", f"0x{version:02X}")
-    for line in amd.guard_rules_explained():
+    for line in explained:
         rep.info("", line)
-    rep.info("nesting limit", str(nesting_limit(version)))
+    rep.info("nesting limit", str(limit))
 
 
 def run_doctor(console, smoke: bool = True) -> int:
