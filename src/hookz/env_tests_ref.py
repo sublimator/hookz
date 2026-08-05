@@ -65,6 +65,15 @@ HARNESS_HEADER = "src/test/jtx/TestEnv.h"
 # `test_the_registry_describes_every_file_in_the_patch`: a file appearing in a
 # regenerated patch with no entry here fails, rather than being inlined with
 # no explanation of what it is for.
+#
+# The descriptions themselves are NOT machine-checked, and cannot easily be:
+# they are prose about C++ hunks. Nothing here stops one being wrong, so the
+# bar is that each was read against its hunk in the patch and against the
+# branch checkout before being written. Three of the first twelve were wrong
+# in the same direction — naming a plausible neighbour rather than the thing
+# that changed (`DEFINE_HOOK_FUNCTION` for `HOOK_SETUP`, `Env` twice for
+# `Logs*`) — and a reader working from this manifest instead of the diff has
+# no way to notice. If you edit one, open the hunk.
 FILES: dict[str, str] = {
     "cmake/RippledCore.cmake":
         "finds your *_test.cpp via HOOKS_TEST_DIR, runs `hookz "
@@ -78,22 +87,26 @@ FILES: dict[str, str] = {
         "consults the whitelist for void returns instead of requiring every "
         "import to return exactly one value",
     "include/xrpl/hook/Macro.h":
-        "adds the HooksTrace journal to the DEFINE_HOOK_FUNCTION template",
+        "adds `jh`, the HooksTrace journal, to the HOOK_SETUP() macro "
+        "(Macro.h:160) — not to DEFINE_HOOK_FUNCTION, which does not "
+        "expand it; every API implementation calls HOOK_SETUP itself",
     "src/libxrpl/basics/Log.cpp":
         "applies the transform on the write path",
     "src/test/jtx/Env.h":
-        "passes the Env through to SuiteJournalSink so the suite journal gets "
-        "the transform too",
+        "SuiteLogs::makeSink passes `this` — a Logs*, not an Env — to "
+        "SuiteJournalSink, so the suite journal gets the transform too",
     "src/test/jtx/TestEnv.h":
         "the harness itself — named accounts, the log transform, setPrefix, "
         "and TESTENV_LOGGING",
     "src/test/unit_test/SuiteJournal.h":
-        "SuiteJournalSink takes the Env and routes through the transform",
+        "SuiteJournalSink takes a `Logs* logs = nullptr` and writes "
+        "logs_->applyTransform(text) when it is set",
     "src/xrpld/app/hook/applyHook.h":
         "coverage: onSourceLine, coverageMap, coverageDump, coverageLabel, "
         "coverageReset",
     "src/xrpld/app/hook/detail/applyHook.cpp":
-        "trace/trace_num/trace_float onto the dedicated HooksTrace partition",
+        "switches the trace APIs from the View journal `j` to `jh` and wraps "
+        "them in JLOG; `jh` itself comes from HOOK_SETUP in Macro.h",
     "src/xrpld/app/tx/detail/SetHook.cpp":
         "comment-only change on the validateGuards call",
 }

@@ -23,11 +23,12 @@ The branch's own changes are not read from the checkout — they come from
 the vendored patch, pinned in `hookz.env_tests_ref`, so they are correct even
 when the configured checkout is plain `dev`.
 
-Not inlined verbatim: the whole diff was half the document, and most of it is
-context lines around one-line edits that a reader has to decode. What goes in
-is `TestEnv.h` — the one file the branch adds outright, so its diff *is* the
-file and it can be handed over as C++ — plus a manifest of what else changed
-and why, with the pin so it can be checked. `--full-patch` inlines the rest.
+Not inlined verbatim: the whole diff was half the document, and a diff is a
+poor way to learn what a change does. What goes in is `TestEnv.h` — the one
+file the branch adds outright, so its diff *is* the file and it can be handed
+over as C++ — plus a manifest of what else changed and why, with the pin so it
+can be checked. `--full-patch` inlines the rest, and the manifest says which
+files are big enough to be worth it rather than implying none of them are.
 """
 
 from __future__ import annotations
@@ -449,12 +450,13 @@ def _related_code_section(imports, repo, signatures) -> list[str]:
 def _patch_section(patch_path: Path, full: bool = False) -> list[str]:
     """The branch, as the pieces you need rather than as 30KB of diff.
 
-    Inlining the whole patch was half the document, and most of it is context
-    lines around one-line edits — a reader has to reconstruct what each hunk
-    means. The one file that is worth having verbatim is `TestEnv.h`, because
-    the patch adds it outright: its diff *is* the file, so it can be handed
-    over as C++, and it is the class the test constructs. The rest is a
-    manifest of what changed and why, pinned so it can be checked.
+    Inlining the whole patch was half the document, and a hunk is a poor way
+    to learn what a change does. The one file worth having verbatim is
+    `TestEnv.h`, because the patch adds it outright: its diff *is* the file,
+    so it can be handed over as C++, and it is the class the test constructs.
+    The rest is a manifest of what changed and why, pinned so it can be
+    checked, with the per-file churn shown so a reader can judge for
+    themselves whether `--full-patch` is worth passing.
     """
     from hookz import env_tests_ref as ref
 
@@ -515,10 +517,22 @@ def _patch_section(patch_path: Path, full: bool = False) -> list[str]:
     if full:
         lines += ["### The full diff", "", "```diff", text.rstrip(), "```", ""]
     else:
+        # Named from the table rather than characterised in prose. This said
+        # "the remaining changes are one- and two-line edits inside existing
+        # files", which was the document's argument for not showing them and
+        # was false: only two of the eleven are that small, and the two
+        # largest are the coverage API the skeleton above calls and the build
+        # integration that compiles your test at all. A reader who believed
+        # the sentence would never pass --full-patch.
+        rest = sorted((a, p) for p, a, _, is_new in rows if not is_new)
+        biggest = ", ".join(f"`{p}` (+{a})" for a, p in reversed(rest[-3:]))
         lines += [
-            f"The remaining changes are one- and two-line edits inside "
-            f"existing files; `--full-patch` inlines the complete diff "
-            f"({len(text):,} bytes), or read it at `{patch_path}`.",
+            f"The other {len(rest)} files are edits inside existing code, "
+            f"summarised above rather than quoted — {sum(a for a, _ in rest)} "
+            f"added lines in total, concentrated in {biggest}. "
+            f"`--full-patch` inlines the complete diff ({len(text):,} bytes); "
+            f"it is worth it if you need the coverage API's signatures or the "
+            f"CMake wiring itself, and not otherwise.",
             "",
         ]
     return lines

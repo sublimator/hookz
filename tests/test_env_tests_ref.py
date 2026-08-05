@@ -128,3 +128,81 @@ class TestItIsPinnedSeparatelyFromTheXahaudPort:
 
         assert ref.BRANCH_COMMIT != xahaud_ref.XAHAUD_COMMIT
         assert ref.BRANCH != xahaud_ref.XAHAUD_REF
+
+
+class TestCheckPinIsTheFunctionTheDocumentAsks:
+    """The totality property was tested against `files_in_patch()` and `FILES`
+    directly, never through `check_pin()` — which is what `_patch_section`
+    actually calls to decide whether to print the drift banner.
+
+    So `check_pin()` could stop reporting undescribed files entirely and the
+    document would render `_not described in env_tests_ref.FILES_` rows with
+    no banner above them, suite green. Testing a property against the data
+    instead of against the function that reports it is the same gap one level
+    down.
+    """
+
+    def test_it_reports_a_file_with_no_description(self, monkeypatch):
+        trimmed = dict(ref.FILES)
+        dropped = trimmed.pop("src/libxrpl/basics/Log.cpp")
+        assert dropped
+        monkeypatch.setattr(ref, "FILES", trimmed)
+
+        findings = ref.check_pin()
+
+        assert any("src/libxrpl/basics/Log.cpp" in f and "no entry" in f
+                   for f in findings), findings
+
+    def test_it_reports_a_description_of_a_file_that_is_gone(self, monkeypatch):
+        monkeypatch.setattr(
+            ref, "FILES", {**ref.FILES, "src/never/existed.cpp": "invented"})
+
+        findings = ref.check_pin()
+
+        assert any("src/never/existed.cpp" in f and "not in the patch" in f
+                   for f in findings), findings
+
+    def test_it_reports_a_hash_that_does_not_match(self, monkeypatch):
+        monkeypatch.setattr(ref, "PATCH_SHA256", "0" * 64)
+
+        findings = ref.check_pin()
+
+        assert any("sha256" in f for f in findings), findings
+
+    def test_a_clean_registry_reports_nothing(self):
+        assert ref.check_pin() == []
+
+
+class TestTheChurnNumbersAreReal:
+    """`+142` and `+114` are what tell a reader the manifest is hiding
+    something substantial, and nothing asserted them: swapping the added and
+    removed columns, or replacing the whole column with a dash, left the suite
+    green.
+    """
+
+    def test_the_counts_match_git(self):
+        """Against `git apply --numstat`, which is the authority on a diff."""
+        import subprocess
+
+        out = subprocess.run(
+            ["git", "apply", "--numstat", str(ref.patch_path())],
+            capture_output=True, text=True,
+            cwd=Path(__file__).parents[1])
+        if out.returncode != 0:
+            pytest.skip(f"git apply --numstat unavailable: {out.stderr[:80]}")
+
+        expected = {}
+        for line in out.stdout.splitlines():
+            added, removed, path = line.split("\t")
+            expected[path] = (int(added), int(removed))
+
+        actual = {p: (a, r) for p, a, r, _ in ref.files_in_patch()}
+        assert actual == expected
+
+    def test_added_and_removed_are_not_interchangeable(self):
+        """A swap is invisible on a file with equal counts, so pin one where
+        they differ sharply."""
+        rows = {p: (a, r) for p, a, r, _ in ref.files_in_patch()}
+
+        assert rows["src/xrpld/app/hook/applyHook.h"] == (142, 0)
+        assert rows["include/xrpl/hook/Guard.h"] == (42, 12)

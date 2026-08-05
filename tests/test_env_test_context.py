@@ -490,3 +490,45 @@ class TestTheLegendExplainsWhatTheTableNames:
         for label in ("originating transaction", "hook state / installation",
                       "emitted transactions", "slots", "diagnostics only"):
             assert label in explained, label
+
+    def test_the_churn_column_shows_the_real_numbers(self, checkout):
+        """`+142` and `+114` are what tell a reader the manifest is hiding
+        something substantial — they are the evidence for the sentence below
+        the table, so a swapped or blanked column makes that sentence
+        unfalsifiable from the document alone.
+
+        Against the rendered row, not `files_in_patch`: the counting function
+        was already pinned, and a mutation swapping the two columns *in the
+        renderer* survived that.
+        """
+        from hookz import env_tests_ref as ref
+
+        doc = _doc(checkout, include_patch=True)
+        churn = {p: (a, r) for p, a, r, _ in ref.files_in_patch()}
+
+        row = next(ln for ln in doc.splitlines()
+                   if ln.startswith("| `src/xrpld/app/hook/applyHook.h`"))
+        assert churn["src/xrpld/app/hook/applyHook.h"] == (142, 0)
+        assert "+142" in row, row
+
+        row = next(ln for ln in doc.splitlines()
+                   if ln.startswith("| `include/xrpl/hook/Guard.h`"))
+        assert churn["include/xrpl/hook/Guard.h"] == (42, 12)
+        assert "+42" in row and "12" in row, row
+        # Swapped columns would render "+12 −42".
+        assert "+12" not in row, row
+
+    def test_the_sentence_under_the_table_names_the_big_files(self, checkout):
+        """It used to read "the remaining changes are one- and two-line edits
+        inside existing files" — the document's argument for not showing them,
+        and false: two of eleven are that small, and the two largest are the
+        coverage API the skeleton calls and the build integration that
+        compiles the test at all.
+        """
+        doc = _doc(checkout, include_patch=True)
+
+        line = next(ln for ln in doc.splitlines()
+                    if "--full-patch` inlines the complete diff" in ln)
+        assert "one- and two-line edits" not in line
+        assert "applyHook.h" in line and "+142" in line
+        assert "RippledCore.cmake" in line and "+114" in line
