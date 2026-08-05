@@ -180,20 +180,29 @@ def _nesting_limit(rules_version: int) -> int:
     return nesting_limit(rules_version)
 
 
-def _say_rules(rules_version: int, log=print) -> None:
-    """Name the rules a verdict was reached under.
+def _rules_line(rules_version: int, dim: bool = False) -> str:
+    """The one place the rules disclosure is worded and numbered.
 
-    One helper, called by every path that prints a verdict, because the first
-    attempt at this added the line to `_build_normal` alone and left the
-    coverage and buildbox builds saying PASSED with no basis stated — the same
-    asymmetry it was written to close.
+    Every path that prints a verdict prints this, on both outcomes. It has
+    been consolidated twice already and split again both times: first as a
+    line copied per call site, then as a module helper that `guard_check`
+    shadowed with a same-named local closure while `wce` kept a third copy
+    with its own markup. Three renderings that must agree by hand is how the
+    numbers drift apart.
 
-    Printed on rejections too. A depth failure is exactly the case where which
-    limit applied is the question being asked, and "FAILED" without the limit
-    invites the reader to supply one.
+    `dim` is the only permitted difference — `wce` renders through Rich, the
+    rest through plain print. The numbers and wording come from here.
     """
-    log(f"  rules: 0x{rules_version:02X} "
-        f"(nesting limit {_nesting_limit(rules_version)})")
+    limit = _nesting_limit(rules_version)
+    label = "[dim]rules:[/dim]" if dim else "rules:"
+    return f"  {label} 0x{rules_version:02X} (nesting limit {limit})"
+
+
+def _say_rules(rules_version: int, log=print) -> None:
+    """Print the disclosure. A depth failure is exactly the case where which
+    limit applied is the question being asked, so this runs on rejections too.
+    """
+    log(_rules_line(rules_version))
 
 
 def _rules() -> int:
@@ -851,14 +860,23 @@ def pipelines():
         )
 
 
-def _build_fail(log, output, stdout_mode: bool, message: str) -> None:
+def _build_fail(log, output, stdout_mode: bool, message: str,
+                rules_version: int | None = None) -> None:
     """Report a build-stage failure and exit without writing an artifact.
 
     Nothing is written on failure, so a pre-existing file at `output` is a
     leftover from an earlier build — same path, stale contents, and easy to
     deploy by mistake. Say so rather than letting it pass for current.
+
+    `rules_version` puts the disclosure *after* the verdict it belongs to. The
+    callers used to print it themselves before calling this, which read as a
+    property of the build rather than of the rejection — and put build in
+    disagreement with guard-check, which printed it after. Ordering lives here
+    now so there is nothing to keep in sync.
     """
     log(f"  {message}")
+    if rules_version is not None:
+        _say_rules(rules_version, log)
     # is_file() not exists(): `-o /dev/null` is a device, not a stale artifact.
     if not stdout_mode and output is not None and Path(output).is_file():
         log(f"  NOTE: {output} still holds the previous build — it is now stale.")
@@ -935,8 +953,8 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
         log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
         _say_rules(rules_version, log)
     except GuardError as e:
-        _say_rules(rules_version, log)
-        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
+        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}",
+                    rules_version)
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -1012,9 +1030,9 @@ def _build_buildbox(
         # only thing the local verdict contributes is the basis it used.
         _say_rules(rules_version, log)
     except GuardError as exc:
-        _say_rules(rules_version, log)
         _build_fail(
-            log, output, stdout_mode, f"Local guard check FAILED: {exc}"
+            log, output, stdout_mode, f"Local guard check FAILED: {exc}",
+            rules_version,
         )
 
     _validate_wasm(wasm, source.name, log)
@@ -1048,18 +1066,21 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
     # 1. Two-stage compile: clang -c -g → wasm-ld (preserves DWARF)
     from hookz.compiler import COVERAGE_OPT_LEVEL
     log(f"Compiling {source.name} (two-stage, {COVERAGE_OPT_LEVEL} with DWARF)...")
+    # Both stages, not just the compile. The first version of this guarded
+    # compile_hook_two_stage alone and left instrument_wasm bare six lines
+    # below — and that is the stage most likely to fail on a working machine,
+    # because it shells out to llvm-dwarfdump (rewriter.py:62,90,303: not
+    # found, failed, no DWARF found). Each raises RuntimeError, so each was a
+    # traceback with the stale-artifact note skipped.
     try:
         wasm = compile_hook_two_stage(source, config, opt_level=COVERAGE_OPT_LEVEL)
-    except RuntimeError as e:
-        # Same handler _build_normal grew. Without it a clang failure under
-        # --coverage reached the user as a traceback and skipped the
-        # stale-artifact note, so a previous build at `output` went unflagged.
-        _build_fail(log, output, stdout_mode, f"Build FAILED: {e}")
-    log(f"  Compiled: {len(wasm)} bytes")
+        log(f"  Compiled: {len(wasm)} bytes")
 
-    # 2. Instrument with __on_source_line callbacks
-    log("  Instrumenting for coverage...")
-    wasm, locs = instrument_wasm(wasm)
+        # 2. Instrument with __on_source_line callbacks
+        log("  Instrumenting for coverage...")
+        wasm, locs = instrument_wasm(wasm)
+    except RuntimeError as e:
+        _build_fail(log, output, stdout_mode, f"Build FAILED: {e}")
     log(f"  Instrumented: {len(wasm)} bytes ({len(locs)} source locations)")
 
     # 3. Clean (strips custom sections, rewrites guards)
@@ -1084,8 +1105,8 @@ def _build_coverage(source: Path, output, config, stdout_mode: bool = False,
         log(f"  Guard check {verdict} (hook WCE={result.hook_wce:,} — {hook_pct:.1f}% of budget)")
         _say_rules(rules_version, log)
     except GuardError as e:
-        _say_rules(rules_version, log)
-        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}")
+        _build_fail(log, output, stdout_mode, f"Guard check FAILED: {e}",
+                    rules_version)
 
     # 5. Sanity check
     _validate_wasm(cleaned, source.name, log)
@@ -1138,17 +1159,11 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
     rules = _rules()
 
-    def _say_rules(emit=print) -> None:
-        """Both verdicts, not just the good one. A depth rejection is exactly
-        the case where which limit applied is the question being asked."""
-        emit(f"  rules: 0x{rules:02X} "
-             f"(nesting limit {_nesting_limit(rules)})")
-
     try:
         result = validate_guards(wasm, rules_version=rules, ignore=ignore)
     except GuardError as e:
         print(f"Guard check FAILED: {e}")
-        _say_rules()
+        _say_rules(rules)
         if e.codesec >= 0:
             print(f"  Code section: {e.codesec}, byte offset: {e.offset}")
         # Only suggest a waiver for a limit that actually has one. Structural
@@ -1162,7 +1177,7 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
         print(f"Guard check completed WITH WAIVERS: {source.name}")
     else:
         print(f"Guard check PASSED: {source.name}")
-    _say_rules()
+    _say_rules(rules)
     _print_guard_result(result)
     _report_waived(result)
     sys.exit(1 if result.waived else 0)
@@ -1345,11 +1360,9 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
     console.print(f"  [dim]bytes:[/dim] {len(wasm):,}")
     console.print(f"  [dim]provenance:[/dim] {provenance}")
     # A verdict is only meaningful under stated rules. These come from the
-    # network's amendment manifest, not from a constant.
-    console.print(
-        f"  [dim]rules:[/dim] 0x{rules:02X} "
-        f"(nesting limit {nesting_limit(rules)})"
-    )
+    # network's amendment manifest, not from a constant. Same source as every
+    # other command's disclosure — see _rules_line.
+    console.print(_rules_line(rules, dim=True))
     if trace is not None:
         console.print()
         console.print(trace.format_table())

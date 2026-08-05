@@ -410,3 +410,156 @@ class TestTheRulesFollowTheNetwork:
         assert _nesting_limit(_rules()) == 16
         self._with_depth32(monkeypatch)
         assert _nesting_limit(_rules()) == 32
+
+
+class TestTheDisclosureHasOneSource:
+    """It has been consolidated twice and split again both times.
+
+    First as a line copied per call site; then as a module helper that
+    `guard_check` shadowed with a same-named local closure while `wce` kept a
+    third copy with its own markup. Identical rendering by hand is not the
+    same as one source, and a reviewer had to run disjoint mutations to show
+    the difference.
+    """
+
+    def test_every_renderer_goes_through_the_one_formatter(self):
+        import inspect
+
+        from hookz.cli import main as cli_main
+
+        # Anything that emits the word "rules:" must get the text from
+        # _rules_line rather than formatting its own.
+        offenders = []
+        for name, fn in vars(cli_main).items():
+            if not callable(fn) or not hasattr(fn, "__code__"):
+                continue
+            try:
+                src = inspect.getsource(fn)
+            except (OSError, TypeError):
+                continue
+            for line in src.splitlines():
+                if "rules:" in line and "_rules_line" not in line:
+                    if "nesting limit" in line or "0x{" in line:
+                        offenders.append(f"{name}: {line.strip()}")
+        assert not offenders, "hand-formatted rules line(s): " + "; ".join(offenders)
+
+    def test_no_local_name_shadows_the_helper(self):
+        """`guard_check` defined its own `_say_rules(emit=print)` inside a
+        module that already had `_say_rules(rules_version, log)`."""
+        import inspect
+
+        from hookz.cli import main as cli_main
+
+        for name, fn in vars(cli_main).items():
+            if not callable(fn) or not hasattr(fn, "__code__"):
+                continue
+            try:
+                src = inspect.getsource(fn)
+            except (OSError, TypeError):
+                continue
+            if name in ("_say_rules", "_rules_line"):
+                continue
+            assert "def _say_rules" not in src, f"{name} shadows _say_rules"
+            assert "def _rules_line" not in src, f"{name} shadows _rules_line"
+
+    def test_the_dim_variant_says_the_same_numbers(self):
+        from rich.markup import render
+        from hookz.cli.main import _rules_line
+
+        plain = _rules_line(0x03)
+        dim = render(_rules_line(0x03, dim=True)).plain
+        assert plain == dim
+        assert "0x03" in plain
+        assert "nesting limit 32" in plain
+
+
+class TestCoverageBuildFailuresAreReported:
+    """The instrument stage shells out to llvm-dwarfdump, so it fails on
+    machines where the compile stage is fine — `hookz doctor` checks for the
+    tool precisely because it is often absent. It was the one stage left
+    unguarded when the coverage path grew a handler.
+    """
+
+    @staticmethod
+    def _run(args):
+        from click.testing import CliRunner
+        from hookz.cli.main import cli
+
+        return CliRunner().invoke(cli, args, catch_exceptions=False)
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "llvm-dwarfdump not found. Install LLVM tools:",
+            "llvm-dwarfdump failed: exit 1",
+            "No DWARF source locations found. Compile with -g.",
+        ],
+    )
+    def test_an_instrument_failure_is_a_verdict_not_a_traceback(
+        self, tmp_path, monkeypatch, message
+    ):
+        def _die(*a, **k):
+            raise RuntimeError(message)
+
+        monkeypatch.setattr("hookz.coverage.rewriter.instrument_wasm", _die)
+        artifact = tmp_path / "h.wasm"
+        artifact.write_bytes(b"\x00asm\x01\x00\x00\x00")
+
+        r = self._run(
+            ["build", str(SOURCE), "-o", str(artifact), "--coverage"]
+        )
+
+        assert r.exit_code == 1
+        assert "Build FAILED" in r.output
+        assert message in r.output
+        # the artifact it did not replace must not be left looking current
+        assert "stale" in r.output
+        assert artifact.read_bytes() == b"\x00asm\x01\x00\x00\x00"
+
+
+class TestTheRulesLineFollowsItsVerdict:
+    """It read as a property of the build when it printed first, and put
+    build in disagreement with guard-check, which printed it after."""
+
+    @staticmethod
+    def _lines(output):
+        return [ln.strip() for ln in output.splitlines() if ln.strip()]
+
+    def _assert_rules_after_verdict(self, output):
+        lines = self._lines(output)
+        verdict = next(i for i, ln in enumerate(lines) if "Guard check" in ln)
+        rules = next(i for i, ln in enumerate(lines) if ln.startswith("rules:"))
+        assert rules > verdict, output
+
+    @pytest.mark.parametrize("extra", TestBuildAndWceAgree.COMPILING)
+    def test_on_a_passing_build(self, tmp_path, extra):
+        r = TestBuildAndWceAgree._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"), *extra]
+        )
+        assert r.exit_code == 0, r.output
+        self._assert_rules_after_verdict(r.output)
+
+    @pytest.mark.parametrize("extra", TestBuildAndWceAgree.COMPILING)
+    def test_on_a_rejected_build(self, tmp_path, monkeypatch, extra):
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda *a, **k: (_ for _ in ()).throw(
+                GuardError("Maximum allowable depth of blocks reached (16 levels).")),
+        )
+
+        r = TestBuildAndWceAgree._run(
+            ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"), *extra]
+        )
+
+        assert r.exit_code == 1
+        self._assert_rules_after_verdict(r.output)
+
+    def test_guard_check_agrees_on_both_outcomes(self, tmp_path):
+        deep = tmp_path / "deep.wasm"
+        deep.write_bytes(_nested_blocks_wasm(24))
+        shallow = tmp_path / "ok.wasm"
+        shallow.write_bytes(_nested_blocks_wasm(2))
+
+        for art in (deep, shallow):
+            r = TestBuildAndWceAgree._run(["guard-check", str(art)])
+            self._assert_rules_after_verdict(r.output)
