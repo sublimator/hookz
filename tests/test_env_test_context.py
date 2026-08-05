@@ -15,7 +15,32 @@ from types import SimpleNamespace
 
 import pytest
 
-WASM = Path(__file__).parent / "e2e/hooks/genesis/govern.wasm"
+#: The tracked source these tests are really about. The module previously
+#: pointed WASM at tests/e2e/hooks/genesis/govern.wasm — an e2e build artifact
+#: that `.gitignore` (`*.wasm`) keeps out of the repo, so it existed only on
+#: the machine the tests were written on and every test failed at the fixture
+#: in CI. Compiling the source once per module keeps the same deployed-hook
+#: import surface the whitelist and family tests depend on, and follows the
+#: convention test_build_cli.py already uses for balance_gate.c.
+SOURCE = Path(__file__).parent / "e2e/hooks/genesis/govern.c"
+
+#: Set once per module by `_compiled_govern` below.
+WASM: Path
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _compiled_govern(tmp_path_factory):
+    """Compile govern.c once for the module; skip cleanly without wasi-sdk."""
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+
+    global WASM
+    config = load_config(source_file=SOURCE)
+    if not (config.wasi_sdk / "bin" / "clang").exists():
+        pytest.skip("wasi-sdk not found")
+    out = tmp_path_factory.mktemp("govern") / "govern.wasm"
+    compile_hook(SOURCE, out, config, debug=False, optimize=True)
+    WASM = out
 
 
 def _config(root):

@@ -26,6 +26,23 @@ def config():
     return load_config(source_file=SOURCE)
 
 
+@pytest.fixture(scope="module")
+def hook_artifact(tmp_path_factory, config):
+    """A real compiled hook on disk, for tests that need an artifact path.
+
+    Compiled from the module's own tracked SOURCE. The tests that use this
+    previously read tests/e2e/hooks/genesis/govern.wasm — an e2e build
+    artifact `.gitignore` (`*.wasm`) keeps out of the repo, so it existed
+    only where an e2e run had happened to leave it, and the tests failed at
+    the artifact everywhere else, including CI.
+    """
+    from hookz.compiler import compile_hook
+
+    out = tmp_path_factory.mktemp("artifact") / "balance_gate.wasm"
+    compile_hook(SOURCE, out, config, debug=False, optimize=True)
+    return out
+
+
 class TestBuildOutputWriting:
     def test_writes_cleaned_output_on_success(self, tmp_path, config):
         out = tmp_path / "hook.wasm"
@@ -886,7 +903,7 @@ class TestTheEnvironmentErrorsAreRenderedNotRaised:
         return exc.value.code, captured.out + captured.err
 
     def test_a_corrupt_manifest_is_rendered_as_the_installation_s_problem(
-        self, monkeypatch, capsys
+        self, monkeypatch, capsys, hook_artifact
     ):
         import hookz.amendments as amd
 
@@ -898,7 +915,7 @@ class TestTheEnvironmentErrorsAreRenderedNotRaised:
         # A real artifact: a stub too small to be a hook fails the size check
         # before anything reads the manifest, so the handler never runs and
         # the test passes for the wrong reason.
-        art = Path("tests/e2e/hooks/genesis/govern.wasm")
+        art = hook_artifact
 
         # resolve_rules catches this one and degrades to 0x00 with a warning
         # before the whitelist read raises it for real. Asserted rather than
@@ -914,7 +931,7 @@ class TestTheEnvironmentErrorsAreRenderedNotRaised:
         assert "x-inspect-net amendments" in out
 
     def test_an_unparseable_macro_file_is_rendered_as_the_checkout_s_problem(
-        self, monkeypatch, capsys
+        self, monkeypatch, capsys, hook_artifact
     ):
         import hookz.wasm.whitelist as wl
 
@@ -923,7 +940,7 @@ class TestTheEnvironmentErrorsAreRenderedNotRaised:
 
         monkeypatch.setattr(wl, "get_import_signatures", _boom)
 
-        art = Path("tests/e2e/hooks/genesis/govern.wasm")
+        art = hook_artifact
 
         code, out = self._main(["guard-check", str(art)], monkeypatch, capsys)
 
