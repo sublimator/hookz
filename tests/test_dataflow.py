@@ -323,20 +323,61 @@ class TestConstantsReachedThroughALocal:
 
 
 class TestConstantNamingIsPositionAware:
-    """A small integer means whatever its argument says it means.
+    """An integer means whatever its argument says it means.
 
     Naming by value alone read `hook_account(buf, 20)` as
     `hook_account(buf, KEYLET_ESCROW)` — the constant genuinely is 20, and the
-    reading is nonsense. Field ids are safe on value alone because an sfCode is
-    `type << 16 | field` and cannot collide with a length; keylet types are
-    small and collide with everything.
+    reading is nonsense. Keylet types were made position-aware for that.
+
+    Field ids were left naming by value on the reasoning that an sfCode is
+    `type << 16 | field` and so cannot collide with a length or a slot number.
+    True, and not the collision that matters: it lands squarely in the range of
+    a pointer. See `test_a_pointer_is_not_named_as_a_field` — the rule now
+    applies to both.
     """
 
-    def test_a_field_id_is_named_anywhere(self):
+    def test_a_field_id_is_named_in_the_argument_that_takes_one(self):
+        from hookz import hookapi
+        from hookz.cli.main import _name_for
+
+        assert _name_for(hookapi.sfAccount,
+                         api="otxn_field", position=2) == "sfAccount"
+
+    def test_a_bare_value_with_no_call_to_place_it_in_is_still_named(self):
+        """`api=None` is a question about the value, not about a call site."""
         from hookz import hookapi
         from hookz.cli.main import _name_for
 
         assert _name_for(hookapi.sfRewardTime) == "sfRewardTime"
+
+    def test_a_pointer_is_not_named_as_a_field(self):
+        """The bug this class's own docstring argued could not happen.
+
+        A hook's data segment starts around 64KB, so a string address is an
+        ordinary five-digit number in exactly the sfCode range. `trace()` takes
+        a pointer first, and `hookz surface` rendered every one of them as
+        whichever field shared the address.
+        """
+        from hookz import hookapi
+        from hookz.cli.main import _name_for
+
+        collisions = [v for k, v in vars(hookapi).items()
+                      if k.startswith("sf") and isinstance(v, int)
+                      and 0x10000 < v < 0x30000]
+        assert len(collisions) > 50, (
+            "premise of this test: sf* constants populate the pointer range")
+
+        for value in collisions[:20]:
+            assert _name_for(value, api="trace", position=0) is None
+
+    def test_the_field_id_positions_are_read_from_the_declarations(self):
+        """Not a hand-kept list — `extern.h` names the parameter `field_id`."""
+        from hookz.cli.main import _field_id_args
+
+        assert _field_id_args() == {
+            "sto_subfield": 2, "sto_emplace": 6, "sto_erase": 4,
+            "slot_subfield": 1, "otxn_field": 2,
+        }
 
     def test_a_length_is_not_named_as_a_keylet(self):
         from hookz.cli.main import _name_for

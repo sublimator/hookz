@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import click
@@ -818,6 +819,47 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
     else:
         _build_normal(source, output, config, stdout_mode, ignore, rules,
                       pipeline_name=pipeline_name, explain=explain)
+
+
+@cli.command("env-test-context")
+@click.argument("target", type=click.Path(exists=True, dir_okay=False))
+@click.option("-o", "--output", type=click.Path(), default=None,
+              help="Write to a file instead of stdout.")
+@click.option("--no-impl", is_flag=True,
+              help="Omit the quoted xahaud implementations (much shorter).")
+@click.option("--no-patch", is_flag=True,
+              help="Omit the inlined external-env-tests patch.")
+def env_test_context(target, output, no_impl, no_patch):
+    """Everything needed to write an env test for TARGET, as one document.
+
+    TARGET is a hook .c (preferred) or a compiled .wasm. Reads the hook's
+    host-function surface — from source, every call site with its line and
+    resolved constants — quotes what each of those calls does from the
+    configured xahaud checkout, and inlines the patch defining the test
+    harness.
+
+    Requires paths.xahaud to point at a real checkout: the vendored
+    xahaud_lite tree has no src/test/jtx.
+    """
+    from hookz.cli.env_test_context import ContextError, build_context
+    from hookz.config import load_config
+
+    try:
+        doc = build_context(
+            Path(target), load_config(source_file=Path(target)),
+            include_impl=not no_impl, include_patch=not no_patch)
+    except ContextError as e:
+        raise click.ClickException(str(e)) from None
+
+    if output is None:
+        print(doc)
+    else:
+        try:
+            Path(output).write_text(doc)
+        except OSError as e:
+            raise click.ClickException(f"could not write {output}: {e}") from None
+        print(f"Wrote {output} ({len(doc):,} bytes)")
+    sys.exit(0)
 
 
 @cli.command()
@@ -1827,18 +1869,60 @@ def _pretty(arg, api: str | None = None, position: int | None = None) -> str:
 _KEYLET_TYPE_ARG = {"util_keylet": 2}
 
 
+@lru_cache(maxsize=1)
+def _field_id_args() -> dict[str, int]:
+    """Which argument of which API is a field id, read from the declarations.
+
+    Derived rather than listed. A hand-maintained table would be five entries
+    long and would look equally plausible whichever way it was wrong, which is
+    the same reason `guard_rules_version` reads the amendment manifest instead
+    of hardcoding the bits.
+
+    `extern.h` names the parameter `field_id` in each declaration that takes
+    one, so the position falls out of the header hookz already vendors.
+    """
+    import re
+
+    from hookz.xahaud_files import XahaudFile, resolve
+
+    try:
+        text = resolve(XahaudFile.EXTERN_H).read_text(errors="replace")
+    except Exception:                                          # noqa: BLE001
+        return {}
+
+    out: dict[str, int] = {}
+    for decl in text.split(";"):
+        m = re.search(r"(\w+)\s*\(([^()]*)\)\s*$", decl.strip(), re.DOTALL)
+        if not m:
+            continue
+        for i, param in enumerate(m.group(2).split(",")):
+            if re.search(r"\bfield_id\b", param):
+                out[m.group(1)] = i
+                break
+    return out
+
+
 def _name_for(value: int, api: str | None = None,
               position: int | None = None) -> str | None:
     """A name for a constant, only where the position makes it unambiguous.
 
-    Field ids are safe on value alone: an sfCode is `type << 16 | field`, far
-    outside the range of a length or a slot number. Keylet types are not — they
-    are small integers that collide with every buffer size in the API — so they
-    are named only in the argument that takes one.
+    Neither kind of constant is safe on value alone, though this used to claim
+    field ids were: an sfCode is `type << 16 | field`, which cannot collide
+    with a length or a slot number — but it collides squarely with a pointer.
+    A hook's data segment starts around 64KB, so 71 of the sf* constants sit
+    inside the range of an ordinary string address, and `trace(65553, 3, ...)`
+    rendered as `trace(sfHookStateChangeCount, 3, ...)` — a confident name for
+    a pointer to a log message.
+
+    So both are named only in an argument that takes one. `api=None` means the
+    caller is asking about a bare value with no call to place it in, and gets
+    the value's name if it has one.
     """
     from hookz import hookapi
 
     if value > 0xFFFF:
+        if api is not None and _field_id_args().get(api) != position:
+            return None
         for key, known in vars(hookapi).items():
             if key.startswith("sf") and known == value:
                 return key
