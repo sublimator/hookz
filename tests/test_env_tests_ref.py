@@ -206,3 +206,40 @@ class TestTheChurnNumbersAreReal:
 
         assert rows["src/xrpld/app/hook/applyHook.h"] == (142, 0)
         assert rows["include/xrpl/hook/Guard.h"] == (42, 12)
+
+
+class TestEachDescriptionIsBoundToTheHunkItWasReadAgainst:
+    """Correctness of a description cannot be machine-checked — two reviewers
+    independently tried and both rules were anti-correlated with quality,
+    because a good description of a small hunk has to reach outside it: to the
+    enclosing class, to the macro that supplies a symbol, to the thing the
+    change is *not*.
+
+    What can be checked is whether the hunk still says what it said when
+    someone read it. `PATCH_SHA256` fires on any regeneration as one
+    undifferentiated event, which in practice gets bumped; these say which
+    files moved, so the re-read after a dev merge is proportionate.
+    """
+
+    def test_every_described_file_has_a_pinned_digest(self):
+        assert set(ref.FILE_DIGESTS) == set(ref.FILES)
+
+    def test_the_pinned_digests_match_the_patch(self):
+        assert ref.file_digests() == ref.FILE_DIGESTS
+
+    def test_a_moved_hunk_names_itself(self, monkeypatch):
+        monkeypatch.setattr(
+            ref, "FILE_DIGESTS",
+            {**ref.FILE_DIGESTS, "include/xrpl/hook/Macro.h": "0" * 64})
+
+        findings = ref.check_pin()
+
+        assert any("include/xrpl/hook/Macro.h" in f and "hunk changed" in f
+                   for f in findings), findings
+        # Only the one that moved.
+        assert len([f for f in findings if "hunk changed" in f]) == 1
+
+    def test_the_digests_are_per_file_not_one_hash(self):
+        """A single digest repeated for every file would satisfy the two
+        tests above and lose the whole point."""
+        assert len(set(ref.FILE_DIGESTS.values())) == len(ref.FILE_DIGESTS)

@@ -861,3 +861,82 @@ class TestSourceTheBuildboxCannotBeGivenIsAVerdict:
         assert r.exit_code != 0
         assert "not valid UTF-8" in r.output
         assert "Traceback" not in r.output
+
+
+class TestTheEnvironmentErrorsAreRenderedNotRaised:
+    """`WhitelistError` and `ManifestError` are handled in `main()`, which
+    wraps `cli` — and every other CLI test here uses
+    `CliRunner().invoke(cli, ...)`, which enters below that wrapper. So both
+    handlers, and the two commits that added them, were structurally
+    unreachable from the suite: verified by hand once and then unguarded.
+
+    These go through `main()` itself.
+    """
+
+    @staticmethod
+    def _main(argv, monkeypatch, capsys):
+        import sys as _sys
+
+        from hookz.cli.main import main
+
+        monkeypatch.setattr(_sys, "argv", ["hookz", *argv])
+        with pytest.raises(SystemExit) as exc:
+            main()
+        captured = capsys.readouterr()
+        return exc.value.code, captured.out + captured.err
+
+    def test_a_corrupt_manifest_is_rendered_as_the_installation_s_problem(
+        self, monkeypatch, capsys
+    ):
+        import hookz.amendments as amd
+
+        def _boom(*a, **k):
+            raise amd.ManifestError("amendments-mainnet.json: bad json")
+
+        monkeypatch.setattr(amd, "manifest", _boom)
+
+        # A real artifact: a stub too small to be a hook fails the size check
+        # before anything reads the manifest, so the handler never runs and
+        # the test passes for the wrong reason.
+        art = Path("tests/e2e/hooks/genesis/govern.wasm")
+
+        # resolve_rules catches this one and degrades to 0x00 with a warning
+        # before the whitelist read raises it for real. Asserted rather than
+        # left as a stray warning: that degradation is the behaviour doctor
+        # depends on, and it is why both types subclass ValueError.
+        with pytest.warns(RuntimeWarning, match="more permissive"):
+            code, out = self._main(
+                ["guard-check", str(art)], monkeypatch, capsys)
+
+        assert code == 1
+        assert "Traceback" not in out
+        assert "vendored amendment manifest, not the hook" in out
+        assert "x-inspect-net amendments" in out
+
+    def test_an_unparseable_macro_file_is_rendered_as_the_checkout_s_problem(
+        self, monkeypatch, capsys
+    ):
+        import hookz.wasm.whitelist as wl
+
+        def _boom(*a, **k):
+            raise wl.WhitelistError("hook_api.macro: parsed 75, file has 76")
+
+        monkeypatch.setattr(wl, "get_import_signatures", _boom)
+
+        art = Path("tests/e2e/hooks/genesis/govern.wasm")
+
+        code, out = self._main(["guard-check", str(art)], monkeypatch, capsys)
+
+        assert code == 1
+        assert "Traceback" not in out
+        assert "configured xahaud checkout, not the hook" in out
+
+    def test_both_are_value_errors_so_old_callers_still_catch_them(self):
+        """Subclassing ValueError is what keeps `resolve_rules` degrading to
+        0x00 with a warning rather than failing — the behaviour `doctor`
+        depends on."""
+        import hookz.amendments as amd
+        import hookz.wasm.whitelist as wl
+
+        assert issubclass(amd.ManifestError, ValueError)
+        assert issubclass(wl.WhitelistError, ValueError)

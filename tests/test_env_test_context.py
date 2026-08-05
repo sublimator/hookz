@@ -211,13 +211,78 @@ class TestTheHarnessSectionMatchesAWorkingTest:
     """
 
     def test_the_generated_symbol_follows_build_test_hooks(self, checkout):
-        """build_test_hooks.py:544 — symbol_name is f"{stem.lower()}_wasm"
-        for the *test file's* stem, so Govern_test.cpp gives govern_test_wasm.
+        """build_test_hooks.py:529-544 — the header is `{stem}_hooks.h` and
+        the symbol `{stem.lower()}_wasm`, both for the *test file's* stem, so
+        Govern_test.cpp gives Govern_test_hooks.h and govern_test_wasm.
+
+        Asserted against the expanded skeleton, not the document. Both strings
+        also appear in the intro sentence above the code block, which is built
+        independently of the skeleton — so `in doc` passed with the skeleton
+        emitting `govern_wasm[path]` and `#include "Govern_hooks.h"`, neither
+        of which exists. The one test named for pinning these two identifiers
+        pinned neither.
         """
+        from hookz.cli.env_test_context import _SKELETON
+
+        body = _SKELETON.format(header="Govern_test_hooks.h",
+                                symbol="govern_test_wasm",
+                                suite="Govern", name="govern")
+
+        assert '= govern_test_wasm[path]' in body
+        assert '#include "Govern_test_hooks.h"' in body
+
+    def test_the_skeleton_is_wired_with_what_build_context_derives(
+        self, checkout
+    ):
+        """The format call itself — the test above pins the template, this
+        pins the arguments it is given."""
         doc = _doc(checkout)
 
-        assert "govern_test_wasm" in doc
-        assert "Govern_test_hooks.h" in doc
+        assert "= govern_test_wasm[path]" in doc
+        assert '#include "Govern_test_hooks.h"' in doc
+
+    def test_a_multi_word_stem_becomes_camel_case(self, tmp_path, checkout):
+        """`stem.capitalize()` passes on `govern` and turns `tip_bot` into
+        `Tip_bot`. The only test input is one word, so nothing distinguished
+        the two derivations."""
+        import shutil
+
+        from hookz.cli.env_test_context import build_context
+
+        target = tmp_path / "tip_bot.wasm"
+        shutil.copy(WASM, target)
+
+        doc = build_context(target, _config(checkout), include_impl=False,
+                            include_patch=False)
+
+        assert "TipBot_test_hooks.h" in doc
+        assert "tipbot_test_wasm" in doc
+        assert "Tip_bot" not in doc
+
+    def test_the_identifiers_it_borrows_exist_in_the_reference(self):
+        """N/O/Q/R from a reviewer's mutation table: `keylet::hookDefinition`,
+        `sha512Half_s`, the `BEAST_DEFINE_TESTSUITE(S, app, ripple)` arguments
+        and the `<test/jtx/TestEnv.h>` include were each unasserted, and every
+        one of them is a name that must be exactly right to compile.
+
+        Pinned against the file the skeleton was copied from rather than
+        spot-checked from memory — the failure mode this class's own docstring
+        warns about is "symbols that happened to be remembered".
+        """
+        from hookz.cli.env_test_context import _SKELETON
+
+        reference = (Path(__file__).parents[1]
+                     / "examples/tipbot/env-tests/TipBot_test.cpp").read_text()
+        body = _SKELETON.format(header="H.h", symbol="s", suite="S", name="n")
+
+        for token in ("keylet::hookDefinition", "sha512Half_s",
+                      "<test/jtx/TestEnv.h>", "<test/jtx/hook.h>",
+                      "hsfOVERRIDE", "sfHookHash"):
+            assert token in body, f"skeleton lost {token}"
+            assert token in reference, f"{token} is not in the working test"
+
+        assert ", app, ripple);" in body
+        assert ", app, ripple);" in reference
 
     def test_the_includes_are_the_ones_a_working_test_uses(self, checkout):
         """<xrpld/...>, not the <ripple/...> spelling that predates the
@@ -793,3 +858,51 @@ class TestTheQuotedSourceIsLabelledWithItsOwnFile:
         after = text.split(label, 1)[1]
         assert "DEFINE_HOOK_FUNCTION" not in after.split("```")[1], (
             "the HookAPI.cpp label sits above a wrapper body")
+
+
+class TestTheAmendmentColumnIsNotDecorative:
+    """It renders a value for exactly two functions, and no test input imports
+    either — so every row in every test rendered `—`, and the column could
+    have been deleted or hardcoded with the suite green.
+
+    It is also the column that contradicted the whitelist banner for a whole
+    round without anything noticing, which is what a decorative column costs.
+    """
+
+    def test_a_gated_call_names_its_amendment(self):
+        from hookz.cli.env_test_context import _surface_section
+        from hookz.wasm.whitelist import (
+            derive_amendments, get_function_signatures, get_import_signatures,
+            load_from_config)
+
+        imports = [("env", "prepare", (0x7F,) * 4, (0x7E,)),
+                   ("env", "accept", (0x7F, 0x7F, 0x7E), (0x7E,))]
+        lines = _surface_section(
+            imports, get_function_signatures(),
+            get_import_signatures(
+                amendments=derive_amendments(load_from_config()),
+                coverage=True),
+            mainnet=get_import_signatures(coverage=True))
+
+        gated = next(ln for ln in lines if ln.startswith("| `prepare`"))
+        plain = next(ln for ln in lines if ln.startswith("| `accept`"))
+
+        assert "featureHooksUpdate2" in gated, gated
+        # An ungated call must not acquire one.
+        assert "feature" not in plain, plain
+        assert plain.count("—") >= 1
+
+
+class TestTheBuildRecipeMatchesWhatTheSkeletonAssumes:
+    def test_it_passes_hooks_test_only_on(self, checkout):
+        """The skeleton's own comment explains that HSFEE and M are defined in
+        `src/test/*_test.cpp` files which `-DHOOKS_TEST_ONLY=ON` excludes —
+        which is why the skeleton defines them itself. Flip the flag in the
+        recipe and that explanation stops being true, and nothing noticed.
+        """
+        doc = _doc(checkout)
+
+        assert "-DHOOKS_TEST_ONLY=ON" in doc
+        assert "-DHOOKS_TEST_ONLY=OFF" not in doc
+        assert "-DHOOKS_TEST_ONLY=ON excludes" in doc, (
+            "the skeleton comment must name the same flag the recipe passes")

@@ -112,6 +112,43 @@ FILES: dict[str, str] = {
 }
 
 
+# The sha256 of each file's own section of the diff, at the pinned commit.
+#
+# Descriptions cannot be machine-checked for correctness, but they can be
+# bound to the hunk they were read against. When the patch is regenerated
+# these say which three moved rather than declaring all twelve unverified —
+# so the review that follows a dev merge is proportionate to what changed,
+# instead of a hash bump nobody scrutinises. Regenerate with:
+#
+#   python -c "from hookz.env_tests_ref import file_digests; print(file_digests())"
+FILE_DIGESTS: dict[str, str] = {
+    'cmake/RippledCore.cmake':
+        'f7e869ea65ee23bedd42525f6d4d261d4360d76c19ea12775949d3a35bba2417',
+    'include/xrpl/basics/Log.h':
+        'd7bbf14263763092f18b19ecd8d22ec0d254fdb7ad15d0f1b454d8fffaa29c75',
+    'include/xrpl/hook/Enum.h':
+        '721ba50c9e54e9f3cda4cbb6d264e5df5f8717a8a8fd42ad8b68a453c1d7d1e6',
+    'include/xrpl/hook/Guard.h':
+        'd031abc49ed26b9768e42b77b18d358a829d3d312101c0c18dae027200a6ffdc',
+    'include/xrpl/hook/Macro.h':
+        '133bc559d987e08ce05e795c4a017ecb3944eded669a2007fdaf6979b6f83889',
+    'src/libxrpl/basics/Log.cpp':
+        'b924e1482b4d665831470c9352849d8a2b3c7cfd2cc1c2ad9190db474080b142',
+    'src/test/jtx/Env.h':
+        '93c52badf4dd7a88b3c2aa7c11ce07264f55a46f2a9ac9d0aceda10411b8f010',
+    'src/test/jtx/TestEnv.h':
+        '83a6868997897414a2c7e516202eceed92110d1d51555a7ad264a08344c81038',
+    'src/test/unit_test/SuiteJournal.h':
+        'ab554de027f83254feed7672e8dd9ff4a0ddf1f44891a7a809c5cb83c483deb8',
+    'src/xrpld/app/hook/applyHook.h':
+        'b20067331fc8c1c997880a5fe57a68f4e615cdff24b2654a9443e48102e71d90',
+    'src/xrpld/app/hook/detail/applyHook.cpp':
+        'b5e82fc6f5d36b625a03983dffce375ab362a4905ae7c3d8150940a991764ad6',
+    'src/xrpld/app/tx/detail/SetHook.cpp':
+        '4e15c9cab42df2c502c94e3bba477c577ae7ff2eb320faf31459846771b7ea6f',
+}
+
+
 def patch_path() -> Path:
     """The vendored patch, installed or in a checkout.
 
@@ -150,6 +187,36 @@ def files_in_patch(text: str | None = None) -> list[tuple[str, int, int, bool]]:
     if path is not None:
         rows.append((path, added, removed, is_new))
     return rows
+
+
+def file_digests(text: str | None = None) -> dict[str, str]:
+    """sha256 of each file's own section of the diff.
+
+    PATCH_SHA256 fires on any regeneration, as one undifferentiated "this was
+    regenerated". That is the wrong granularity for the thing most likely to
+    go wrong: when dev is merged and the patch is rebuilt, the honest state is
+    "all twelve descriptions are now unverified", and the practical outcome is
+    that someone bumps the hash and moves on.
+
+    Per-file digests turn that into "these three hunks moved, re-read their
+    descriptions; the other nine are unchanged and carry forward with
+    evidence". It does not check that a description is *correct* — nothing
+    mechanical can, see the note above FILES — but it does say exactly which
+    ones stopped being backed by a hunk anyone has read.
+    """
+    text = patch_text() if text is None else text
+    out: dict[str, str] = {}
+    path, buf = None, []
+    for line in text.splitlines(keepends=True):
+        if line.startswith("diff --git"):
+            if path is not None:
+                out[path] = hashlib.sha256("".join(buf).encode()).hexdigest()
+            path, buf = line.split(" b/")[-1].strip(), []
+        elif path is not None:
+            buf.append(line)
+    if path is not None:
+        out[path] = hashlib.sha256("".join(buf).encode()).hexdigest()
+    return out
 
 
 def new_file(rel_path: str, text: str | None = None) -> str | None:
@@ -207,6 +274,14 @@ def check_pin() -> list[str]:
         findings.append(f"{missing} is in the patch with no entry in FILES")
     for gone in sorted(described - present):
         findings.append(f"{gone} is described in FILES but not in the patch")
+
+    for path, digest in sorted(file_digests().items()):
+        pinned = FILE_DIGESTS.get(path)
+        if pinned is not None and pinned != digest:
+            findings.append(
+                f"{path}: its hunk changed, so the FILES description for it "
+                "is no longer backed by anything anyone has read — re-read "
+                "the hunk and update env_tests_ref.py")
     return findings
 
 
