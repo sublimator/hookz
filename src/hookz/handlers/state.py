@@ -27,6 +27,29 @@ def state(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, kread
     return len(val)
 
 
+def _journal(rt: HookRuntime, scope: str, account: bytes, namespace: bytes,
+             key: bytes, value: bytes | None, result: int) -> None:
+    """Record a performed write/delete on the runtime's state journal."""
+    from hookz.runtime import StateWrite
+
+    rt.state_journal.append(StateWrite(
+        scope=scope,
+        account=account,
+        namespace=namespace,
+        key=key,
+        value=value,
+        result=result,
+        export=rt._current_export,
+    ))
+
+
+#: The namespace journaled for local writes. The mock's local store is not
+#: namespaced; on chain a hook's own state lives under its installed
+#: namespace, and zeros is the convention `state_foreign` already uses for
+#: "the local default".
+_LOCAL_NS = b"\x00" * 32
+
+
 def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kread_len: int) -> int:
     if kread_len < 1:
         return hookapi.TOO_SMALL
@@ -37,9 +60,11 @@ def state_set(rt: HookRuntime, read_ptr: int, read_len: int, kread_ptr: int, kre
     key = rt._read_memory(kread_ptr, kread_len)
     if read_ptr == 0 and read_len == 0:
         rt.state_db.pop(key, None)
+        val = None
     else:
         val = rt._read_memory(read_ptr, read_len)
         rt.state_db[key] = val
+    _journal(rt, "local", rt.hook_account, _LOCAL_NS, key, val, read_len)
     return read_len
 
 
@@ -121,7 +146,9 @@ def state_foreign_set(
 
     if read_ptr == 0 and read_len == 0:
         db.pop(composite_key, None)
+        val = None
     else:
         val = rt._read_memory(read_ptr, read_len)
         db[composite_key] = val
+    _journal(rt, "foreign", account, ns, key, val, read_len)
     return read_len

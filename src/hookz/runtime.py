@@ -131,6 +131,31 @@ class HostCall:
 
 
 @dataclass
+class StateWrite:
+    """One state write or delete, as evidence — never as committed state.
+
+    The journal records what a hook *did to state and when*, which the
+    databases cannot: `state_db` shows only the end result, so "the hook
+    wrote the record and only then hit the guard" and "the guard fired
+    before anything was written" look identical there after a rollback.
+    Guard-ordering assertions belong on this record.
+
+    `value is None` marks a delete. `result` is the host return code the
+    hook saw. `export` names the execution that performed it (`"hook"`,
+    `"cbak"`). Writes made through a test's own handler override bypass the
+    builtin and therefore do not journal — an interceptor that wants its
+    refusals on the record must add them itself.
+    """
+    scope: str                  # "local" | "foreign"
+    account: bytes
+    namespace: bytes
+    key: bytes
+    value: bytes | None         # None = delete
+    result: int
+    export: str
+
+
+@dataclass
 class HookResult:
     """Result of a hook execution."""
     accepted: bool = False
@@ -149,6 +174,12 @@ class HookResult:
     # tried to pay out and then refused, which is a different statement from
     # never having reached the emit at all.
     attempted_emissions: list[bytes] = field(default_factory=list)
+    # This run's slice of the runtime's state journal — every write and
+    # delete the execution performed, in order, whatever the run's outcome.
+    # Evidence, not committed state: a rejected run's writes appear here
+    # (and in `rt.state_journal`) precisely so a test can prove ordering
+    # without depending on what survives in the databases.
+    state_writes: list = field(default_factory=list)
 
     @property
     def return_msg_str(self) -> str:
@@ -341,6 +372,12 @@ class HookRuntime:
         # reset on every run. See the note in `run`.
         self.attempted_emissions: list[bytes] = []
         self._emitted_mark: int = 0
+        # Every state write/delete performed by any run on this runtime, in
+        # order — durable evidence across runs; `HookResult.state_writes` is
+        # the per-run slice. See StateWrite.
+        self.state_journal: list[StateWrite] = []
+        self._journal_mark: int = 0
+        self._current_export: str = "hook"
         self.traces: list = []  # list[Trace] from handlers.core
         # HOOKZ_CHECK recording. `checkpoint_observers` lets a caller react as
         # each one closes — a live model comparison, a log — without the
@@ -541,9 +578,11 @@ class HookRuntime:
 
         *Durable* (carried across runs on one runtime, on purpose):
         `state_db`, `_foreign_state_db`, `ledger`, `params`/`tx_params`,
-        `handlers`, `amendments`, `_slot_overrides`, and `emitted_txns` — the
+        `handlers`, `amendments`, `_slot_overrides`, `emitted_txns` — the
         accepted-emission history, which only ever grows by the runs that
-        accepted. Multi-delivery tests depend on exactly this: a second
+        accepted — and `state_journal`, the ordered evidence of every write
+        and delete any run performed (`result.state_writes` is this run's
+        slice). Multi-delivery tests depend on exactly this: a second
         callback on the same runtime must see the state and accepted
         emissions the first one left, and a later rejecting run must not be
         able to reclassify or clear them.
@@ -563,6 +602,8 @@ class HookRuntime:
         self.dev_events = []
         self._dev_pending_events = []
         self._emitted_mark = len(self.emitted_txns)
+        self._journal_mark = len(self.state_journal)
+        self._current_export = export
         self.attempted_emissions = []
         self.emission_rejections = []
         self.emission_undecided = []
@@ -667,6 +708,10 @@ class HookRuntime:
             del self.emitted_txns[self._emitted_mark:]
             self.attempted_emissions = pending
             result.attempted_emissions = pending
+
+        # The journal slice is unconditional — writes a rejected run
+        # performed are exactly the evidence it exists to keep.
+        result.state_writes = self.state_journal[self._journal_mark:]
 
         result.call_log = self.call_log
 
