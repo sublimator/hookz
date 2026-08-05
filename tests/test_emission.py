@@ -515,7 +515,7 @@ class TestKnownGapsAreStated:
         """Documented because handlers/emit.py passes min_fee=None."""
         import inspect
         from hookz.handlers import emit as handler
-        assert "min_fee=None" in inspect.getsource(handler.emit)
+        assert "min_fee=None" in inspect.getsource(handler._emit_preflight)
 
 
 class TestEveryReasonIsReported:

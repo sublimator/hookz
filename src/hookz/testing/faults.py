@@ -27,9 +27,12 @@ refused, green, proving the injection is what changed the outcome and that
 it actually reached the host boundary.
 
 The injectors wrap the builtin handlers — they never re-implement their
-validation, so a malformed call (bad key width, oversized value) is refused
-by the host's own checks *before* any fault is considered, exactly as on
-chain, and never appears in the fault log.
+validation, so a call the host itself would refuse (a bad key width, an
+oversized value, an emit with no reservation, an exhausted reserved count,
+a short output buffer, a transaction failing the emission rules) receives
+the host's own answer *before* any fault is considered, exactly as on
+chain, and never appears in the fault log. The selector is only ever asked
+about a call that would otherwise have succeeded.
 """
 
 from __future__ import annotations
@@ -68,8 +71,13 @@ class FaultCall:
 
 
 def deletes(call: FaultCall) -> bool:
-    """`when=` predicate: every delete is refused."""
-    return call.value is None
+    """`when=` predicate: every state delete is refused.
+
+    Checks the call's name, not just its value — emit and generic records
+    also carry `value=None`, and a predicate that matched them would refuse
+    every emit while claiming to select deletes.
+    """
+    return call.is_delete
 
 
 def nth(n: int) -> Callable[[FaultCall], bool]:
@@ -132,25 +140,35 @@ def refuse_emit(rt: HookRuntime,
 
     `when` receives the `FaultCall` with the serialized transaction as
     `blob` and its 0-based position in this log as `index`. A refused emit
-    returns `code` with nothing appended to the emission queue; anything
-    else is handed to the builtin, whose own rules still apply.
+    returns `code` with nothing appended to the emission queue.
     `when=None` only logs.
+
+    The builtin's whole preflight runs first, in the host's order —
+    reservation, reserved count, output width, the emission rules — so a
+    call the ordinary runtime would refuse gets the ordinary answer
+    (PREREQUISITE_NOT_MET, TOO_MANY_EMITTED_TXN, TOO_SMALL,
+    EMISSION_FAILURE with its diagnostics), never the injected code, and
+    never appears in the log. The selector is only ever asked about an
+    emit that would otherwise have succeeded.
 
     Returns the live log; it fills in as the hook runs.
     """
-    from hookz.handlers.emit import emit as builtin
+    from hookz.handlers.emit import _emit_commit, _emit_preflight
 
     log: list[FaultCall] = []
 
     def handler(hash_ptr, hash_len, txn_ptr, txn_len):
         blob = rt._read_memory(txn_ptr, txn_len)
+        err = _emit_preflight(rt, hash_len, blob)
+        if err is not None:
+            return err
         call = FaultCall(name="emit", index=len(log), blob=blob)
         if when is not None and when(call):
             call.refused = True
             call.result = code
             log.append(call)
             return code
-        call.result = builtin(rt, hash_ptr, hash_len, txn_ptr, txn_len)
+        call.result = _emit_commit(rt, hash_ptr, hash_len, blob)
         log.append(call)
         return call.result
 

@@ -71,6 +71,23 @@ int64_t hook(uint32_t reserved)
         int64_t rc = state_set(SBUF(v), wide, 33);
         return accept(SBUF("badkey"), rc);
     }
+    if (reserved == 3)
+    {
+        int64_t rr = etxn_reserve(1);
+        uint8_t t1[16] = {0x31};
+        uint8_t h[32];
+        int64_t e1 = emit(h, 31, SBUF(t1));
+        int64_t e2 = emit(SBUF(h), SBUF(t1));
+        int64_t e3 = emit(SBUF(h), SBUF(t1));
+        uint8_t wide[32];
+        INT64_TO_BUF(wide, rr);
+        INT64_TO_BUF(wide + 8, e1);
+        INT64_TO_BUF(wide + 16, e2);
+        INT64_TO_BUF(wide + 24, e3);
+        rk[1] = 3;
+        state_set(SBUF(wide), SBUF(rk));
+        return accept(SBUF("preflight"), 0);
+    }
     return accept(SBUF("noop"), 0);
 }
 """
@@ -80,6 +97,7 @@ K2 = bytes([0x02]) + b"\x00" * 31
 K3 = bytes([0x03]) + b"\x00" * 31
 RK1 = bytes([0xF0, 0x01]) + b"\x00" * 30
 RK2 = bytes([0xF0, 0x02]) + b"\x00" * 30
+RK3 = bytes([0xF0, 0x03]) + b"\x00" * 30
 V = bytes([0xAA]) + b"\x00" * 3
 T1 = bytes([0x11]) + b"\x00" * 15
 T2 = bytes([0x22]) + b"\x00" * 15
@@ -204,6 +222,68 @@ class TestRefuseEmit:
                            code=hookapi.TOO_MANY_EMITTED_TXN)
         rt.run(wasm, arg=1)
         assert codes(rt.state_db[RK2])[1] == hookapi.TOO_MANY_EMITTED_TXN
+
+
+class TestEmitPreflightBeatsTheSelector:
+    """A call the host itself would refuse gets the host's answer, never the
+    injected code, and never appears in the log — the selector is only ever
+    asked about an emit that would otherwise have succeeded."""
+
+    def test_no_reservation_answers_prerequisite_not_met(self, wasm):
+        rt = emit_rt()
+        faults.refuse_host(rt, "etxn_reserve", hookapi.TOO_SMALL)
+        log = faults.refuse_emit(rt, when=lambda c: True,
+                                 code=hookapi.INTERNAL_ERROR)
+        rt.run(wasm, arg=1)
+
+        assert codes(rt.state_db[RK2])[1:] == [
+            hookapi.PREREQUISITE_NOT_MET, hookapi.PREREQUISITE_NOT_MET]
+        assert log == []
+
+    def test_short_output_and_exhausted_count_answer_first(self, wasm):
+        """arg 3: a 31-byte output buffer, one committing emit against a
+        reservation of one, then a third emit into the exhausted count."""
+        rt = emit_rt()
+        log = faults.refuse_emit(rt, when=faults.nth(1),
+                                 code=hookapi.INTERNAL_ERROR)
+        result = rt.run(wasm, arg=3)
+
+        rr, e1, e2, e3 = codes(rt.state_db[RK3])
+        assert rr == 1
+        assert e1 == hookapi.TOO_SMALL
+        assert e2 == 32
+        assert e3 == hookapi.TOO_MANY_EMITTED_TXN
+        # Only the committing emit ever reached the selector, so nth(1)
+        # never fired and nothing was refused.
+        assert [(c.refused, c.result) for c in log] == [(False, 32)]
+        assert result.emitted_txns == [bytes([0x31]) + b"\x00" * 15]
+
+    def test_a_selected_but_invalid_emission_keeps_its_diagnostics(self, wasm):
+        """With validation on, the probe's bare blobs fail the emission
+        rules: EMISSION_FAILURE comes from the rules with its rejection
+        recorded, not from the selector."""
+        rt = HookRuntime()
+        assert rt.validate_emissions
+        log = faults.refuse_emit(rt, when=lambda c: True,
+                                 code=hookapi.INTERNAL_ERROR)
+        rt.run(wasm, arg=1)
+
+        assert codes(rt.state_db[RK2])[1:] == [
+            hookapi.EMISSION_FAILURE, hookapi.EMISSION_FAILURE]
+        assert len(rt.emission_rejections) == 2
+        assert log == []
+
+
+class TestStockPredicates:
+    def test_deletes_ignores_non_state_records(self):
+        assert not faults.deletes(
+            faults.FaultCall(name="emit", index=0, blob=b"x"))
+        assert not faults.deletes(
+            faults.FaultCall(name="etxn_reserve", index=0))
+        assert faults.deletes(
+            faults.FaultCall(name="state_set", index=0, key=b"k"))
+        assert not faults.deletes(
+            faults.FaultCall(name="state_set", index=0, key=b"k", value=b"v"))
 
 
 class TestRefuseHost:

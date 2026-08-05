@@ -131,7 +131,15 @@ def prepare(rt: HookRuntime, write_ptr: int, write_len: int, read_ptr: int, read
     return len(data)
 
 
-def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
+def _emit_preflight(rt: HookRuntime, hash_len: int, txn_bytes: bytes) -> int | None:
+    """The refusal half of `emit`, shared with the fault layer.
+
+    The ordering is the host's — reservation, then the reserved count, then
+    the output width, then the emission rules — and a wrapper that consulted
+    a fault selector first would substitute an injected code for an answer
+    the ordinary runtime already owed the hook. Validation diagnostics are
+    recorded here, exactly once, whoever calls.
+    """
     if not rt._etxn_reserved:
         return hookapi.PREREQUISITE_NOT_MET
     # The reservation covers this hook execution only, so the count is taken
@@ -140,7 +148,6 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
         return hookapi.TOO_MANY_EMITTED_TXN
     if hash_len < 32:
         return hookapi.TOO_SMALL
-    txn_bytes = rt._read_memory(txn_ptr, txn_len)
 
     # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498 applies fourteen rules
     # and a preflight before it accepts an emitted transaction. Skipping them
@@ -162,8 +169,21 @@ def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: i
             # accepted, but nothing was verified — say so rather than let the
             # empty rejections list imply it passed
             rt.emission_undecided.append(check)
+    return None
 
+
+def _emit_commit(rt: HookRuntime, hash_ptr: int, hash_len: int,
+                 txn_bytes: bytes) -> int:
+    """The effect half of `emit`: queue the emission, hand back its ID."""
     rt.emitted_txns.append(txn_bytes)
     h = emitted_txn_id(txn_bytes)
     rt._write_memory(hash_ptr, h[:hash_len])
     return 32
+
+
+def emit(rt: HookRuntime, hash_ptr: int, hash_len: int, txn_ptr: int, txn_len: int) -> int:
+    txn_bytes = rt._read_memory(txn_ptr, txn_len)
+    err = _emit_preflight(rt, hash_len, txn_bytes)
+    if err is not None:
+        return err
+    return _emit_commit(rt, hash_ptr, hash_len, txn_bytes)
