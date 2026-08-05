@@ -733,14 +733,21 @@ def build_context(
     # `main()` renders both, but a caller told "raises ContextError" got
     # something else.
     try:
-        from hookz.wasm.whitelist import derive_amendments, load_from_config
+        from hookz.wasm.whitelist import get_default_amendments
 
         signatures = get_function_signatures()
         # The whitelist the *test* runs under, not the one mainnet runs under:
-        # jtx's supported_amendments() turns on every Supported::yes feature,
-        # and both amendments the hook API gates on are Supported::yes.
+        # jtx's supported_amendments() turns on every Supported::yes feature
+        # whatever its vote behaviour, so an import gated on a DefaultNo
+        # amendment still works there.
+        #
+        # get_default_amendments() is every amendment that gates an import,
+        # which equals supported_amendments() only while all of them are
+        # Supported::yes. Both are today, and
+        # `test_every_gating_amendment_is_supported` fails if that stops being
+        # true rather than letting the document quietly overclaim.
         whitelist = get_import_signatures(
-            amendments=derive_amendments(load_from_config()), coverage=True)
+            amendments=get_default_amendments(), coverage=True)
         mainnet = get_import_signatures(coverage=True)
     except ValueError as e:
         raise ContextError(

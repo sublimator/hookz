@@ -243,3 +243,92 @@ class TestEachDescriptionIsBoundToTheHunkItWasReadAgainst:
         """A single digest repeated for every file would satisfy the two
         tests above and lose the whole point."""
         assert len(set(ref.FILE_DIGESTS.values())) == len(ref.FILE_DIGESTS)
+
+
+class TestEachDescriptionDescribesItsOwnFile:
+    """Not a correctness check — that was tried twice and shown impossible,
+    see the note above FILES. This is the weaker, achievable thing: a
+    description must share at least one identifier with the hunk it is about.
+
+    It catches the wholesale case, which is real: swapping `Log.cpp`'s
+    description for `Enum.h`'s left the whole suite green, because the key-set
+    test compares keys and the document test asserts `FILES[path] in doc`,
+    which is true by construction — the document prints `FILES[path]`. The
+    descriptions certified themselves.
+    """
+
+    TOKEN = r"[A-Za-z_][A-Za-z0-9_]{3,}"
+
+    @staticmethod
+    def _sections():
+        sec, cur = {}, None
+        for line in ref.patch_text().splitlines():
+            if line.startswith("diff --git"):
+                cur = line.split(" b/")[-1].strip()
+                sec[cur] = []
+            elif cur is not None:
+                sec[cur].append(line)
+        return {k: "\n".join(v) for k, v in sec.items()}
+
+    def _anchors(self, description, hunk):
+        import re
+
+        return [t for t in dict.fromkeys(re.findall(self.TOKEN, description))
+                if t in hunk]
+
+    def test_every_description_shares_a_name_with_its_hunk(self):
+        sections = self._sections()
+
+        unanchored = [p for p, d in ref.FILES.items()
+                      if not self._anchors(d, sections[p])]
+
+        assert unanchored == [], unanchored
+
+    def test_the_rule_is_not_vacuous(self):
+        """A description belonging to a different file has no anchor here.
+
+        Without this, a rule that everything trivially satisfies would look
+        like a guard and be one only by accident.
+        """
+        sections = self._sections()
+        foreign = "adds the coverage host function and its whitelist entry"
+
+        assert self._anchors(foreign, sections["include/xrpl/hook/Enum.h"])
+        assert not self._anchors(
+            foreign, sections["src/libxrpl/basics/Log.cpp"])
+
+
+class TestTheTestWhitelistPremiseHolds:
+    """`env-test-context` judges the surface against every amendment that
+    gates an import, because jtx's `supported_amendments()` enables every
+    `Supported::yes` feature regardless of vote behaviour.
+
+    The two sets are equal only while every gating amendment is
+    `Supported::yes`. Both are today; the checkout has ten `Supported::no`
+    entries, so the day one of those gates an import the document would say
+    "available to your test" about something the test will not have.
+    """
+
+    def test_every_gating_amendment_is_supported(self):
+        import re
+
+        from hookz.config import load_config
+        from hookz.wasm.whitelist import get_default_amendments
+        from hookz.xahaud_files import _vendored_root
+
+        root = Path(load_config().xahaud_root)
+        macro = root / "include/xrpl/protocol/detail/features.macro"
+        if root.resolve() == _vendored_root().resolve() or not macro.is_file():
+            pytest.skip("needs a checkout carrying features.macro")
+
+        text = macro.read_text()
+        for amendment in sorted(get_default_amendments()):
+            name = amendment.removeprefix("feature")
+            m = re.search(
+                rf"XRPL_FEATURE\(\s*{re.escape(name)}\s*,\s*(Supported::\w+)",
+                text)
+            assert m, f"{name} is not in features.macro"
+            assert m.group(1) == "Supported::yes", (
+                f"{name} gates a hook import but is {m.group(1)}, so "
+                "supported_amendments() will not enable it and the surface "
+                "section would overclaim")
