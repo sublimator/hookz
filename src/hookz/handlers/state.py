@@ -185,14 +185,44 @@ def state_foreign_set(
     A zero read_len is a delete operation — see `_is_delete`. Admission is
     `_state_set_error`, the same implementation `state_set` uses, because the
     host reaches this wrapper by both routes.
+
+    MODELLED SURFACE: wrapper admission, and the *explicit* foreign write —
+    a given namespace, to `_foreign_state_db`. Three things past admission are
+    not modelled, and matter before a test leans on this:
+
+    1. the omitted-namespace local form raises rather than answering, below;
+    2. grants. The host checks them and can answer NOT_AUTHORIZED, then
+       PREVIOUS_FAILURE_PREVENTS_RETRY on a later attempt
+       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1919). Here every
+       admitted foreign write succeeds, so those codes are reachable only by
+       fault injection, not by configuring a ledger;
+    3. the value cap in `_state_set_error` is 256, which is the host's
+       `256 * HookStateScale` at the default scale of one
+       (xahaud:include/xrpl/hook/Enum.h:79). A scaled account is not modelled.
     """
     err = _state_set_error(rt, read_ptr, read_len, kread_ptr, kread_len,
                            ns_ptr, ns_len, aread_ptr, aread_len)
     if err is not None:
         return err
 
+    if ns_len == 0:
+        # Admission has already established this is the local form (an omitted
+        # namespace with any account is INVALID_ARGUMENT). The host substitutes
+        # the hook's own namespace and account and performs an ordinary local
+        # modification (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1337,
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1909) — so it lands in
+        # the same store `state()` reads. This wrote a zero namespace into
+        # `_foreign_state_db` instead, which succeeds and then reads back as
+        # DOESNT_EXIST: a silent wrong answer, which is the one thing a
+        # fidelity mock must not do. Raise until it is modelled properly.
+        raise NotImplementedError(
+            "state_foreign_set with an omitted namespace is the host's local "
+            "form: it writes the hook's own state under rt.hook_namespace, "
+            "and hookz does not model that yet. Use state_set for a local "
+            "write, or pass an explicit 32-byte namespace.")
+
     key = rt._read_memory(kread_ptr, kread_len)
-    ns = rt._read_memory(ns_ptr, ns_len) if ns_len else b"\x00" * 32
+    ns = rt._read_memory(ns_ptr, ns_len)
     account = rt._read_memory(aread_ptr, aread_len) if aread_len else rt.hook_account
 
     db = rt._foreign_state_db

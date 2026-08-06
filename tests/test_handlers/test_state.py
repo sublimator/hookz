@@ -344,6 +344,20 @@ class TestStateForeignSet:
         result = state_foreign_set(rt, 0, 3, 100, 1, 0, 0, 300, 20)
         assert result == hookapi.INVALID_ARGUMENT
 
+    def test_the_local_form_raises_rather_than_answering_wrongly(self, rt):
+        """An omitted namespace is the host's *local* write — it lands where
+        `state()` reads. This wrote a zero namespace into the foreign store,
+        which succeeded and then read back as DOESNT_EXIST. Unmodelled is
+        fine; a silent wrong answer is not."""
+        rt.hook_namespace = b"\xAA" * 32
+        rt._write_memory(0, b"val")
+        rt._write_memory(100, b"k")
+
+        with pytest.raises(NotImplementedError, match="local form"):
+            state_foreign_set(rt, 0, 3, 100, 1, 0, 0, 0, 0)
+
+        assert rt.state_db == {} and rt._foreign_state_db == {}
+
     def test_roundtrip(self, rt):
         """Set via state_foreign_set, read via state_foreign."""
         key = b"roundtrip"
