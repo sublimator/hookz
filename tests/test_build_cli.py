@@ -142,7 +142,7 @@ def private_tmpdir(tmp_path, monkeypatch):
     "we left a file behind" from "somebody else created one", and says the
     former either way.
 
-    > Running the audit suite alongside this one failed
+    > Running a second test suite on the same machine failed
     > `test_no_temp_left_behind_on_compile_failure` with a stray
     > `tmpqahhnpc3.wasm` that this process never opened. Nothing had leaked.
 
