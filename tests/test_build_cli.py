@@ -109,6 +109,29 @@ class TestBuildOutputWriting:
         assert out.read_bytes().endswith(b"previous build")
 
 
+@pytest.fixture
+def private_tmpdir(tmp_path, monkeypatch):
+    """Redirect `compile_hook`'s unnamed temp into a directory only we use.
+
+    `compile_hook(output=None)` calls `NamedTemporaryFile` with no `dir=`, so
+    it lands wherever `tempfile.gettempdir()` points — shared with every other
+    process on the machine. A leak test that globs that directory cannot tell
+    "we left a file behind" from "somebody else created one", and says the
+    former either way.
+
+    > Running the audit suite alongside this one failed
+    > `test_no_temp_left_behind_on_compile_failure` with a stray
+    > `tmpqahhnpc3.wasm` that this process never opened. Nothing had leaked.
+
+    Setting `tempfile.tempdir` rather than `TMPDIR` is deliberate:
+    `gettempdir()` reads the environment once and caches the answer, so by the
+    time a test runs the variable is no longer consulted.
+    """
+    import tempfile
+    monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
+    return tmp_path
+
+
 class TestCompileTempFiles:
     """compile_hook(output=None) must not litter the temp dir.
 
@@ -116,17 +139,13 @@ class TestCompileTempFiles:
     leak here accumulates one stray .wasm per invocation, indefinitely.
     """
 
-    def test_no_temp_left_behind(self, config):
-        import tempfile
+    def test_no_temp_left_behind(self, private_tmpdir, config):
         from hookz.compiler import compile_hook
 
-        tmpdir = Path(tempfile.gettempdir())
-        before = set(tmpdir.glob("tmp*.wasm"))
         wasm = compile_hook(SOURCE, None, config, debug=False, optimize=True)
-        after = set(tmpdir.glob("tmp*.wasm"))
 
         assert wasm[:4] == b"\x00asm"
-        assert after - before == set()
+        assert list(private_tmpdir.glob("*.wasm")) == []
 
     def test_caller_supplied_output_is_kept(self, tmp_path, config):
         """Cleanup must apply only to the temp we created."""
@@ -136,18 +155,32 @@ class TestCompileTempFiles:
         compile_hook(SOURCE, out, config, debug=False, optimize=True)
         assert out.exists()
 
-    def test_no_temp_left_behind_on_compile_failure(self, tmp_path, config):
-        import tempfile
+    def test_no_temp_left_behind_on_compile_failure(self, private_tmpdir,
+                                                    config):
         from hookz.compiler import compile_hook
 
-        bad = tmp_path / "bad.c"
+        bad = private_tmpdir / "bad.c"
         bad.write_text("this is not valid C;\n")
 
-        tmpdir = Path(tempfile.gettempdir())
-        before = set(tmpdir.glob("tmp*.wasm"))
         with pytest.raises(RuntimeError, match="Compilation failed"):
             compile_hook(bad, None, config, debug=False, optimize=True)
-        assert set(tmpdir.glob("tmp*.wasm")) - before == set()
+        assert list(private_tmpdir.glob("*.wasm")) == []
+
+    def test_the_leak_tests_would_notice_a_leak(self, private_tmpdir, config):
+        """The control: a temp left behind has to fail the assertion above.
+
+        Both tests now glob a directory this process owns, which is what makes
+        them meaningful — but an empty glob also passes when the redirection
+        silently missed and the file went to the real temp dir. So write one
+        through the same call path and confirm it is seen.
+        """
+        import tempfile
+
+        tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
+        tmp.close()
+
+        assert Path(tmp.name).parent == private_tmpdir
+        assert list(private_tmpdir.glob("*.wasm")) == [Path(tmp.name)]
 
 
 class TestPipelineSelection:
