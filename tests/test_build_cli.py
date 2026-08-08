@@ -7,6 +7,7 @@ one at the output path on failure hands the user something that looks like a
 build artifact and is not deployable.
 """
 
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -109,6 +110,28 @@ class TestBuildOutputWriting:
         assert out.read_bytes().endswith(b"previous build")
 
 
+@contextmanager
+def suppressed_unlink():
+    """Disable `Path.unlink` for the duration, recording what it spared.
+
+    `compile_hook`'s cleanup is a single `out_path.unlink(missing_ok=True)`
+    in a `finally` (hookz:src/hookz/compiler.py:151-156). Suppressing exactly
+    that call is how a test can make the function leak on purpose, without
+    reaching inside it for the temp's name.
+    """
+    spared: list[Path] = []
+    real = Path.unlink
+
+    def fake(self, *args, **kwargs):
+        spared.append(self)
+
+    Path.unlink = fake
+    try:
+        yield spared
+    finally:
+        Path.unlink = real
+
+
 @pytest.fixture
 def private_tmpdir(tmp_path, monkeypatch):
     """Redirect `compile_hook`'s unnamed temp into a directory only we use.
@@ -126,6 +149,12 @@ def private_tmpdir(tmp_path, monkeypatch):
     Setting `tempfile.tempdir` rather than `TMPDIR` is deliberate:
     `gettempdir()` reads the environment once and caches the answer, so by the
     time a test runs the variable is no longer consulted.
+
+    That also bounds what these tests cover. The redirection reaches Python's
+    `tempfile`, which is how `compile_hook` opens its output; the subprocesses
+    it spawns still inherit the real `TMPDIR`, so a temp file leaked by clang,
+    wasm-ld or wasm-opt is out of scope here — as it was before, since the old
+    `tmp*.wasm` glob would not have named one either.
     """
     import tempfile
     monkeypatch.setattr(tempfile, "tempdir", str(tmp_path))
@@ -145,7 +174,7 @@ class TestCompileTempFiles:
         wasm = compile_hook(SOURCE, None, config, debug=False, optimize=True)
 
         assert wasm[:4] == b"\x00asm"
-        assert list(private_tmpdir.glob("*.wasm")) == []
+        assert list(private_tmpdir.rglob("*.wasm")) == []
 
     def test_caller_supplied_output_is_kept(self, tmp_path, config):
         """Cleanup must apply only to the temp we created."""
@@ -164,23 +193,33 @@ class TestCompileTempFiles:
 
         with pytest.raises(RuntimeError, match="Compilation failed"):
             compile_hook(bad, None, config, debug=False, optimize=True)
-        assert list(private_tmpdir.glob("*.wasm")) == []
+        assert list(private_tmpdir.rglob("*.wasm")) == []
 
     def test_the_leak_tests_would_notice_a_leak(self, private_tmpdir, config):
-        """The control: a temp left behind has to fail the assertion above.
+        """The control: a temp left behind has to fail the assertions above.
 
-        Both tests now glob a directory this process owns, which is what makes
+        Both tests glob a directory this process owns, which is what makes
         them meaningful — but an empty glob also passes when the redirection
-        silently missed and the file went to the real temp dir. So write one
-        through the same call path and confirm it is seen.
+        silently missed and the file went to the real temp dir. So make
+        `compile_hook` leak, and confirm the glob names it.
+
+        Leaking it through `compile_hook` rather than by opening a
+        `NamedTemporaryFile` here is the point. This asserts on the path the
+        tested code actually takes, so if that code moves to `mkstemp(dir=…)`
+        or a `TemporaryDirectory`, the leak tests go inert *and this fails*
+        rather than passing on an API nothing uses any more.
         """
-        import tempfile
+        from hookz.compiler import compile_hook
 
-        tmp = tempfile.NamedTemporaryFile(suffix=".wasm", delete=False)
-        tmp.close()
+        # the cleanup under test: it unlinks the temp it made when output is
+        # None. Take the unlink away and the same call must leave the file.
+        with suppressed_unlink() as leaked:
+            compile_hook(SOURCE, None, config, debug=False, optimize=True)
 
-        assert Path(tmp.name).parent == private_tmpdir
-        assert list(private_tmpdir.glob("*.wasm")) == [Path(tmp.name)]
+        found = list(private_tmpdir.rglob("*.wasm"))
+        assert found, "compile_hook did not open its temp through tempfile"
+        assert [p.name for p in found] == [p.name for p in leaked]
+        assert found[0].parent == private_tmpdir
 
 
 class TestPipelineSelection:
