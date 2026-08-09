@@ -479,8 +479,17 @@ class AliasedGroup(click.Group):
 def _print_version(ctx, _param, value):
     if not value or ctx.resilient_parsing:
         return
+    from pathlib import Path
+
+    import hookz
     from hookz._version import get_version
-    click.echo(f"hookz {get_version()}")
+
+    # The version number alone cannot distinguish two installs: a source
+    # tree without git metadata reports the same bare number as whatever is
+    # already on the machine, which made "check --version" pass while an
+    # override had silently fallen through to the baked code. The path is
+    # the fact that differs, so print it.
+    click.echo(f"hookz {get_version()} (from {Path(hookz.__file__).parent})")
     ctx.exit()
 
 
