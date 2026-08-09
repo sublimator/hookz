@@ -132,8 +132,10 @@ private:
         env.setPrefix("install");
         installTop(env, alice);
 
-        // top.c:198 — "Remit must have exactly one param" is a rollback,
-        // and a rollback surfaces to the submitter as tecHOOK_REJECTED.
+        // With value attached and no DEPOSIT param, the deposit path's
+        // otxn_param read fails and top.c:227 rolls back ("Remit missing
+        // DEPOSIT HookParameter…"). A rollback surfaces to the submitter
+        // as tecHOOK_REJECTED.
         env.setPrefix("trigger");
         env(remit::remit(bob, alice),
             remit::amts({XRP(100)}),
@@ -185,7 +187,10 @@ private:
         BEAST_REQUIRE(balance);
         auto const& balData = balance->getFieldVL(sfHookStateData);
         BEAST_REQUIRE(balData.size() == 9);
-        BEAST_EXPECT(balData[8] == 0);  // trailing flag byte: XAH entry
+        // Trailing byte is the currency's index in the user's 256-slot
+        // bitmap (top.c `to_idx`, chosen by ctzll): 0 because this is the
+        // user's FIRST currency, not because it is XAH.
+        BEAST_EXPECT(balData[8] == 0);
     }
 
 public:

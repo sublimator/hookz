@@ -660,8 +660,11 @@ def _harness_section(suite: str, name: str, stem: str) -> list[str]:
         "Or skip the local toolchain: the published Docker image carries "
         "xahaud pre-built with the branch applied, a primed ccache, and "
         "hookz baked in, so only your test files compile. There is no "
-        "public `:latest` — pin a dated tag (the hookz repo pins its own in "
-        "`.github/workflows/xahaud-integration.yml`, `DEFAULT_IMAGE`).",
+        "public `:latest` — pin a dated tag; the current known-good pin is "
+        "`DEFAULT_IMAGE` in the hookz repo's CI workflow "
+        "(<https://github.com/sublimator/hookz/blob/main/.github/workflows/"
+        "xahaud-integration.yml>). Run this from the directory that "
+        "contains your `env-tests/` and `hooks/`:",
         "",
         "```bash",
         "IMAGE=gcr.io/hookz-public/hookz-xahaud:<dated-tag>",

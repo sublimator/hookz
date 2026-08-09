@@ -537,6 +537,43 @@ class TestTheSkeletonStatesWhatFailsSilently:
         doc = _doc(checkout)
         assert "convention" in doc
 
+    def test_it_offers_the_docker_run_beside_the_local_one(self, checkout):
+        """The document said "build and run it" and stopped at the local
+        cmake path, which assumes a conan/ccache/cmake toolchain the reader
+        of *this* document conspicuously may not have. The image section
+        must name the registry, refuse to imply a `:latest`, say where the
+        current pin lives as a URL a pip-installed user can reach, and state
+        the directory its relative mounts assume."""
+        doc = _doc(checkout)
+
+        assert "gcr.io/hookz-public/hookz-xahaud:<dated-tag>" in doc
+        assert "no public `:latest`" in doc.lower()
+        assert ("https://github.com/sublimator/hookz/blob/main/"
+                ".github/workflows/xahaud-integration.yml") in doc
+        assert "directory that contains your `env-tests/` and `hooks/`" in doc
+        assert "--platform linux/amd64" in doc
+
+    def test_it_warns_about_emulation_before_it_bites(self, checkout):
+        """Both arm64 failure modes were hit live: the HOOKZ_SPEC refresh
+        segfaults under qemu (uv is the casualty), and the fallback is the
+        baked hookz. A reader on Apple Silicon meets these in the first ten
+        minutes, so the document says them before the first run."""
+        doc = _doc(checkout)
+
+        assert "qemu" in doc
+        assert "HOOKZ_SPEC" in doc
+        assert "baked hookz" in doc
+
+    def test_it_ranks_the_evidence(self, checkout):
+        """The closing rule is the reason env tests exist at all: the Python
+        harness is a model, and sign-off happens on env tests only. Delete
+        that paragraph and the document still reads complete — which is
+        exactly how it shipped without one."""
+        doc = _doc(checkout)
+
+        assert "sign off on env tests only" in doc.lower()
+        assert "model" in doc
+
 
 class TestTheLegendExplainsWhatTheTableNames:
     """The `family` column is a label; the legend under it is the arrangement

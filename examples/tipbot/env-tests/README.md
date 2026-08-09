@@ -29,7 +29,7 @@ installs hookz from the mounted checkout, compiles only your test files
 (~10s), and runs them. Mounting `entrypoint.sh` is required until the
 published image bakes the refresh helper.
 
-The image is built on [Google Cloud Build](../../docker/cloudbuild.yaml)
+The image is built on [Google Cloud Build](../../../docker/cloudbuild.yaml)
 and published to `gcr.io/hookz-public/hookz-xahaud`.
 
 ## CI
@@ -80,4 +80,4 @@ HOOKS_TEST_DIR=$(pwd) \
 | `HOOKS_COVERAGE_DIR` | Where to write coverage `.dat` files |
 | `TESTENV_LOGGING` | Per-partition log levels (e.g. `HooksTrace=trace`) |
 
-See [docs/external-env-tests.md](../../docs/external-env-tests.md) for the full picture.
+See [docs/external-env-tests.md](../../../docs/external-env-tests.md) for the full picture.

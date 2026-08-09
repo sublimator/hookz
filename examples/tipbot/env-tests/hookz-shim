@@ -3,6 +3,11 @@
 # the qemu-safe arm64 alternative to HOOKZ_SPEC. See A-GUIDE-FOR-AI.md.
 # Mount over /root/.local/bin/hookz (that path wins PATH; /usr/local/bin
 # does not). Workaround, not an interface: it names two image internals.
+#
+# Verify the override with `hookz --version`: current hookz prints the
+# package path — `(from /hookz-src/src/hookz)` means the override is live.
+# A path-less version line means old code, which means the baked install:
+# the override silently fell through (wrong mount path, usually).
 export PYTHONPATH=/hookz-src/src
 exec /root/.local/share/uv/tools/hookz/bin/python -c \
-  "from hookz.cli.main import main; main()" "$@"
+  "import sys; sys.argv[0] = 'hookz'; from hookz.cli.main import main; main()" "$@"

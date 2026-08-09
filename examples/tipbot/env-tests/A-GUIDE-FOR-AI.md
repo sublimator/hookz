@@ -29,17 +29,21 @@ answer and the model has a bug worth reporting.
 ### 1. Read the hook's surface
 
 ```bash
-hookz surface hooks/top.c            # every host call, constants resolved
-hookz surface hooks/top.c --source   # same, with the construct each sits in
+hookz surface hooks/top.c            # ledger interactions, constants resolved
+hookz surface hooks/top.c --all      # plus arithmetic, tracing and exits
+hookz surface hooks/top.c --source   # either, with the construct each sits in
 ```
 
 This is what the hook *does to the ledger*, read out of its compiled binary —
-the C source hides constants behind macros; the binary has the numbers. Each
-call's family tells you what a test must arrange to reach it: an originating
-transaction, installed hook state, slotted ledger objects, an emit
-reservation. The surface is your test plan in raw form: every `rollback` is a
-rejection case, every `state_set` is something to read back, every `emit` is
-a transaction to find applied (or not) after a close.
+the C source hides constants behind macros; the binary has the numbers. The
+default view is the ledger interactions; `--all` adds the arithmetic
+(`float_compare` and friends), the traces, and every `accept`/`rollback`
+exit, which is the view you want when hunting thresholds and rejection
+cases. Each call's family tells you what a test must arrange to reach it: an
+originating transaction, installed hook state, slotted ledger objects, an
+emit reservation. The surface is your test plan in raw form: every
+`rollback` is a rejection case, every `state_set` is something to read back,
+every `emit` is a transaction to find applied (or not) after a close.
 
 ### 2. Generate the context document
 
@@ -79,9 +83,12 @@ surface listing:
   API. Build the key the way the hook does, then place it at the *end* of the
   32-byte buffer (`apiStateKey` in the tests here), or `env.le()` will hand
   you nothing while the state sits one offset away.
-- Read the hook's own constants out of the surface — `top.c`'s first-deposit
-  floor (10 XAH) is a `float_compare` at a line the surface names, and a test
-  depositing less asserts a different outcome than one depositing more.
+- Read the hook's own thresholds out of `surface --all` — `top.c`'s
+  first-deposit floor is `292  float_compare(?, 6107881094714392576, 2)`.
+  That second argument is a raw XFL; the source's `/* 10.0 */` comment (and
+  the `float_divide` by one million XAH-drops just above it) is what tells
+  you the floor is 10 XAH. The binary gives you the line and the exact
+  constant; the source gives you its meaning — read both.
 
 ### 4. Run it
 
@@ -90,6 +97,8 @@ pre-built with the branch applied and a primed ccache, so only your test
 files compile:
 
 ```bash
+cd examples/tipbot        # every path below assumes this directory
+
 # No public :latest — pin a dated tag. This repo pins its own in
 # .github/workflows/xahaud-integration.yml (DEFAULT_IMAGE).
 IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-cc80be0c
@@ -112,6 +121,9 @@ ripple.app.TopGuide guide: a remit carrying value but no param is rejected
 ripple.app.TopGuide guide: a first deposit writes user-info and balance state
 1.2s, 1 suite, 2 cases, 54 tests total, 0 failures
 ```
+
+(That transcript is from the `2026-07-28-ddd3c28d8` tag on an arm64 host;
+the duration is wall-clock and varies — the counts are what to diff.)
 
 While iterating:
 
@@ -145,23 +157,33 @@ modes, both hit while writing this guide:
    mount the checkout and shadow the baked launcher with a shim, letting the
    baked venv supply the dependencies and `PYTHONPATH` supply the code:
 
-   ```sh
-   #!/bin/sh
-   # hookz-shim — mount over /root/.local/bin/hookz (that path wins PATH;
-   # /usr/local/bin does not). Verified: `hookz --version` reports the
-   # mounted checkout's version, and a full test run compiles through it.
-   export PYTHONPATH=/hookz-src/src
-   exec /root/.local/share/uv/tools/hookz/bin/python -c \
-     "from hookz.cli.main import main; main()" "$@"
-   ```
+   The committed [`hookz-shim`](hookz-shim) does exactly this — mounted over
+   `/root/.local/bin/hookz`, because that path wins PATH and `/usr/local/bin`
+   does not:
 
    ```bash
+   cd examples/tipbot        # same directory as the step-4 run
    docker run --rm --platform linux/amd64 \
+     -v ./env-tests:/tests \
+     -v ./hooks:/hooks/tipbot \
      -v "$PWD/../..:/hookz-src:ro" \
-     -v "$PWD/hookz-shim:/root/.local/bin/hookz:ro" \
-     ... \
+     -v "$PWD/env-tests/hookz-shim:/root/.local/bin/hookz:ro" \
+     -e HOOKS_TEST_DIR=/tests \
+     -e HOOKS_C_DIR="tipbot=/hooks/tipbot" \
+     -e HOOKS_FORCE_RECOMPILE=1 \
      "$IMAGE" "ripple.app.TopGuide"
    ```
+
+   **Verify the override took, and read the path, not the number.**
+   `hookz --version` prints where the code came from —
+   `hookz 0.1.0… (from /hookz-src/src/hookz)` means the override is live;
+   `(from /root/.local/share/uv/tools/…)` means it fell through to the
+   baked install. A version line with **no** path at all is old hookz from
+   before the path was added — which in this image also means the baked
+   install, because your mounted checkout is newer. The number alone can
+   never tell you: a mounted tree without git metadata reports the same
+   bare `0.1.0` as the baked one, which is how a wrong mount path once
+   "verified" successfully against the wrong code.
 
    This is a workaround, not an interface: it names two image internals (the
    uv tools venv path, and PATH order). The durable fix would be a CMake-level
