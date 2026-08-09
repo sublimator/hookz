@@ -54,4 +54,4 @@ jobs:
             -e HOOKZ_SPEC="hookz @ /hookz-src" \
             -e TESTENV_LOGGING="HooksTrace=trace,View=debug" \
             "$IMAGE" \
-            "ripple.app.TipBot,ripple.app.TipBotClaude"
+            "ripple.app.TipBot,ripple.app.TipBotClaude,ripple.app.TopGuide"

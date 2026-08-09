@@ -76,6 +76,10 @@ Beyond the CMake mechanism, the branch adds test-writing quality of life:
 
 ## Starting a test: `hookz env-test-context`
 
+For the workflow end to end — surface, context document, naming rules,
+Docker, arm64 caveats, and a worked example — see
+[A guide for AI: how to write Env tests](../examples/tipbot/env-tests/A-GUIDE-FOR-AI.md).
+
 Everything above, plus what your particular hook needs, as one document:
 
 ```bash

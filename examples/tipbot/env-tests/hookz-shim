@@ -1,0 +1,8 @@
+#!/bin/sh
+# Override the image's baked hookz with a mounted checkout, no installer —
+# the qemu-safe arm64 alternative to HOOKZ_SPEC. See A-GUIDE-FOR-AI.md.
+# Mount over /root/.local/bin/hookz (that path wins PATH; /usr/local/bin
+# does not). Workaround, not an interface: it names two image internals.
+export PYTHONPATH=/hookz-src/src
+exec /root/.local/share/uv/tools/hookz/bin/python -c \
+  "from hookz.cli.main import main; main()" "$@"

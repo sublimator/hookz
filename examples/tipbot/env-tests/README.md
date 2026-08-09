@@ -42,6 +42,9 @@ pattern so Env suites exercise **this** hookz tree.
 
 - `TipBot_test.cpp` — basic deposit/withdraw/tip tests
 - `TipBotClaude_test.cpp` — extended tests (generated with Claude)
+- `TopGuide_test.cpp` — the worked example for
+  [A guide for AI: how to write Env tests](A-GUIDE-FOR-AI.md), written by
+  following that guide's loop from the `hookz env-test-context` skeleton
 
 These reference `"file:tipbot/tip.c"` and `"file:tipbot/top.c"` which
 are resolved via `HOOKS_C_DIR` pointing at the hook source.

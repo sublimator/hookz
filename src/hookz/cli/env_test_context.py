@@ -657,6 +657,29 @@ def _harness_section(suite: str, name: str, stem: str) -> list[str]:
         "in the map key, so `-DHOOKS_C_DIR=\"myhooks=$PWD/hooks\"` makes "
         f"`{stem}.c` reachable as `\"file:myhooks/{stem}.c\"`.",
         "",
+        "Or skip the local toolchain: the published Docker image carries "
+        "xahaud pre-built with the branch applied, a primed ccache, and "
+        "hookz baked in, so only your test files compile. There is no "
+        "public `:latest` — pin a dated tag (the hookz repo pins its own in "
+        "`.github/workflows/xahaud-integration.yml`, `DEFAULT_IMAGE`).",
+        "",
+        "```bash",
+        "IMAGE=gcr.io/hookz-public/hookz-xahaud:<dated-tag>",
+        "docker run --rm --platform linux/amd64 \\",
+        "  -v $PWD/env-tests:/tests \\",
+        "  -v $PWD/hooks:/hooks/<domain> \\",
+        "  -e HOOKS_TEST_DIR=/tests \\",
+        "  -e HOOKS_C_DIR=\"<domain>=/hooks/<domain>\" \\",
+        "  \"$IMAGE\" \\",
+        f"  \"ripple.app.{suite}\"",
+        "```",
+        "",
+        "The image is amd64. On an arm64 host it runs emulated: the first "
+        "test-file compile takes minutes rather than ~10s, and refreshing "
+        "hookz inside the container via `HOOKZ_SPEC` can segfault under "
+        "qemu — use the baked hookz unless the change under test is hookz "
+        "itself.",
+        "",
         "While iterating:",
         "",
         '- `TESTENV_LOGGING="HooksTrace=trace"` — the hook\'s own `trace()` '
@@ -670,6 +693,16 @@ def _harness_section(suite: str, name: str, stem: str) -> list[str]:
         "convention the skeleton's `run()` implements — nothing in the branch "
         "reads it — and without `coverageReset`/`coverageLabel`/`coverageDump` "
         "the hits accumulate and are dropped at exit with no error.",
+        "",
+        "One rule about what the result is worth. hookz's Python harness is "
+        "a *model* of the host — fast enough to live inside the write-test, "
+        "see-coverage, fix-hook loop, and wrong the way models are wrong: "
+        "quietly, at the edges it did not port. An env test is not a model; "
+        "it is xahaud applying real transactions to a real ledger, with the "
+        "real amendment set, guard checker, fee accounting and metadata. "
+        "Develop against the Python harness for speed; **sign off on env "
+        "tests only**. Where the two disagree, the env test is the answer "
+        "and the model has a bug worth reporting.",
         "",
     ]
 

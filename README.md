@@ -333,7 +333,7 @@ docker run --rm \
   "ripple.app.TipBot,ripple.app.TipBotClaude"
 ```
 
-This compiles your test files (~10s) and runs them against real xahaud. See [examples/tipbot/env-tests](examples/tipbot/env-tests/README.md). CI uses the same pattern: frozen image + **this checkout’s** hookz via `HOOKZ_SPEC` ([xahaud-integration.yml](.github/workflows/xahaud-integration.yml)).
+This compiles your test files (~10s) and runs them against real xahaud. See [examples/tipbot/env-tests](examples/tipbot/env-tests/README.md), and [A guide for AI: how to write Env tests](examples/tipbot/env-tests/A-GUIDE-FOR-AI.md) for the workflow end to end — including why the Python harness is for development and Env tests are the sign-off. CI uses the same pattern: frozen image + **this checkout’s** hookz via `HOOKZ_SPEC` ([xahaud-integration.yml](.github/workflows/xahaud-integration.yml)).
 
 ### How it works
 

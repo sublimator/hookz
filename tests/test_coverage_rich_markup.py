@@ -1,9 +1,8 @@
 """Coverage panels must not parse C source as Rich markup.
 
-Reported in one-xahau-audits as `hookz-coverage-source-rich-markup-corruption`.
-`seen_ids[i]` displayed as `seen_ids` is valid-looking C and an audit lie: the
-reader has no way to tell that a subscript was eaten, so the panel reports a
-line of code that is not in the file.
+Found downstream: `seen_ids[i]` displayed as `seen_ids` is valid-looking C
+and a lie — the reader has no way to tell that a subscript was eaten, so the
+panel reports a line of code that is not in the file.
 """
 
 from __future__ import annotations
