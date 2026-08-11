@@ -581,6 +581,58 @@ class HookRuntime:
         assert self._memory is not None and self._store is not None
         self._memory.write(self._store, data, ptr)
 
+    @contextmanager
+    def bind_memory(self, memory: Any, store: Any):
+        """Temporarily attach another WASM provider's guest memory.
+
+        Hook handlers deliberately operate on the raw Xahau ABI, so they need
+        only a wasmtime-compatible memory and store — not ownership of the
+        module that produced them.  Providers such as a QuickJS-in-WASM
+        runtime can use this scope and reuse the exact same handlers as a C
+        Hook execution.  Nested scopes restore the previous attachment.
+        """
+        previous = (self._memory, self._store)
+        self._memory = memory
+        self._store = store
+        try:
+            yield self
+        finally:
+            self._memory, self._store = previous
+
+    def dispatch_host_call(self, name: str, *args: Any) -> Any:
+        """Dispatch one raw Hook ABI call through hookz's normal semantics.
+
+        This is the provider-neutral half of ``_make_host_functions``:
+        overrides, builtin handlers, unsigned C parameter normalization, call
+        evidence, and loud missing-handler failures all live here.  A provider
+        that already owns a linker should call this method rather than grow a
+        second implementation of the Hook host.
+        """
+        handler = self.handlers.get(name)
+        if handler is None and name in _BUILTIN_HANDLERS:
+            builtin = _BUILTIN_HANDLERS[name]
+            handler = lambda *raw_args: builtin(self, *raw_args)
+        if handler is None:
+            handler = getattr(self, f"_hook_{name}", None)
+        if handler is None:
+            raise NotImplementedError(
+                f"Hook called unimplemented host function '{name}'. "
+                f"Run 'hookz show {name}' to see the C++ implementation."
+            )
+
+        mask = _unsigned_param_mask(name)
+        if mask is not None and len(args) == len(mask):
+            args = tuple(
+                arg & 0xFFFFFFFF if unsigned else arg
+                for arg, unsigned in zip(args, mask)
+            )
+
+        call = HostCall(name=name, args=args)
+        self.call_log.append(call)
+        result = handler(*args)
+        call.result = result
+        return result
+
     def _make_host_functions(
         self, store: wasmtime.Store, module: wasmtime.Module
     ) -> wasmtime.Linker:
@@ -596,41 +648,12 @@ class HookRuntime:
             name = imp.name
             mod = imp.module
 
-            # Resolution order: test overrides → builtin handlers → _hook_* legacy → default
-            handler = self.handlers.get(name)
-            if handler is None and name in _BUILTIN_HANDLERS:
-                builtin = _BUILTIN_HANDLERS[name]
-                # Builtin handlers take (rt, *wasm_args)
-                handler = lambda *args, _fn=builtin: _fn(rt, *args)
-            if handler is None:
-                handler = getattr(self, f"_hook_{name}", None)
+            def make_wrapper(n):
+                def wrapper(*args):
+                    return rt.dispatch_host_call(n, *args)
+                return wrapper
 
-            if handler is not None:
-                def make_wrapper(h, n, mask=_unsigned_param_mask(name)):
-                    def wrapper(*args):
-                        if mask is not None and len(args) == len(mask):
-                            args = tuple(
-                                a & 0xFFFFFFFF if unsigned else a
-                                for a, unsigned in zip(args, mask))
-                        call = HostCall(name=n, args=args)
-                        rt.call_log.append(call)
-                        result = h(*args)
-                        call.result = result
-                        return result
-                    return wrapper
-
-                linker.define_func(mod, name, typ, make_wrapper(handler, name))
-            else:
-                # Unimplemented handler — fail loudly
-                def make_unimpl(n):
-                    def unimpl_handler(*args):
-                        raise NotImplementedError(
-                            f"Hook called unimplemented host function '{n}'. "
-                            f"Run 'hookz show {n}' to see the C++ implementation."
-                        )
-                    return unimpl_handler
-
-                linker.define_func(mod, name, typ, make_unimpl(name))
+            linker.define_func(mod, name, typ, make_wrapper(name))
 
         return linker
 
