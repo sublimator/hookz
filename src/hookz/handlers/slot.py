@@ -4,8 +4,22 @@ Slots hold serialized XRPL object bytes. slot_subfield/slot_subarray/slot_count
 parse the actual data. Overrides (via rt._slot_overrides) take priority for
 test-specific control.
 
+Host sources:
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2043-2054  (slot)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2081-2143  (slot_set)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2159-2219  (slot_subarray)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2220-2282  (slot_subfield)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2375  (slot_float)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2376-2404  (meta_slot)
+
+# slot_float is STAmount-typed on host (downcast), NOT float_sto_set.
+# xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2367
+# Native: normalize_xfl(drops, -6). IOU: make_float(iou). Else NOT_AN_AMOUNT.
+
 Override keys:
     slot_data:{n}              — raw bytes in slot n
+    slot_stype:{n}             — optional serialized ST type retained with data
+    slot_field_code:{n}        — optional SField code retained with data
     slot_subfield:{p}:{fid}    — override return value for slot_subfield(p, fid, _)
     slot_count:{n}             — override return value for slot_count(n)
 """
@@ -32,9 +46,33 @@ def _get_slot_data(rt: HookRuntime, slot_no: int) -> bytes | None:
     return data
 
 
-def _set_slot_data(rt: HookRuntime, slot_no: int, data: bytes) -> None:
-    """Store raw bytes into a slot."""
+def _get_slot_stype(rt: HookRuntime, slot_no: int) -> int | None:
+    """The retained ``SerializedTypeID`` for a slot, when known."""
+    value = rt._slot_overrides.get(f"slot_stype:{slot_no}", _SLOT_MISSING)
+    return None if value is _SLOT_MISSING else value
+
+
+def _set_slot_data(
+    rt: HookRuntime,
+    slot_no: int,
+    data: bytes,
+    *,
+    stype: int | None = None,
+    field_code: int | None = None,
+) -> None:
+    """Store slot bytes plus the STBase identity the host keeps with them.
+
+    Direct ``slot_data`` overrides predate typed slots and remain supported:
+    when no metadata is supplied, consumers may use their legacy byte-level
+    fallback. Real navigation paths always supply the type they already know.
+    """
     rt._slot_overrides[f"slot_data:{slot_no}"] = data
+    for prefix, value in (("slot_stype", stype), ("slot_field_code", field_code)):
+        key = f"{prefix}:{slot_no}"
+        if value is None:
+            rt._slot_overrides.pop(key, None)
+        else:
+            rt._slot_overrides[key] = value
 
 
 def _walk_slot_fields(data: bytes):
@@ -49,6 +87,7 @@ _OBJECT_END = 0xE1
 _ARRAY_END = 0xF1
 _STI_OBJECT = 0xE
 _STI_ARRAY = 0xF
+_STI_AMOUNT = 0x6
 _STI_VL = 0x7
 _STI_VECTOR256 = 0x13
 
@@ -179,7 +218,7 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
             if fid == field_id:
                 _set_slot_data(rt, new_slot, _field_value_bytes(
                     parent_data, type_code, fc, offset, total_len,
-                    pay_off, pay_len))
+                    pay_off, pay_len), stype=type_code, field_code=fc)
                 return new_slot
     except Exception:
         return hookapi.NOT_AN_OBJECT
@@ -238,7 +277,12 @@ def slot_subarray(rt: HookRuntime, parent: int, idx: int, new_slot: int) -> int:
     try:
         for i, offset, total_len in _walk_array_elements(parent_data):
             if i == idx:
-                _set_slot_data(rt, new_slot, parent_data[offset:offset + total_len])
+                _set_slot_data(
+                    rt,
+                    new_slot,
+                    parent_data[offset:offset + total_len],
+                    stype=_STI_OBJECT,
+                )
                 return new_slot
     except Exception:
         return hookapi.PARSE_ERROR
@@ -294,22 +338,125 @@ def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
 # slot_float
 # ---------------------------------------------------------------------------
 
-def slot_float(rt: HookRuntime, slot_no: int) -> int:
-    """Read XFL from slot data.
+def _native_stamount_to_xfl(amt8: bytes) -> int:
+    """STAmount native path → XFL.
 
-    Interprets the slot bytes as a serialized amount and converts to XFL.
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2331-2344
+      drops = st_amt.xrp().drops(); exp = -6;
+      return normalize_xfl(drops, exp)  (sign from amount)
+    """
+    from hookz.handlers.float import _normalize_xfl
+
+    raw = int.from_bytes(amt8, "big")
+    # XRPL native amount: bit 63 clear, bit 62 set ⇒ positive, low 62 bits = drops.
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1226-1249 (float_sto XRP pack)
+    positive = bool((raw >> 62) & 1)
+    drops = raw & ((1 << 62) - 1)
+    man = int(drops) if positive else -int(drops)
+    out = _normalize_xfl(man, -6)
+    if out is None:
+        # Host maps non-undersized errors via Unexpected; undersized → 0
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2338-2342
+        return hookapi.XFL_OVERFLOW
+    return out
+
+
+def _iou_stamount8_to_xfl(amt8: bytes) -> int:
+    """STAmount IOU 8-byte head → XFL via make_float(IOUAmount).
+
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2346-2356
+    xahaud:src/xrpld/app/hook/HookAPI.h:121-142  (make_float(IOUAmount&))
+    Packing: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1250-1272
+    """
+    from hookz.handlers.float import _make_float_parts
+
+    # Positive IOU: 0b11xxxxxx; negative: 0b10xxxxxx (bit 62 clear ⇒ negative).
+    is_negative = (amt8[0] & 0b01000000) == 0
+    if amt8[0] == 0b10000000 and all(b == 0 for b in amt8[1:]):
+        return 0
+    exp = ((amt8[0] & 0b00111111) << 2) + (amt8[1] >> 6)
+    exp -= 97
+    man = (amt8[1] & 0b00111111) << 48
+    man += amt8[2] << 40
+    man += amt8[3] << 32
+    man += amt8[4] << 24
+    man += amt8[5] << 16
+    man += amt8[6] << 8
+    man += amt8[7]
+    if man == 0:
+        return 0
+    ret = _make_float_parts(man, exp, is_negative)
+    if ret < 0:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2350-2354
+        if ret == hookapi.EXPONENT_UNDERSIZED:
+            return 0
+        return ret
+    return ret
+
+
+def _stamount_payload_to_xfl(data: bytes) -> int:
+    """Interpret slot value bytes as the STAmount field payload.
+
+    Host never re-parses via float_sto_set; it downcasts the live STAmount
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328). After
+    slot_subfield(sfBalance), the slot holds that field's *value* bytes:
+      native: 8-byte XRP amount
+      issued: 48-byte amount+currency+issuer (8-byte head is the float packing)
+
+    Non-amount payloads → NOT_AN_AMOUNT
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2364-2366).
+    """
+    if len(data) < 8:
+        return hookapi.NOT_AN_AMOUNT
+
+    amt8 = data[:8]
+    is_native = (amt8[0] & 0b10000000) == 0
+
+    if is_native:
+        # Native STAmount value is exactly 8 bytes.
+        if len(data) != 8:
+            return hookapi.NOT_AN_AMOUNT
+        return _native_stamount_to_xfl(amt8)
+
+    # Issued: 8-byte amount-only or 48-byte full issued amount value.
+    if len(data) not in (8, 48):
+        return hookapi.NOT_AN_AMOUNT
+    return _iou_stamount8_to_xfl(amt8)
+
+
+def slot_float(rt: HookRuntime, slot_no: int) -> int:
+    """Read XFL from a slot that holds an STAmount field.
+
+    Host body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2367
+    Wrapper:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2089-2098
+
+    Native: ``normalize_xfl(drops, -6)`` — so 1_000_000 drops → XFL 1.0.
+    IOU:    ``make_float(iou)`` from the amount head.
+    Not an amount: ``NOT_AN_AMOUNT`` (not float_sto_set).
     """
     data = _get_slot_data(rt, slot_no)
     if data is None:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2318-2319
         return hookapi.DOESNT_EXIST
     if not data:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2321-2322
         return hookapi.INTERNAL_ERROR
 
-    from hookz.handlers.float import float_sto_set
+    # The host downcasts the retained STBase entry; byte width is not a type
+    # test. In particular, UInt64 and native STAmount payloads are both eight
+    # bytes. Untyped manual overrides keep the historical byte fallback.
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2363-2366
+    stype = _get_slot_stype(rt, slot_no)
+    if stype is not None and stype != _STI_AMOUNT:
+        return hookapi.NOT_AN_AMOUNT
 
-    # Use float_sto_set to deserialize — it handles headers, XRP/IOU, etc.
-    rt._write_memory(0xF000, data)  # temp location
-    return float_sto_set(rt, 0xF000, len(data))
+    out = _stamount_payload_to_xfl(data)
+    # Host treats EXPONENT_UNDERSIZED as successful zero:
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2359-2361
+    if out == hookapi.EXPONENT_UNDERSIZED:
+        return 0
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -356,7 +503,7 @@ def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int
         else:
             return hookapi.NO_FREE_SLOTS
 
-    _set_slot_data(rt, slot_no, ledger[data])
+    _set_slot_data(rt, slot_no, ledger[data], stype=_STI_OBJECT)
     return slot_no
 
 
@@ -424,7 +571,7 @@ def meta_slot(rt: HookRuntime, slot_no: int) -> int:
                         if _get_slot_data(rt, n) is None), 0)
         if slot_no == 0:
             return hookapi.NO_FREE_SLOTS
-    _set_slot_data(rt, slot_no, rt._callback_meta)
+    _set_slot_data(rt, slot_no, rt._callback_meta, stype=_STI_OBJECT)
     return slot_no
 
 

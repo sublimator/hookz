@@ -1,0 +1,87 @@
+{
+  "version": 1,
+  "suite": "ripple.app.HookzFloatVectors",
+  "purpose": "host oracle for hooks-testing float model",
+  "value_encoding": "typed {type,val} for u64|i64|i32|error — val is decimal string",
+  "float_one": {"type": "u64", "val": "6089866696204910592"},
+  "float_set": [
+    {
+      "exp": {"type": "i32", "val": "0"},
+      "man": {"type": "i64", "val": "0"},
+      "result": {"ok": true, "value": {"type": "u64", "val": "0"}}
+    },
+    {
+      "exp": {"type": "i32", "val": "-97"},
+      "man": {"type": "i64", "val": "1"},
+      "result": {"ok": false, "error": {"type": "error", "val": "-10024"}}
+    },
+    {
+      "exp": {"type": "i32", "val": "-15"},
+      "man": {"type": "i64", "val": "1000000000000000"},
+      "result": {
+        "ok": true,
+        "value": {"type": "u64", "val": "6089866696204910592"}
+      }
+    },
+    {
+      "exp": {"type": "i32", "val": "0"},
+      "man": {"type": "i64", "val": "1000000000000000"},
+      "result": {
+        "ok": true,
+        "value": {"type": "u64", "val": "6360082673847140352"}
+      }
+    }
+  ],
+  "float_sum": [
+    {
+      "a": {"type": "u64", "val": "6089866696204910592"},
+      "b": {"type": "u64", "val": "6089866696204910592"},
+      "result": {
+        "ok": true,
+        "value": {"type": "u64", "val": "6090866696204910592"}
+      }
+    }
+  ],
+  "float_compare": [
+    {
+      "a": {"type": "u64", "val": "6089866696204910592"},
+      "b": {"type": "u64", "val": "6089866696204910592"},
+      "mode": {"type": "i32", "val": "1"},
+      "result": {"ok": true, "value": {"type": "u64", "val": "1"}}
+    },
+    {
+      "a": {"type": "u64", "val": "18446744073709551615"},
+      "b": {"type": "u64", "val": "6089866696204910592"},
+      "mode": {"type": "i32", "val": "0"},
+      "result": {"ok": false, "error": {"type": "error", "val": "-10024"}}
+    }
+  ],
+  "float_multiply": [
+    {
+      "a": {"type": "u64", "val": "6089866696204910592"},
+      "b": {"type": "u64", "val": "6089866696204910592"},
+      "result": {
+        "ok": true,
+        "value": {"type": "u64", "val": "6089866696204910592"}
+      }
+    }
+  ],
+  "float_mulratio": [],
+  "float_divide": [
+    {
+      "a": {"type": "u64", "val": "6090866696204910592"},
+      "b": {"type": "u64", "val": "6089866696204910592"},
+      "result": {
+        "ok": true,
+        "value": {"type": "u64", "val": "6090866696204910592"}
+      },
+      "note": "div_by_one"
+    }
+  ],
+  "float_invert": [
+    {
+      "a": {"type": "u64", "val": "0"},
+      "result": {"ok": false, "error": {"type": "error", "val": "-25"}}
+    }
+  ]
+}

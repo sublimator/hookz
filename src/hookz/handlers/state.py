@@ -1,4 +1,15 @@
-"""State key-value store — state, state_set, state_foreign, state_foreign_set."""
+"""State key-value store — state, state_set, state_foreign, state_foreign_set.
+
+Host sources:
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1257+   (state / state_set wrappers)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1871-1902 (state_foreign)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1903-2042 (state_foreign_set)
+
+# todo:xahaud-bug-candidate
+# None claimed yet. Foreign grant/namespace matrix is incompletely modelled —
+# some paths raise NotImplementedError rather than host return codes (see
+# state_foreign_set body). Prefer host vectors over guessing grants.
+"""
 
 from __future__ import annotations
 from typing import TYPE_CHECKING

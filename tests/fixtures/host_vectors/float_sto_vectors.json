@@ -1,0 +1,48 @@
+{
+  "suite": "hookz.float_sto",
+  "purpose": "host-faithful float_sto amount/header goldens (SetHook_test + type>=16 header)",
+  "host_cites": {
+    "float_sto": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1146-1284",
+    "float_sto_set": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1287-1350",
+    "wrapper": "xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3568-3663",
+    "sethook_suite": "xahaud:src/test/app/SetHook_test.cpp:6242+"
+  },
+  "bug_candidates": [
+    "todo:xahaud-bug-candidate float_sto_set XRP path drops high 6 bits of drops packing (HookAPI.cpp:1329-1340)",
+    "todo:xahaud-bug-candidate float_sto_set length>8 header strip has no length==48 exemption (HookAPI.cpp:1293)",
+    "todo:xahaud-bug-candidate float_sto XRP shift>15 -> XFL_OVERFLOW cites issues/586 (HookAPI.cpp:1230-1233)",
+    "todo:xahaud-bug-candidate mulRatio log10Floor end() UB (IOUAmount.cpp:213-218)"
+  ],
+  "cases": [
+    {
+      "id": "short_1234567",
+      "field_code": 4294967295,
+      "xfl": "6198187654261802496",
+      "rc": 8,
+      "amount_hex": "d60462d5077c8600"
+    },
+    {
+      "id": "xrp_1234567",
+      "field_code": 0,
+      "xfl": "6198187654261802496",
+      "rc": 8,
+      "amount_hex": "400000000012d687"
+    },
+    {
+      "id": "iou_sfamount_1234567",
+      "field_code": 393217,
+      "xfl": "6198187654261802496",
+      "rc": 49,
+      "header_hex": "61",
+      "amount_hex": "d60462d5077c8600",
+      "full_hex": "61d60462d5077c860000000000000000000000000055534400000000000101010101010101010101010101010101010101"
+    },
+    {
+      "id": "iou_zero",
+      "field_code": 393217,
+      "xfl": "0",
+      "rc": 49,
+      "full_hex": "61800000000000000000000000000000000000000055534400000000000101010101010101010101010101010101010101"
+    }
+  ]
+}

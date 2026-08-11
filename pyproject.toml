@@ -44,11 +44,15 @@ packages = ["src/hookz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "xahaud_oracle: optional live differential tests against a Xahau C-ABI library",
+]
 
 [dependency-groups]
 dev = [
     "componentize-py>=0.24.0",
     "pillow>=12.2.0",
+    "pydantic>=2.13.4",
     "pytest-cov>=7.1.0",
     "wasm-tob>=1.0.1",
 ]

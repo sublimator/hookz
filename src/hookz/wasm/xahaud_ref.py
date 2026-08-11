@@ -101,6 +101,7 @@ PORTED_FILES = (
 CITED_FILES = (
     "src/xrpld/app/hook/detail/HookAPI.cpp",      # emission.py, the emit rules
     "src/xrpld/app/hook/detail/applyHook.cpp",    # handler behaviour notes
+    "src/xrpld/app/hook/HookAPI.h",               # handlers/float.py, XFL layout/normalize
     "src/xrpld/app/hook/applyHook.h",             # hasCallback, emittedTxn
     "src/xrpld/app/tx/detail/Transactor.cpp",     # runtime.py, when emits apply
     "src/xrpld/app/tx/detail/SetSignerList.cpp",  # emission.py, SignerListSet preflight
@@ -116,6 +117,11 @@ CITED_FILES = (
     "include/xrpl/protocol/LedgerFormats.h",      # flags.py, lsf* citations
     "include/xrpl/protocol/HashPrefix.h",         # emission.py, emitted_txn_id
     "src/libxrpl/protocol/TxMeta.cpp",            # runtime.py, provisional TxMeta shape
+    "src/libxrpl/basics/Number.cpp",              # handlers/float_number.py, arithmetic
+    "include/xrpl/basics/Number.h",               # handlers/float_number.py, compare/ranges
+    "src/libxrpl/protocol/IOUAmount.cpp",         # handlers/float_number.py, mulRatio
+    "include/xrpl/protocol/IOUAmount.h",          # handlers/float_number.py, IOU ranges
+    "src/test/app/SetHook_test.cpp",              # handlers/float.py, host vectors
     "src/xrpld/app/misc/detail/TxQ.cpp",          # runtime.py, ttEMIT_FAILURE pseudo-txn
     "include/xrpl/hook/Macro.h",                  # handlers/core.py, NOT_IN_BOUNDS
 )

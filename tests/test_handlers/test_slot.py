@@ -26,7 +26,11 @@ def rt() -> HookRuntime:
 
 
 class TestSlotFloat:
-    """slot_float: read XFL from slot data."""
+    """slot_float: STAmount semantics (host HookAPI.cpp:2316-2367).
+
+    Native: normalize_xfl(drops, -6) — 1_000_000 drops → XFL 1.0.
+    Host SetHook fee vector: XRP(1) → float_int(slot_float, 6, 0) == 1_000_000.
+    """
 
     def test_missing_slot_returns_doesnt_exist(self, rt):
         """Slot not populated -> DOESNT_EXIST."""
@@ -37,43 +41,121 @@ class TestSlotFloat:
         rt._slot_overrides["slot_data:1"] = b""
         assert slot_float(rt, 1) == hookapi.INTERNAL_ERROR
 
+    def test_non_amount_returns_not_an_amount(self, rt):
+        """AccountID / random object is not STAmount → NOT_AN_AMOUNT."""
+        rt._slot_overrides["slot_data:1"] = b"\x01" * 20
+        assert slot_float(rt, 1) == hookapi.NOT_AN_AMOUNT
+
+    def test_uint64_subfield_is_not_misclassified_as_native_amount(self, rt):
+        """The host downcasts STBase; UInt64 and native amounts are both 8B.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2363-2366
+        """
+        uint64_value = 0x4000000000000001
+        # type=3 (UInt64), field=1 (sfIndexNext)
+        rt._slot_overrides["slot_data:1"] = b"\x31" + struct.pack(
+            ">Q", uint64_value
+        )
+
+        assert slot_subfield(rt, 1, 0x30001, 2) == 2
+        assert slot_float(rt, 2) == hookapi.NOT_AN_AMOUNT
+
+    def test_amount_subfield_retains_amount_type(self, rt):
+        """An equally wide type=6 field still takes the STAmount path.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2337
+        """
+        drops = 1_000_000
+        # type=6 (Amount), field=1 (sfAmount)
+        rt._slot_overrides["slot_data:1"] = b"\x61" + struct.pack(
+            ">Q", (1 << 62) | drops
+        )
+
+        assert slot_subfield(rt, 1, hookapi.sfAmount, 2) == 2
+        assert xfl_to_float(slot_float(rt, 2)) == pytest.approx(1.0)
+
     def test_zero_drops(self, rt):
-        """Zero amount -> XFL 0."""
+        """Zero native amount -> XFL 0."""
         buf = struct.pack(">Q", 0x40 << 56)  # positive zero
         rt._slot_overrides["slot_data:1"] = buf
         assert slot_float(rt, 1) == 0
 
-    def test_100_drops(self, rt):
-        """100 drops -> XFL for 100."""
+    def test_100_drops_is_xrp_units_not_raw_drops(self, rt):
+        """100 drops → XFL value 1e-4; float_int(..., 6) recovers 100.
+
+        Host: normalize_xfl(100, -6) — not float_sto_set(drops @ exp 0).
+        """
+        from hookz.handlers.float import float_int
+
         drops = 100
         buf = struct.pack(">Q", (0x40 << 56) | drops)
         rt._slot_overrides["slot_data:1"] = buf
         xfl = slot_float(rt, 1)
         assert xfl > 0
-        assert xfl_to_float(xfl) == pytest.approx(100.0, rel=1e-10)
+        assert float_int(rt, xfl, 6, 0) == drops
+        assert xfl_to_float(xfl) == pytest.approx(1e-4, rel=1e-9)
 
-    def test_1m_drops(self, rt):
-        """1,000,000 drops."""
+    def test_1_xrp_fee_vector(self, rt):
+        """Host SetHook: 1 XRP fee → float_int(slot_float, 6, 0) == 1_000_000.
+
+        xahaud:src/test/app/SetHook_test.cpp ~9042-9045
+        """
+        from hookz.handlers.float import float_int
+
         drops = 1_000_000
         buf = struct.pack(">Q", (0x40 << 56) | drops)
         rt._slot_overrides["slot_data:2"] = buf
         xfl = slot_float(rt, 2)
-        assert xfl_to_float(xfl) == pytest.approx(1_000_000.0, rel=1e-10)
+        assert float_int(rt, xfl, 6, 0) == 1_000_000
+        assert xfl_to_float(xfl) == pytest.approx(1.0, rel=1e-12)
 
-    def test_50m_drops(self, rt):
-        """50,000,000 drops = 50 XAH worth of drops."""
+    def test_50_xah_as_drops(self, rt):
+        """50 XAH = 50_000_000 drops → XFL 50.0."""
+        from hookz.handlers.float import float_int
+
         drops = 50_000_000
         buf = struct.pack(">Q", (0x40 << 56) | drops)
         rt._slot_overrides["slot_data:0"] = buf
         xfl = slot_float(rt, 0)
-        assert xfl_to_float(xfl) == pytest.approx(50_000_000.0, rel=1e-10)
+        assert float_int(rt, xfl, 6, 0) == drops
+        assert xfl_to_float(xfl) == pytest.approx(50.0, rel=1e-10)
 
     def test_different_slot_numbers(self, rt):
         """Each slot number is independent."""
+        from hookz.handlers.float import float_int
+
         rt._slot_overrides["slot_data:3"] = struct.pack(">Q", (0x40 << 56) | 500)
         rt._slot_overrides["slot_data:7"] = struct.pack(">Q", (0x40 << 56) | 999)
-        assert xfl_to_float(slot_float(rt, 3)) == pytest.approx(500.0, rel=1e-10)
-        assert xfl_to_float(slot_float(rt, 7)) == pytest.approx(999.0, rel=1e-10)
+        assert float_int(rt, slot_float(rt, 3), 6, 0) == 500
+        assert float_int(rt, slot_float(rt, 7), 6, 0) == 999
+
+    def test_iou_8_byte_amount_head(self, rt):
+        """IOU amount head (8 bytes) → make_float path, not float_sto_set strip."""
+        from hookz.handlers.float import float_set, float_sto, float_int
+
+        xfl = float_set(rt, 0, 42)
+        # short-mode pack is pure 8-byte IOU amount
+        float_sto(rt, 0, 8, 0, 0, 0, 0, xfl, 0xFFFFFFFF)
+        amt = rt._read_memory(0, 8)
+        rt._slot_overrides["slot_data:4"] = amt
+        got = slot_float(rt, 4)
+        assert got == xfl
+        assert float_int(rt, got, 0, 0) == 42
+
+    def test_iou_48_byte_issued_amount(self, rt):
+        """48-byte issued amount value (amount+currency+issuer) uses 8-byte head."""
+        from hookz.handlers.float import float_set, float_sto
+
+        xfl = float_set(rt, 0, 1000)
+        rt._write_memory(100, b"\xab" * 20)
+        rt._write_memory(200, b"\xcd" * 20)
+        n = float_sto(rt, 0, 64, 100, 20, 200, 20, xfl, hookapi.sfAmount)
+        # value payload after 1-byte sfAmount header
+        payload = rt._read_memory(1, 48)
+        assert len(payload) == 48
+        rt._slot_overrides["slot_data:5"] = payload
+        assert slot_float(rt, 5) == xfl
 
 
 class TestSlotSize:

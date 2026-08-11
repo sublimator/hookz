@@ -1,0 +1,7 @@
+phase: float_set
+phase: float_sum n=15
+phase: float_compare
+phase: float_multiply
+phase: float_mulratio
+phase: float_invert
+phase: emit_json

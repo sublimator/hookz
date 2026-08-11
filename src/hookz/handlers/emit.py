@@ -1,4 +1,18 @@
-"""Transaction emission — emit, etxn_reserve, etxn_details, etxn_fee_base, etxn_nonce."""
+"""Transaction emission — emit, etxn_reserve, etxn_details, etxn_fee_base, etxn_nonce.
+
+Host sources:
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:382-497   (prepare)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498-812   (emit — ~315 lines of rules)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:827-858   (etxn_fee_base)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:859-932   (etxn_details)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:933-949   (etxn_reserve)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2662+   (emit wrapper / bounds)
+
+# todo:xahaud-bug-candidate
+# None claimed yet. Emit reject-rule fidelity (fee, burden, generation, callback
+# hash, sf flags) needs host-oracle vectors before any upstream bug label.
+# Durability findings (claim after failed emit) depend on this surface.
+"""
 
 from __future__ import annotations
 

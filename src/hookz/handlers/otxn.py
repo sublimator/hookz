@@ -290,7 +290,7 @@ def otxn_slot(rt: HookRuntime, slot_no: int) -> int:
     order to navigate into it, and `slot_subfield`/`slot_count`/`slot_subarray`
     all read the bytes placed here.
     """
-    from hookz.handlers.slot import _get_slot_data, _set_slot_data
+    from hookz.handlers.slot import _get_slot_data, _set_slot_data, _STI_OBJECT
 
     if slot_no > MAX_SLOTS:
         return hookapi.INVALID_ARGUMENT
@@ -299,5 +299,5 @@ def otxn_slot(rt: HookRuntime, slot_no: int) -> int:
                         if _get_slot_data(rt, n) is None), 0)
         if slot_no == 0:
             return hookapi.NO_FREE_SLOTS
-    _set_slot_data(rt, slot_no, serialized_otxn(rt))
+    _set_slot_data(rt, slot_no, serialized_otxn(rt), stype=_STI_OBJECT)
     return slot_no

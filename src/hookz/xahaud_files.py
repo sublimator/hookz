@@ -33,8 +33,15 @@ class XahaudFile(str, Enum):
     # src/ — C++ implementations for hookz show
     APPLY_HOOK_CPP = "src/xrpld/app/hook/detail/applyHook.cpp"
     HOOK_API_CPP = "src/xrpld/app/hook/detail/HookAPI.cpp"
+    HOOK_API_H = "src/xrpld/app/hook/HookAPI.h"
     APPLY_HOOK_H = "src/xrpld/app/hook/applyHook.h"
     SET_HOOK_TEST_CPP = "src/test/app/SetHook_test.cpp"
+
+    # Decimal arithmetic sources cited by the XFL host-faithful port.
+    NUMBER_CPP = "src/libxrpl/basics/Number.cpp"
+    NUMBER_H = "include/xrpl/basics/Number.h"
+    IOU_AMOUNT_CPP = "src/libxrpl/protocol/IOUAmount.cpp"
+    IOU_AMOUNT_H = "include/xrpl/protocol/IOUAmount.h"
 
     # include/xrpl/protocol/ — sources for the generated constant modules
     # (hookz.ter, hookz.flags) and their per-constant citations
@@ -65,6 +72,7 @@ BUILD_INFRA = {
 SHOW_COMMAND = {
     XahaudFile.APPLY_HOOK_CPP,
     XahaudFile.HOOK_API_CPP,
+    XahaudFile.HOOK_API_H,
     XahaudFile.APPLY_HOOK_H,
     XahaudFile.SET_HOOK_TEST_CPP,
 }

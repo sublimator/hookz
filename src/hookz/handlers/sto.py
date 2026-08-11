@@ -1,4 +1,16 @@
-"""STO (Serialized Transaction Object) handlers — subfield, subarray, emplace, erase, validate."""
+"""STO (Serialized Transaction Object) handlers — subfield, subarray, emplace, erase, validate.
+
+Host sources (cite densification in progress; walk still uses xrpl BinaryParser):
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:69-98    (sto_validate)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:99-158   (sto_subfield)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:159-236  (sto_subarray)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:237-381  (sto_emplace)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2887+    (get_stobject_length)
+
+# todo:xahaud-bug-candidate
+# None logged yet for STO itself — priority is host-vs-parser fidelity vectors
+# (field-id / VL / array index) before claiming host defects.
+"""
 
 from __future__ import annotations
 

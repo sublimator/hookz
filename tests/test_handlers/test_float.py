@@ -576,6 +576,20 @@ class TestFloatMulratio:
         result = float_mulratio(rt, float_to_xfl(1.0), 0, 1_000_000, 1)
         assert xfl_to_float(result) == pytest.approx(1_000_000.0)
 
+    def test_rounding_past_max_mantissa_renormalizes(self, rt):
+        """The post-ratio ±1 is another IOUAmount construction on host.
+
+        The rounded mantissa crosses 9_999_999_999_999_999 here, so the
+        constructor must carry one decimal place into the exponent rather
+        than exposing MANTISSA_OVERSIZED to the Hook.
+
+        xahaud:src/libxrpl/protocol/IOUAmount.cpp:289-311
+        """
+        amount = float_set(rt, 0, 7_499_999_999_999_999)
+        expected = float_set(rt, 1, 1_000_000_000_000_000)
+
+        assert float_mulratio(rt, amount, 1, 4, 3) == expected
+
 
 # ---------------------------------------------------------------------------
 # float_sto / float_sto_set roundtrip tests
@@ -670,6 +684,69 @@ class TestFloatStoXahaudVectors:
 class TestFloatStoComposed:
     """float_sto/float_sto_set beyond xahaud vectors."""
 
+    def test_output_bounds_precede_float_validation(self, rt):
+        """The wrapper rejects its output span before inspecting the XFL.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3586-3588
+        """
+        assert (
+            float_sto(rt, 65_520, 50, 0, 0, 0, 0, -1, 0)
+            == hookapi.OUT_OF_BOUNDS
+        )
+
+    def test_currency_bounds(self, rt):
+        """A currency input that crosses linear memory is out of bounds.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3597-3601
+        """
+        assert (
+            float_sto(
+                rt, 0, 50, 65_535, 3, 200, 20, XFL_1234567,
+                hookapi.sfAmount,
+            )
+            == hookapi.OUT_OF_BOUNDS
+        )
+
+    def test_issuer_bounds(self, rt):
+        """A 20-byte issuer input must fit in linear memory.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3616-3620
+        """
+        rt._write_memory(100, USD_CURRENCY_3)
+        assert (
+            float_sto(
+                rt, 0, 50, 100, 3, 65_535, 20, XFL_1234567,
+                hookapi.sfAmount,
+            )
+            == hookapi.OUT_OF_BOUNDS
+        )
+
+    def test_invalid_3char_currency(self, rt):
+        """Three-byte shorthand rejects bytes outside the host allowlist.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:617-628
+        """
+        rt._write_memory(100, b"A\x00Z")
+        rt._write_memory(200, ISSUER_20)
+        assert (
+            float_sto(
+                rt, 0, 50, 100, 3, 200, 20, XFL_1234567,
+                hookapi.sfAmount,
+            )
+            == hookapi.INVALID_ARGUMENT
+        )
+
+    def test_argument_checks_precede_invalid_float(self, rt):
+        """Currency length admission occurs before invalid-XFL admission.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3597-3598
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3625
+        """
+        assert (
+            float_sto(rt, 0, 50, 100, 1, 0, 0, -1, 0)
+            == hookapi.INVALID_ARGUMENT
+        )
+
     def test_xrp_known_drops(self, rt):
         """Serialize 1 XAH (1e6 drops) as XRP amount and verify bytes."""
         xfl_1m = float_to_xfl(1_000_000.0)
@@ -739,13 +816,18 @@ class TestFloatStoComposed:
         result = float_sto(rt, 0, 50, 0, 0, 0, 0, xfl, hookapi.sfAmount)
         assert result == hookapi.INVALID_ARGUMENT
 
-    def test_all_zero_currency_issuer_with_field_code_is_invalid(self, rt):
-        """Currency=0x00*20 and issuer=0x00*20 → has_iou=False → INVALID_ARGUMENT with sfAmount."""
+    def test_all_zero_currency_issuer_with_field_code_still_serializes(self, rt):
+        """Host treats present issuer+currency as IOU even when both are zeroed.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1179-1184 — optional
+        issuer presence (not non-zero content) gates the IOU path. Zero buffers
+        still produce a 49-byte sfAmount.
+        """
         xfl = float_to_xfl(1000.0)
         rt._write_memory(100, b"\x00" * 20)
         rt._write_memory(200, b"\x00" * 20)
         result = float_sto(rt, 0, 50, 100, 20, 200, 20, xfl, hookapi.sfAmount)
-        assert result == hookapi.INVALID_ARGUMENT
+        assert result == 49
 
 
 class TestFloatStoSetEdgeCases:
@@ -779,18 +861,42 @@ class TestFloatStoSetEdgeCases:
         recovered = float_sto_set(rt, 0, 49)
         assert xfl_to_float(recovered) == pytest.approx(42.0, rel=1e-10)
 
-    def test_raw_48_byte_iou_amount_without_header(self, rt):
-        """slot_subfield supplies an issued amount without its field header."""
+    def test_raw_8_byte_iou_amount_without_header(self, rt):
+        """Bare 8-byte issued amount (no field header) round-trips.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1293 — header strip only
+        when length > 8. Callers with amount+currency+issuer (48 bytes) must
+        pass the 8-byte amount alone; host does not special-case length==48.
+        """
         xfl = float_to_xfl(-42.0)
         rt._write_memory(100, CUSTOM_CURRENCY_20)
         rt._write_memory(200, ISSUER_20)
         float_sto(rt, 0, 50, 100, 20, 200, 20, xfl, hookapi.sfAmount)
-        raw_amount = rt._read_memory(1, 48)
+        raw_amount = rt._read_memory(1, 8)  # skip 1-byte sfAmount header
 
         rt._write_memory(300, raw_amount)
-        recovered = float_sto_set(rt, 300, 48)
+        recovered = float_sto_set(rt, 300, 8)
 
         assert xfl_to_float(recovered) == pytest.approx(-42.0, rel=1e-10)
+
+    def test_length_48_without_header_is_not_special_cased(self, rt):
+        """Host eats a header nibble pattern from a bare 48-byte amount blob.
+
+        # todo:xahaud-bug-candidate
+        # If slot_subfield hands hooks a 48-byte issued amount (man+cur+iss)
+        # and they call float_sto_set on the whole buffer, host length>8 logic
+        # may strip the first amount byte as a field header
+        # (HookAPI.cpp:1293-1320). Prefer float_sto_set on the 8-byte amount.
+        """
+        xfl = float_to_xfl(-42.0)
+        rt._write_memory(100, CUSTOM_CURRENCY_20)
+        rt._write_memory(200, ISSUER_20)
+        float_sto(rt, 0, 50, 100, 20, 200, 20, xfl, hookapi.sfAmount)
+        raw_48 = rt._read_memory(1, 48)
+        rt._write_memory(300, raw_48)
+        recovered = float_sto_set(rt, 300, 48)
+        # Host-faithful: not a clean round-trip of the original XFL.
+        assert recovered != xfl
 
     def test_iou_with_2byte_header(self, rt):
         """IOU amount with 2-byte field header (field>=16)."""
@@ -805,6 +911,60 @@ class TestFloatStoSetEdgeCases:
         """Less than 8 bytes → NOT_AN_OBJECT."""
         rt._write_memory(0, b"\x00" * 5)
         assert float_sto_set(rt, 0, 5) == hookapi.NOT_AN_OBJECT
+
+    def test_out_of_bounds(self, rt):
+        """An otherwise long-enough input must fit in linear memory.
+
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3652-3656
+        """
+        assert float_sto_set(rt, 65_532, 8) == hookapi.OUT_OF_BOUNDS
+
+    def test_exponent_overflow_propagates_xfl_overflow(self, rt):
+        """normalize_xfl overflow is returned directly, not INVALID_FLOAT.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1349-1352
+        xahaud:src/xrpld/app/hook/HookAPI.h:275-276
+        """
+        encoded = (
+            (1 << 63)  # issued amount
+            | (1 << 62)  # positive
+            | ((81 + 97) << 54)
+            | 1_000_000_000_000_000
+        ).to_bytes(8, "big")
+        rt._write_memory(0, encoded)
+
+        assert float_sto_set(rt, 0, 8) == hookapi.XFL_OVERFLOW
+
+    def test_length_wraps_to_uint8_before_parsing(self, rt):
+        """The host's uint8_t parser length makes 256 bytes appear empty.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1289-1322
+        """
+        amount = (
+            (1 << 63)
+            | (1 << 62)
+            | ((-15 + 97) << 54)
+            | 1_000_000_000_000_000
+        ).to_bytes(8, "big")
+        data = b"\x61" + amount + (b"\x00" * (256 - 9))
+        rt._write_memory(0, data)
+
+        assert float_sto_set(rt, 0, 256) == hookapi.NOT_AN_OBJECT
+
+    def test_length_264_wraps_to_bare_amount_width(self, rt):
+        """A 264-byte input is parsed with host length 8 and no header strip.
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1289-1293
+        """
+        amount = (
+            (1 << 63)
+            | (1 << 62)
+            | ((-15 + 97) << 54)
+            | 1_000_000_000_000_000
+        ).to_bytes(8, "big")
+        rt._write_memory(0, amount + (b"\x00" * 256))
+
+        assert float_sto_set(rt, 0, 264) == float_one(rt)
 
     def test_iou_zero_mantissa(self, rt):
         """IOU with zero mantissa → 0."""
