@@ -42,21 +42,23 @@ def _xfl_is_negative(xfl: int) -> bool:
     return xfl != 0 and not ((xfl >> 62) & 1)
 
 
-def float_one(rt: HookRuntime) -> int:
-    """Return XFL representation of 1.0.
-
-    xahaud:src/xrpld/app/hook/HookAPI.h:291-292 (float_one_internal)
-    """
-    return _float_to_xfl(1.0)
-
-
 # XFL limits — xahaud:src/xrpld/app/hook/HookAPI.h:39-42
-_ONE = (1 << 62) | ((0 + 97) << 54) | 1000000000000000   # float_one, XFL 1.0
 _MIN_MANTISSA = 1000000000000000
 _MAX_MANTISSA = 9999999999999999
 _MIN_EXPONENT = -96
 _MAX_EXPONENT = 80
 _INT64_MIN = -(1 << 63)
+# float_one_internal = make_float(1e15, -15) — xahaud:src/xrpld/app/hook/HookAPI.h:291-292
+# Encoding: positive | exp_bias(-15+97=82) | mantissa 1e15  — NOT exp=0 (that is 1e15).
+_ONE = (1 << 62) | ((-15 + 97) << 54) | _MIN_MANTISSA
+
+
+def float_one(rt: HookRuntime) -> int:
+    """Return XFL representation of 1.0.
+
+    xahaud:src/xrpld/app/hook/HookAPI.h:291-292 (float_one_internal)
+    """
+    return _ONE
 
 
 def _normalize_xfl(man: int, exp: int, neg: bool = False) -> int | None:
@@ -139,9 +141,16 @@ def _invalid_float(xfl: int) -> int | None:
 def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
     """Compare two XFLs under a mode bitset.
 
-    Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542
-    Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1060-1099
+    Admission first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542
+    Body:             xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1060-1099
     """
+    # Wrapper admits before body mode checks (applyHook.cpp:3541-3542).
+    err = _invalid_float(a)
+    if err is not None:
+        return err
+    err = _invalid_float(b)
+    if err is not None:
+        return err
     # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1067-1071
     if mode == 0:
         return hookapi.INVALID_ARGUMENT
@@ -149,12 +158,8 @@ def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
         return hookapi.INVALID_ARGUMENT
     if mode & ~0b111:
         return hookapi.INVALID_ARGUMENT
-    err = _invalid_float(a)
-    if err is not None:
-        return err
-    err = _invalid_float(b)
-    if err is not None:
-        return err
+    # Body still uses Python float compare — not IOUAmount. Known residual
+    # fidelity gap for 16-digit mantissas near/above 2^53.
     fa = _xfl_to_float(a)
     fb = _xfl_to_float(b)
     if (mode & hookapi.COMPARE_EQUAL) and fa == fb:
@@ -169,20 +174,22 @@ def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
 def float_sum(rt: HookRuntime, a: int, b: int) -> int:
     """Sum two XFLs.
 
-    Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558
-    Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1105-1145
+    Admission first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558
+    Body:             xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1105-1145
     """
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1107-1110
-    if a == 0:
-        return b
-    if b == 0:
-        return a
+    # Wrapper admits before zero-identity (applyHook.cpp:3557-3558 →
+    # HookAPI.cpp:1107-1110).
     err = _invalid_float(a)
     if err is not None:
         return err
     err = _invalid_float(b)
     if err is not None:
         return err
+    if a == 0:
+        return b
+    if b == 0:
+        return a
+    # Residual: IEEE add path, not IOUAmount + make_float.
     return _float_to_xfl(_xfl_to_float(a) + _xfl_to_float(b))
 
 
@@ -344,7 +351,7 @@ def float_divide(rt: HookRuntime, a: int, b: int) -> int:
 
 
 def float_invert(rt: HookRuntime, a: int) -> int:
-    """1/x for an XFL.
+    """1/x for an XFL via float_divide_internal(one, x).
 
     Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3694
     Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1356-1364
@@ -352,10 +359,9 @@ def float_invert(rt: HookRuntime, a: int) -> int:
     err = _invalid_float(a)
     if err is not None:
         return err
-    if a == 0:
-        return hookapi.DIVISION_BY_ZERO
-    fa = _xfl_to_float(a)
-    return _float_to_xfl(1.0 / fa)
+    # Host: zero → DIVISION_BY_ZERO; one → one; else divide(one, a).
+    # float_divide re-admits and handles zero/one short-circuits.
+    return float_divide(rt, _ONE, a)
 
 
 def float_sto(rt: HookRuntime, write_ptr: int, write_len: int,

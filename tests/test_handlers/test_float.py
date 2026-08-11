@@ -15,6 +15,7 @@ from hookz.xfl import float_to_xfl, xfl_to_float
 from hookz.handlers.float import (
     float_sto_set, float_sto, float_multiply, float_invert,
     float_sign, float_mantissa, float_log, float_root, float_mulratio,
+    _ONE,
 )
 
 
@@ -36,6 +37,7 @@ def rt() -> HookRuntime:
 # ---------------------------------------------------------------------------
 from hookz.handlers.float import (
     float_compare, float_sum, float_negate, float_int, float_set, float_divide,
+    float_one,
 )
 
 
@@ -224,6 +226,7 @@ class TestInvalidFloatAdmission:
     xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
     multiply gate: applyHook.cpp:3486-3487
     compare gate:  applyHook.cpp:3541-3542
+    sum gate:      applyHook.cpp:3557-3558
     """
 
     def test_multiply_rejects_negative_encoding(self, rt):
@@ -239,6 +242,44 @@ class TestInvalidFloatAdmission:
         assert float_compare(rt, one, -1, hookapi.COMPARE_LESS) == (
             hookapi.INVALID_FLOAT
         )
+
+    def test_sum_admits_before_zero_identity(self, rt):
+        # Host wrapper admits first; zero-identity is body-only.
+        assert float_sum(rt, -1, 0) == hookapi.INVALID_FLOAT
+        assert float_sum(rt, 0, -1) == hookapi.INVALID_FLOAT
+
+    def test_compare_admits_before_mode_checks(self, rt):
+        # Invalid float + illegal mode → INVALID_FLOAT, not INVALID_ARGUMENT.
+        assert float_compare(rt, -1, 0, 0) == hookapi.INVALID_FLOAT
+        assert float_compare(rt, -1, 0, 0b111) == hookapi.INVALID_FLOAT
+
+    def test_negate_int_divide_invert_reject_negative_encoding(self, rt):
+        assert float_negate(rt, -1) == hookapi.INVALID_FLOAT
+        assert float_int(rt, -1, 0, 0) == hookapi.INVALID_FLOAT
+        one = float_set(rt, 0, 1)
+        assert float_divide(rt, -1, one) == hookapi.INVALID_FLOAT
+        assert float_divide(rt, one, -1) == hookapi.INVALID_FLOAT
+        assert float_invert(rt, -1) == hookapi.INVALID_FLOAT
+
+
+class TestFloatOne:
+    """float_one_internal encoding — xahaud:src/xrpld/app/hook/HookAPI.h:291-292."""
+
+    def test_one_is_host_canonical(self, rt):
+        assert float_one(rt) == _ONE
+        assert float_one(rt) == float_set(rt, -15, 1_000_000_000_000_000)
+        assert xfl_to_float(float_one(rt)) == pytest.approx(1.0)
+
+    def test_divide_by_one_is_identity(self, rt):
+        x = float_set(rt, 0, 42)
+        assert float_divide(rt, x, float_one(rt)) == x
+
+    def test_divide_by_1e15_is_not_identity(self, rt):
+        # Wrong _ONE encoding used exp=0 / value 1e15 and short-circuited here.
+        x = float_set(rt, 0, 42)
+        big = float_set(rt, 0, 1_000_000_000_000_000)
+        assert big != float_one(rt)
+        assert float_divide(rt, x, big) != x
 
 
 class TestFloatDivide:
