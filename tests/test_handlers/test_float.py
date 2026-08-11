@@ -193,6 +193,53 @@ class TestFloatSet:
         result = float_set(rt, 0, 1_000_000_000_000_000)
         assert xfl_to_float(result) == pytest.approx(1e15)
 
+    def test_exponent_below_min_is_invalid(self, rt):
+        # xahaud:src/test/app/SetHook_test.cpp:6082
+        # maps through HookAPI.cpp:1001-1002 (underflow → INVALID_FLOAT)
+        assert float_set(rt, -97, 1) == hookapi.INVALID_FLOAT
+
+    def test_exponent_above_max_is_invalid(self, rt):
+        # xahaud:src/test/app/SetHook_test.cpp:6085
+        assert float_set(rt, 97, 1) == hookapi.INVALID_FLOAT
+
+    @pytest.mark.parametrize(
+        "exp,mantissa,expected",
+        [
+            # xahaud:src/test/app/SetHook_test.cpp:6087+ (test_float_set vectors)
+            (-5, 6541432897943971, 6275552114197674403),
+            (-83, 7906202688397446, 4871793800248533126),
+            (76, 4760131426754533, 7732937091994525669),
+            (37, -8019384286534438, 2421948784557120294),
+            (50, 5145342538007840, 7264947941859247392),
+            (-70, 4387341302202416, 5102462119485603888),
+        ],
+    )
+    def test_host_vectors(self, rt, exp, mantissa, expected):
+        assert float_set(rt, exp, mantissa) == expected
+
+
+class TestInvalidFloatAdmission:
+    """applyHook RETURN_IF_INVALID_FLOAT on multi-operand float hosts.
+
+    xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
+    multiply gate: applyHook.cpp:3486-3487
+    compare gate:  applyHook.cpp:3541-3542
+    """
+
+    def test_multiply_rejects_negative_encoding(self, rt):
+        one = float_set(rt, 0, 1)
+        assert float_multiply(rt, -1, one) == hookapi.INVALID_FLOAT
+        assert float_multiply(rt, one, -1) == hookapi.INVALID_FLOAT
+
+    def test_compare_rejects_negative_encoding(self, rt):
+        one = float_set(rt, 0, 1)
+        assert float_compare(rt, -1, one, hookapi.COMPARE_LESS) == (
+            hookapi.INVALID_FLOAT
+        )
+        assert float_compare(rt, one, -1, hookapi.COMPARE_LESS) == (
+            hookapi.INVALID_FLOAT
+        )
+
 
 class TestFloatDivide:
     """float_divide: XFL / XFL."""
