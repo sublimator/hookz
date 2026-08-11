@@ -5,7 +5,9 @@ generates C++ headers with the compiled bytecode as static maps.
 
 Input formats:
   - Inline: R"[test.hook]( ... C code ... )[test.hook]"
-  - File refs: "file:domain/path.c"  (requires --hooks-c-dir domain=path)
+  - Inline JS: R"[test.jshook]( ... )[test.jshook]"
+  - Inline TS: R"[test.tshook]( ... )[test.tshook]"
+  - File refs: "file:domain/path.{c,js,ts}" (requires --hooks-c-dir domain=path)
 
 Output: C++ header with std::map<std::string, std::vector<uint8_t>>
 
@@ -19,6 +21,7 @@ import hashlib
 import logging
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import tempfile
@@ -32,6 +35,7 @@ logger = logging.getLogger("hookz.build-test-hooks")
 # ---------------------------------------------------------------------------
 # Output formatting
 # ---------------------------------------------------------------------------
+
 
 class OutputFormatter:
     """Format compiled bytecode as C++ arrays."""
@@ -50,14 +54,24 @@ class OutputFormatter:
 # Source extraction
 # ---------------------------------------------------------------------------
 
+
 @dataclass
 class HookBlock:
     """A hook block to compile."""
-    map_key: str       # C++ map key: inline source or "file:domain/path.c"
-    source: str        # Compilable source code
-    filename: str      # Safe source filename sent to the compiler
-    line_number: int   # Line number in test file
+
+    map_key: str  # C++ map key: inline source or "file:domain/path.c"
+    source: str  # Compilable source code
+    filename: str  # Safe source filename sent to the compiler
+    line_number: int  # Line number in test file
     is_file_ref: bool  # True if from external file
+
+    @property
+    def suffix(self) -> str:
+        return Path(self.filename).suffix.lower()
+
+    @property
+    def is_quickjs(self) -> bool:
+        return self.suffix in {".js", ".mjs", ".ts"}
 
 
 class SourceExtractor:
@@ -101,12 +115,11 @@ class SourceExtractor:
 
         file_path = (root / path).resolve()
         if not file_path.is_relative_to(root):
+            raise RuntimeError(f'Hook file escapes domain "{domain}": file:{ref}')
+        allowed = {".c", ".js", ".mjs", ".ts"}
+        if file_path.suffix.lower() not in allowed or not file_path.is_file():
             raise RuntimeError(
-                f'Hook file escapes domain "{domain}": file:{ref}'
-            )
-        if file_path.suffix != ".c" or not file_path.is_file():
-            raise RuntimeError(
-                f"Hook file is not a regular .c source: {file_path} "
+                f"Hook file is not a regular .c/.js/.ts source: {file_path} "
                 f'(referenced as "file:{ref}" at line {line_number})'
             )
 
@@ -118,16 +131,28 @@ class SourceExtractor:
 
         blocks: list[HookBlock] = []
 
-        # Inline blocks: R"[test.hook](...)[test.hook]"
-        pattern = r'R"\[test\.hook\]\((.*?)\)\[test\.hook\]"'
-        for match in re.finditer(pattern, content, re.DOTALL):
-            source = match.group(1)
-            line_number = content[: match.start()].count("\n") + 1
-            blocks.append(HookBlock(
-                map_key=source, source=source,
-                filename="inline.c",
-                line_number=line_number, is_file_ref=False,
-            ))
+        inline_kinds = {
+            "hook": ".c",
+            "jshook": ".js",
+            "tshook": ".ts",
+        }
+        for delimiter, suffix in inline_kinds.items():
+            pattern = (
+                rf'R"\[test\.{delimiter}\]\((.*?)\)'
+                rf'\[test\.{delimiter}\]"'
+            )
+            for match in re.finditer(pattern, content, re.DOTALL):
+                source = match.group(1)
+                line_number = content[: match.start()].count("\n") + 1
+                blocks.append(
+                    HookBlock(
+                        map_key=source,
+                        source=source,
+                        filename=f"inline{suffix}",
+                        line_number=line_number,
+                        is_file_ref=False,
+                    )
+                )
 
         # File references: "file:domain/path.c"
         file_pattern = r'"file:([^"]+)"'
@@ -142,21 +167,28 @@ class SourceExtractor:
             _domain, file_path = self._resolve_file_ref(ref, line_number)
 
             source = file_path.read_text()
-            blocks.append(HookBlock(
-                map_key=f"file:{ref}", source=source,
-                filename=file_path.name,
-                line_number=line_number, is_file_ref=True,
-            ))
+            blocks.append(
+                HookBlock(
+                    map_key=f"file:{ref}",
+                    source=source,
+                    filename=file_path.name,
+                    line_number=line_number,
+                    is_file_ref=True,
+                )
+            )
 
         inline_count = sum(1 for b in blocks if not b.is_file_ref)
         file_count = sum(1 for b in blocks if b.is_file_ref)
-        logger.info(f"Found {len(blocks)} hook blocks ({inline_count} inline, {file_count} file refs)")
+        logger.info(
+            f"Found {len(blocks)} hook blocks ({inline_count} inline, {file_count} file refs)"
+        )
         return blocks
 
 
 # ---------------------------------------------------------------------------
 # Compilation cache
 # ---------------------------------------------------------------------------
+
 
 class CompilationCache:
     """SHA256-based cache keyed on source + hookz version."""
@@ -172,6 +204,7 @@ class CompilationCache:
     def _get_hookz_version() -> str:
         try:
             from hookz._version import get_version
+
             return get_version()
         except Exception:
             return "unknown"
@@ -185,7 +218,9 @@ class CompilationCache:
             hasher.update(b"coverage")
         return hasher.hexdigest()
 
-    def get(self, source: str, coverage: bool = False, compiler: str = "hookz") -> bytes | None:
+    def get(
+        self, source: str, coverage: bool = False, compiler: str = "hookz"
+    ) -> bytes | None:
         key = self._cache_key(source, coverage, compiler)
         path = self.cache_dir / f"{key}.wasm"
         if path.exists():
@@ -193,7 +228,13 @@ class CompilationCache:
             return path.read_bytes()
         return None
 
-    def put(self, source: str, bytecode: bytes, coverage: bool = False, compiler: str = "hookz") -> None:
+    def put(
+        self,
+        source: str,
+        bytecode: bytes,
+        coverage: bool = False,
+        compiler: str = "hookz",
+    ) -> None:
         key = self._cache_key(source, coverage, compiler)
         path = self.cache_dir / f"{key}.wasm"
         path.write_bytes(bytecode)
@@ -203,6 +244,7 @@ class CompilationCache:
 # ---------------------------------------------------------------------------
 # Compilation — uses hookz pipeline directly
 # ---------------------------------------------------------------------------
+
 
 def _compile_hook_hookz(source: str, label: str, coverage: bool = False) -> bytes:
     """Compile via hookz pipeline (wasi-sdk + hookz cleaner). Used for coverage builds."""
@@ -220,7 +262,9 @@ def _compile_hook_hookz(source: str, label: str, coverage: bool = False) -> byte
         if coverage:
             from hookz.coverage.rewriter import instrument_wasm
 
-            wasm = compile_hook_two_stage(source_path, config, opt_level=COVERAGE_OPT_LEVEL)
+            wasm = compile_hook_two_stage(
+                source_path, config, opt_level=COVERAGE_OPT_LEVEL
+            )
             wasm, _locs = instrument_wasm(wasm)
             try:
                 cleaned = clean_hook(wasm, coverage_call_idx=0)
@@ -241,14 +285,25 @@ def _compile_hook_hookz(source: str, label: str, coverage: bool = False) -> byte
 def _compile_hook_wasmcc(source: str, label: str) -> bytes:
     """Compile via wasmcc + hook-cleaner (legacy compat, matches xahaud's build_test_hooks.sh)."""
     wasmcc_result = subprocess.run(
-        ["wasmcc", "-x", "c", "/dev/stdin", "-o", "/dev/stdout", "-O2", "-Wl,--allow-undefined"],
+        [
+            "wasmcc",
+            "-x",
+            "c",
+            "/dev/stdin",
+            "-o",
+            "/dev/stdout",
+            "-O2",
+            "-Wl,--allow-undefined",
+        ],
         input=source.encode("utf-8"),
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     cleaner_result = subprocess.run(
         ["hook-cleaner", "-", "-"],
         input=wasmcc_result.stdout,
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     return cleaner_result.stdout
 
@@ -274,13 +329,45 @@ def _compile_hook_buildbox(
     return wasm
 
 
+def _compile_hook_quickjs(source: str, filename: str) -> bytes:
+    """Delegate JS/TS bytecode production to the pinned QuickJS provider."""
+    command = shlex.split(os.environ.get("QJS_HOOK_COMPILER", "qjs-wasm compile-hook"))
+    if not command:
+        raise RuntimeError("QJS_HOOK_COMPILER resolved to an empty command")
+
+    suffix = Path(filename).suffix.lower()
+    with tempfile.TemporaryDirectory(prefix="hookz-qjs-") as temp:
+        temp_path = Path(temp)
+        source_path = temp_path / f"hook{suffix}"
+        output_path = temp_path / "hook.qjsc"
+        source_path.write_text(source)
+        completed = subprocess.run(
+            [*command, str(source_path), "-o", str(output_path)],
+            capture_output=True,
+            text=True,
+        )
+        if completed.returncode:
+            detail = "\n".join(
+                part.strip()
+                for part in (completed.stdout, completed.stderr)
+                if part.strip()
+            )
+            raise RuntimeError(f"QuickJS Hook compilation failed:\n{detail}")
+        if not output_path.is_file():
+            raise RuntimeError(
+                "QuickJS Hook compiler succeeded without producing bytecode"
+            )
+        return output_path.read_bytes()
+
+
 def _compile_wat(source: str) -> bytes:
     """Compile WAT source via wat2wasm."""
     source = re.sub(r"/\*end\*/$", "", source)
     result = subprocess.run(
         ["wat2wasm", "-", "-o", "/dev/stdout"],
         input=source.encode("utf-8"),
-        capture_output=True, check=True,
+        capture_output=True,
+        check=True,
     )
     return result.stdout
 
@@ -293,15 +380,20 @@ def _is_wat(source: str) -> bool:
 # Output writer
 # ---------------------------------------------------------------------------
 
+
 class OutputWriter:
     """Write compiled blocks to C++ header and Python manifest."""
 
-    def __init__(self, output_file: Path, symbol_name: str,
-                 cache_dir: Path | None = None,
-                 compat: bool = False,
-                 compiler: str = "hookz",
-                 buildbox_endpoint: str | None = None,
-                 buildbox_options: str = "-O3") -> None:
+    def __init__(
+        self,
+        output_file: Path,
+        symbol_name: str,
+        cache_dir: Path | None = None,
+        compat: bool = False,
+        compiler: str = "hookz",
+        buildbox_endpoint: str | None = None,
+        buildbox_options: str = "-O3",
+    ) -> None:
         self.output_file = output_file
         self.symbol_name = symbol_name
         self.compat = compat
@@ -320,12 +412,17 @@ class OutputWriter:
     def _header(self) -> str:
         provenance = ""
         if self.compiler == "buildbox":
-            endpoint = (self.buildbox_endpoint or "").replace(
-                "*/", "* /"
-            ).replace("\r", "").replace("\n", "")
-            options = self.buildbox_options.replace(
-                "*/", "* /"
-            ).replace("\r", "").replace("\n", "")
+            endpoint = (
+                (self.buildbox_endpoint or "")
+                .replace("*/", "* /")
+                .replace("\r", "")
+                .replace("\n", "")
+            )
+            options = (
+                self.buildbox_options.replace("*/", "* /")
+                .replace("\r", "")
+                .replace("\n", "")
+            )
             provenance = (
                 "// hookz-build-mode: buildbox (remote; no local fallback)\n"
                 f"// hookz-buildbox-endpoint: {endpoint}\n"
@@ -371,7 +468,9 @@ inline std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
             return content
         result = subprocess.run(
             ["clang-format", f"--assume-filename={self.output_file}"],
-            input=content, capture_output=True, text=True,
+            input=content,
+            capture_output=True,
+            text=True,
         )
         return result.stdout if result.returncode == 0 else content
 
@@ -431,7 +530,8 @@ inline std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
         self.output_file.write_text(formatted)
 
     def write_python_manifest(
-        self, compiled_blocks: dict[int, tuple[HookBlock, bytes]],
+        self,
+        compiled_blocks: dict[int, tuple[HookBlock, bytes]],
     ) -> Path:
         """Write Python manifest to cache dir, keyed by content hash.
 
@@ -490,6 +590,7 @@ inline std::map<std::string, std::vector<uint8_t>> {self.symbol_name} = {{
 # Builder orchestrator
 # ---------------------------------------------------------------------------
 
+
 class TestHookBuilder:
     """Orchestrate extraction → parallel compilation → output."""
 
@@ -520,9 +621,7 @@ class TestHookBuilder:
         if compiler == "buildbox":
             from hookz.buildbox import endpoint_from_environment
 
-            self.buildbox_endpoint = (
-                buildbox_endpoint or endpoint_from_environment()
-            )
+            self.buildbox_endpoint = buildbox_endpoint or endpoint_from_environment()
         else:
             self.buildbox_endpoint = None
 
@@ -547,31 +646,33 @@ class TestHookBuilder:
         # Persistently caching it would turn the check into a check of an old
         # response under a mutable endpoint.
         self.cache = (
-            None
-            if no_cache or compiler == "buildbox"
-            else CompilationCache(cache_dir)
+            None if no_cache or compiler == "buildbox" else CompilationCache(cache_dir)
         )
         self.extractor = SourceExtractor(input_file, hooks_c_dirs=hooks_c_dirs)
         self.writer = OutputWriter(
-            self.output_file, self.symbol_name,
-            cache_dir=(
-                self.cache.cache_dir
-                if self.cache
-                else cache_dir
-            ),
+            self.output_file,
+            self.symbol_name,
+            cache_dir=(self.cache.cache_dir if self.cache else cache_dir),
             compat=(compiler == "wasmcc"),
             compiler=compiler,
             buildbox_endpoint=self.buildbox_endpoint,
             buildbox_options=buildbox_options,
         )
 
-    def _compile_block(self, counter: int, block: HookBlock) -> tuple[int, HookBlock, bytes]:
+    def _compile_block(
+        self, counter: int, block: HookBlock
+    ) -> tuple[int, HookBlock, bytes]:
         label = block.map_key if block.is_file_ref else f"Block {counter}"
         is_wat = _is_wat(block.source)
+        is_quickjs = block.is_quickjs
 
         # Check cache
-        if self.cache is not None:
-            cached = self.cache.get(block.source, coverage=self.coverage, compiler=self.compiler)
+        # QuickJS bytecode is provider-version-specific. Do not persist it until
+        # the compiler exposes a provider identity for the cache key.
+        if self.cache is not None and not is_quickjs:
+            cached = self.cache.get(
+                block.source, coverage=self.coverage, compiler=self.compiler
+            )
             if cached is not None:
                 logger.info(f"{label}: cached")
                 return (counter, block, cached)
@@ -579,9 +680,27 @@ class TestHookBuilder:
         # Compile
         cov_tag = " (coverage)" if self.coverage else ""
         compiler_tag = f" [{self.compiler}]" if self.compiler != "hookz" else ""
-        logger.info(f"{label}: compiling {'WAT' if is_wat else 'C'}{compiler_tag}{cov_tag}")
+        source_kind = (
+            "TypeScript"
+            if block.suffix == ".ts"
+            else "JavaScript"
+            if is_quickjs
+            else "WAT"
+            if is_wat
+            else "C"
+        )
+        logger.info(f"{label}: compiling {source_kind}{compiler_tag}{cov_tag}")
 
-        if is_wat:
+        if is_quickjs:
+            if self.compiler == "buildbox":
+                raise RuntimeError(
+                    "buildbox mode cannot compile JS/TS Hooks through a local "
+                    "QuickJS provider"
+                )
+            if self.coverage:
+                raise RuntimeError("Hook coverage is not yet supported for JS/TS Hooks")
+            bytecode = _compile_hook_quickjs(block.source, block.filename)
+        elif is_wat:
             if self.compiler == "buildbox":
                 raise RuntimeError(
                     "the canonical buildbox accepts C source only; refusing "
@@ -603,8 +722,10 @@ class TestHookBuilder:
             bytecode = _compile_hook_hookz(block.source, label, coverage=self.coverage)
 
         # Store in cache
-        if self.cache is not None:
-            self.cache.put(block.source, bytecode, coverage=self.coverage, compiler=self.compiler)
+        if self.cache is not None and not is_quickjs:
+            self.cache.put(
+                block.source, bytecode, coverage=self.coverage, compiler=self.compiler
+            )
 
         return (counter, block, bytecode)
 
