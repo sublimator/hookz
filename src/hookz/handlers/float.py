@@ -1,22 +1,38 @@
 """XFL floating point operations — compare, sum, negate, int, set, divide, sto, sto_set.
 
-Host sources (read-only xahaud checkout):
+Host sources (read-only xahaud checkout). Every ported branch should also carry
+an inline ``xahaud:path:line`` cite at the behaviour itself.
 
-* limits / normalize / one:
+* limits / sign / make_float / normalize / one:
   xahaud:src/xrpld/app/hook/HookAPI.h:39-42
+  xahaud:src/xrpld/app/hook/HookAPI.h:59-83
+  xahaud:src/xrpld/app/hook/HookAPI.h:145-172
   xahaud:src/xrpld/app/hook/HookAPI.h:184-289
   xahaud:src/xrpld/app/hook/HookAPI.h:291-292
 * invalid-float gate (wrapper macro):
   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
+* API wrappers (admission sites):
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3448-3456  (float_set)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3461-3477  (float_int)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3481-3494  (float_multiply)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3519-3528  (float_negate)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3531-3549  (float_compare)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3552-3565  (float_sum)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3667-3681  (float_divide)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3689-3701  (float_invert)
 * API bodies:
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:986-1005  (float_set)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1008-1021 (float_multiply)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2509-2537 (float_multiply_internal_parts)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1060-1099 (float_compare)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1105-1145 (float_sum)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1052-1057 (float_negate)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1395-1428 (float_int)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2562-2636 (float_divide_internal)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:986-1005   (float_set)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1008-1021  (float_multiply)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1052-1057  (float_negate)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1060-1099  (float_compare)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1105-1145  (float_sum)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1356-1364  (float_invert)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1367-1369  (float_divide → internal)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1395-1428  (float_int)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2509-2537  (float_multiply_internal_parts)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2562-2636  (float_divide_internal)
+* host suite vectors:
+  xahaud:src/test/app/SetHook_test.cpp:6082+ (float_set bounds + encodings)
 """
 
 from __future__ import annotations
@@ -42,14 +58,16 @@ def _xfl_is_negative(xfl: int) -> bool:
     return xfl != 0 and not ((xfl >> 62) & 1)
 
 
-# XFL limits — xahaud:src/xrpld/app/hook/HookAPI.h:39-42
+# xahaud:src/xrpld/app/hook/HookAPI.h:39-42
 _MIN_MANTISSA = 1000000000000000
 _MAX_MANTISSA = 9999999999999999
 _MIN_EXPONENT = -96
 _MAX_EXPONENT = 80
 _INT64_MIN = -(1 << 63)
-# float_one_internal = make_float(1e15, -15) — xahaud:src/xrpld/app/hook/HookAPI.h:291-292
-# Encoding: positive | exp_bias(-15+97=82) | mantissa 1e15  — NOT exp=0 (that is 1e15).
+# xahaud:src/xrpld/app/hook/HookAPI.h:291-292
+# make_float(1000000000000000ull, -15, false) — positive, exp bias (-15+97)=82.
+# NOT exp=0 (that encodes value 1e15). set_exponent bias:
+# xahaud:src/xrpld/app/hook/HookAPI.h:100-110.
 _ONE = (1 << 62) | ((-15 + 97) << 54) | _MIN_MANTISSA
 
 
@@ -57,6 +75,7 @@ def float_one(rt: HookRuntime) -> int:
     """Return XFL representation of 1.0.
 
     xahaud:src/xrpld/app/hook/HookAPI.h:291-292 (float_one_internal)
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1372-1375 (float_one API)
     """
     return _ONE
 
@@ -72,16 +91,22 @@ def _normalize_xfl(man: int, exp: int, neg: bool = False) -> int | None:
     not equivalent to a plain multiply/divide by ten and do change results at
     the edges.
     """
+    # xahaud:src/xrpld/app/hook/HookAPI.h:186-187
     if man == 0:
         return 0
     # xahaud:src/xrpld/app/hook/HookAPI.h:189-190
     if man == _INT64_MIN:
         man += 1
+    # xahaud:src/xrpld/app/hook/HookAPI.h:195-202
     if man < 0:
         man = -man
         neg = True
 
-    mo = len(str(man)) - 1                      # integer log10
+    # Host: int32_t mo = log10(man) after double promote —
+    # xahaud:src/xrpld/app/hook/HookAPI.h:205-206.
+    # We use exact decimal digit count; known residual near maxMantissa/>2^53.
+    mo = len(str(man)) - 1
+    # xahaud:src/xrpld/app/hook/HookAPI.h:212-233
     adjust = 15 - mo
     if adjust > 0:
         if adjust > 18:
@@ -94,6 +119,7 @@ def _normalize_xfl(man: int, exp: int, neg: bool = False) -> int | None:
         man //= 10 ** (-adjust)
         exp -= adjust
 
+    # xahaud:src/xrpld/app/hook/HookAPI.h:235-238
     if man == 0:
         return 0
 
@@ -118,6 +144,10 @@ def _normalize_xfl(man: int, exp: int, neg: bool = False) -> int | None:
     if exp > _MAX_EXPONENT:
         return None
 
+    # Host packs via make_float —
+    # xahaud:src/xrpld/app/hook/HookAPI.h:145-172
+    # (set_mantissa / set_exponent / set_sign). exp bias +97:
+    # xahaud:src/xrpld/app/hook/HookAPI.h:100-110.
     return (0 if neg else (1 << 62)) | ((exp + 97) << 54) | man
 
 
@@ -126,8 +156,10 @@ def _invalid_float(xfl: int) -> int | None:
 
     xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3377-3378
     if xfl < 0:
         return hookapi.INVALID_FLOAT
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3379-3390
     if xfl == 0:
         return None
     man = _xfl_mantissa(xfl)
@@ -144,7 +176,7 @@ def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
     Admission first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542
     Body:             xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1060-1099
     """
-    # Wrapper admits before body mode checks (applyHook.cpp:3541-3542).
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542 (before mode body)
     err = _invalid_float(a)
     if err is not None:
         return err
@@ -158,10 +190,12 @@ def float_compare(rt: HookRuntime, a: int, b: int, mode: int) -> int:
         return hookapi.INVALID_ARGUMENT
     if mode & ~0b111:
         return hookapi.INVALID_ARGUMENT
-    # Body still uses Python float compare — not IOUAmount. Known residual
-    # fidelity gap for 16-digit mantissas near/above 2^53.
+    # Host body uses signed man/exp + IOUAmount —
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1073-1096.
+    # Residual: Python float compare (ULP risk at man ≥ 2^53).
     fa = _xfl_to_float(a)
     fb = _xfl_to_float(b)
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1087-1096
     if (mode & hookapi.COMPARE_EQUAL) and fa == fb:
         return 1
     if (mode & hookapi.COMPARE_LESS) and fa < fb:
@@ -177,8 +211,8 @@ def float_sum(rt: HookRuntime, a: int, b: int) -> int:
     Admission first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558
     Body:             xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1105-1145
     """
-    # Wrapper admits before zero-identity (applyHook.cpp:3557-3558 →
-    # HookAPI.cpp:1107-1110).
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558 then
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1107-1110
     err = _invalid_float(a)
     if err is not None:
         return err
@@ -189,7 +223,9 @@ def float_sum(rt: HookRuntime, a: int, b: int) -> int:
         return b
     if b == 0:
         return a
-    # Residual: IEEE add path, not IOUAmount + make_float.
+    # Host: IOUAmount += + make_float —
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1112-1137.
+    # Residual: IEEE add path.
     return _float_to_xfl(_xfl_to_float(a) + _xfl_to_float(b))
 
 
@@ -200,11 +236,14 @@ def float_negate(rt: HookRuntime, a: int) -> int:
     Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1052-1057
     invert_sign: xahaud:src/xrpld/app/hook/HookAPI.h:77-83
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3524
     err = _invalid_float(a)
     if err is not None:
         return err
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1054-1056
     if a == 0:
         return 0
+    # xahaud:src/xrpld/app/hook/HookAPI.h:77-83 (invert_sign bit 62)
     return a ^ (1 << 62)
 
 
@@ -214,18 +253,24 @@ def float_int(rt: HookRuntime, xfl: int, decimal: int, absolute: int) -> int:
     Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3471
     Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1395-1428
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3471
     err = _invalid_float(xfl)
     if err is not None:
         return err
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1398-1399
     if xfl == 0:
         return 0
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1400-1402
     mantissa = _xfl_mantissa(xfl)
     exponent = _xfl_exponent(xfl)
     neg = ((xfl >> 62) & 1) == 0
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1404-1405
     if decimal > 15:
         return hookapi.INVALID_ARGUMENT
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1407-1411
     if neg and not absolute:
         return hookapi.CANT_RETURN_NEGATIVE
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1413-1425
     shift = -(exponent + decimal)
     if shift > 15:
         return 0
@@ -244,12 +289,15 @@ def float_set(rt: HookRuntime, exp: int, mantissa: int) -> int:
     Normalize: xahaud:src/xrpld/app/hook/HookAPI.h:184-289
 
     Not IEEE. Zero mantissa is canonical zero. Underflow and overflow both
-    return INVALID_FLOAT — the host maps XFL_OVERFLOW that way for float_set
-    (HookAPI.cpp:997-1002).
+    return INVALID_FLOAT — host maps XFL_OVERFLOW that way for float_set
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:997-1002).
     """
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:988-989
     if mantissa == 0:
         return 0
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:991
     out = _normalize_xfl(mantissa, exp)
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:995-1002
     if out is None or out == 0:
         return hookapi.INVALID_FLOAT
     return out
@@ -265,14 +313,17 @@ def float_multiply(rt: HookRuntime, a: int, b: int) -> int:
     Not IEEE. A Python-float multiply rounds to nearest and diverged from the
     node on pool-scale operands by one unit in the last place.
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3486-3487
     err = _invalid_float(a)
     if err is not None:
         return err
     err = _invalid_float(b)
     if err is not None:
         return err
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1010-1011
     if a == 0 or b == 0:
         return 0
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1013-1018
     m1, e1 = _xfl_mantissa(a), _xfl_exponent(a)
     m2, e2 = _xfl_mantissa(b), _xfl_exponent(b)
     neg = _xfl_is_negative(a) != _xfl_is_negative(b)
@@ -291,17 +342,20 @@ def float_divide(rt: HookRuntime, a: int, b: int) -> int:
     """Long-division XFL divide (mantissa repeated subtraction).
 
     Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3673-3674
+    Outer:     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1367-1369
     Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2562-2636
 
-    `fixFloatDivide` changes the inner loop comparison from `>` to `>=`,
-    which moves results, so the amendment set decides which behaviour applies.
+    ``fixFloatDivide`` changes the inner loop comparison from ``>`` to ``>=``
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2565, 2595-2605).
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3673-3674
     err = _invalid_float(a)
     if err is not None:
         return err
     err = _invalid_float(b)
     if err is not None:
         return err
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2566-2574
     if b == 0:
         return hookapi.DIVISION_BY_ZERO
     if a == 0:
@@ -309,13 +363,14 @@ def float_divide(rt: HookRuntime, a: int, b: int) -> int:
     if b == _ONE:
         return a
 
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2576-2584
     man1, exp1 = _xfl_mantissa(a), _xfl_exponent(a)
     man2, exp2 = _xfl_mantissa(b), _xfl_exponent(b)
     neg1, neg2 = _xfl_is_negative(a), _xfl_is_negative(b)
     if _normalize_xfl(man1, exp1) == 0:
         return 0
 
-    # line the divisor up with the dividend, one order at a time
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2586-2600 (align divisor)
     while man2 > man1:
         man2 //= 10
         exp2 += 1
@@ -327,6 +382,7 @@ def float_divide(rt: HookRuntime, a: int, b: int) -> int:
         man2 *= 10
         exp2 -= 1
 
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2565, 2595-2625
     has_fix = rt is None or "fixFloatDivide" in getattr(rt, "amendments", ())
     man3, exp3 = 0, exp1 - exp2
     while man2 > 0:
@@ -345,6 +401,7 @@ def float_divide(rt: HookRuntime, a: int, b: int) -> int:
             break
         exp3 -= 1
 
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2627-2636
     neg3 = not ((neg1 and neg2) or (not neg1 and not neg2))
     out = _normalize_xfl(man3, exp3, neg3)
     return hookapi.XFL_OVERFLOW if out is None else out
@@ -356,11 +413,13 @@ def float_invert(rt: HookRuntime, a: int) -> int:
     Admission: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3694
     Body:      xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1356-1364
     """
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3694
     err = _invalid_float(a)
     if err is not None:
         return err
-    # Host: zero → DIVISION_BY_ZERO; one → one; else divide(one, a).
-    # float_divide re-admits and handles zero/one short-circuits.
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1358-1363
+    # zero → DIVISION_BY_ZERO; one → one; else divide(one, a).
+    # float_divide re-admits and implements those short-circuits.
     return float_divide(rt, _ONE, a)
 
 

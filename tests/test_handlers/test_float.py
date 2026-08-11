@@ -197,11 +197,12 @@ class TestFloatSet:
 
     def test_exponent_below_min_is_invalid(self, rt):
         # xahaud:src/test/app/SetHook_test.cpp:6082
-        # maps through HookAPI.cpp:1001-1002 (underflow → INVALID_FLOAT)
+        # underflow → INVALID_FLOAT: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1001-1002
         assert float_set(rt, -97, 1) == hookapi.INVALID_FLOAT
 
     def test_exponent_above_max_is_invalid(self, rt):
         # xahaud:src/test/app/SetHook_test.cpp:6085
+        # overflow → INVALID_FLOAT: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:997-999
         assert float_set(rt, 97, 1) == hookapi.INVALID_FLOAT
 
     @pytest.mark.parametrize(
@@ -223,10 +224,14 @@ class TestFloatSet:
 class TestInvalidFloatAdmission:
     """applyHook RETURN_IF_INVALID_FLOAT on multi-operand float hosts.
 
-    xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
-    multiply gate: applyHook.cpp:3486-3487
-    compare gate:  applyHook.cpp:3541-3542
-    sum gate:      applyHook.cpp:3557-3558
+    Macro: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3375-3392
+    multiply: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3486-3487
+    compare:  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542
+    sum:      xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558
+    negate:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3524
+    int:      xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3471
+    divide:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3673-3674
+    invert:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3694
     """
 
     def test_multiply_rejects_negative_encoding(self, rt):
@@ -244,12 +249,14 @@ class TestInvalidFloatAdmission:
         )
 
     def test_sum_admits_before_zero_identity(self, rt):
-        # Host wrapper admits first; zero-identity is body-only.
+        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3557-3558
+        # Body zero-id: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1107-1110
         assert float_sum(rt, -1, 0) == hookapi.INVALID_FLOAT
         assert float_sum(rt, 0, -1) == hookapi.INVALID_FLOAT
 
     def test_compare_admits_before_mode_checks(self, rt):
-        # Invalid float + illegal mode → INVALID_FLOAT, not INVALID_ARGUMENT.
+        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3541-3542
+        # Mode body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1067-1071
         assert float_compare(rt, -1, 0, 0) == hookapi.INVALID_FLOAT
         assert float_compare(rt, -1, 0, 0b111) == hookapi.INVALID_FLOAT
 
@@ -263,19 +270,21 @@ class TestInvalidFloatAdmission:
 
 
 class TestFloatOne:
-    """float_one_internal encoding — xahaud:src/xrpld/app/hook/HookAPI.h:291-292."""
+    """float_one_internal — xahaud:src/xrpld/app/hook/HookAPI.h:291-292."""
 
     def test_one_is_host_canonical(self, rt):
+        # make_float(1e15, -15) — not exp=0 / value 1e15.
         assert float_one(rt) == _ONE
         assert float_one(rt) == float_set(rt, -15, 1_000_000_000_000_000)
         assert xfl_to_float(float_one(rt)) == pytest.approx(1.0)
 
     def test_divide_by_one_is_identity(self, rt):
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2573-2574
         x = float_set(rt, 0, 42)
         assert float_divide(rt, x, float_one(rt)) == x
 
     def test_divide_by_1e15_is_not_identity(self, rt):
-        # Wrong _ONE encoding used exp=0 / value 1e15 and short-circuited here.
+        # Guards against wrong _ONE (exp=0) short-circuit on value 1e15.
         x = float_set(rt, 0, 42)
         big = float_set(rt, 0, 1_000_000_000_000_000)
         assert big != float_one(rt)
@@ -582,7 +591,7 @@ CUSTOM_CURRENCY_20 = bytes(range(20))
 
 
 class TestFloatStoXahaudVectors:
-    """float_sto tests matching xahaud SetHook_test.cpp vectors."""
+    """float_sto tests matching xahaud:src/test/app/SetHook_test.cpp vectors."""
 
     def test_iou_sfamount_3char_currency(self, rt):
         """IOU with 3-char currency + sfAmount → 49 bytes (1 header + 8 amt + 20 cur + 20 iss)."""
