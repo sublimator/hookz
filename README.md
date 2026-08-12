@@ -339,6 +339,11 @@ This compiles your test files (~10s) and runs them against real xahaud. See [exa
 
 You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_BUILDBOX=1` when the generated header must contain canonical-service artifacts rather than local builds; the integration makes that mode always regenerate the header so an older local artifact cannot satisfy the build. Your tests and hooks stay in your repo — xahaud is just the engine.
 
+Inline `[test.tshook]` / `[test.jshook]` blocks and `.ts` / `.js` file
+references are compiled by `jshookz compile-hook`. Install `jshookz` on PATH,
+or override the command with `JSHOOKZ_HOOK_COMPILER`. The retired
+`QJS_HOOK_COMPILER` name remains a compatibility fallback.
+
 On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch). The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
 
 ```cmake

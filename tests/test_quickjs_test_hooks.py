@@ -42,7 +42,7 @@ def test_quickjs_compiler_command_receives_source_extension(
         "output.write_bytes(source.suffix.encode() + b':qjsc')\n"
     )
     compiler.chmod(0o755)
-    monkeypatch.setenv("QJS_HOOK_COMPILER", str(compiler))
+    monkeypatch.setenv("JSHOOKZ_HOOK_COMPILER", str(compiler))
 
     assert (
         build_test_hooks._compile_hook_quickjs("let x: number = 1", "x.ts")

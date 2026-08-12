@@ -331,9 +331,12 @@ def _compile_hook_buildbox(
 
 def _compile_hook_quickjs(source: str, filename: str) -> bytes:
     """Delegate JS/TS bytecode production to the pinned QuickJS provider."""
-    command = shlex.split(os.environ.get("QJS_HOOK_COMPILER", "qjs-wasm compile-hook"))
+    configured = os.environ.get("JSHOOKZ_HOOK_COMPILER")
+    if configured is None:
+        configured = os.environ.get("QJS_HOOK_COMPILER", "jshookz compile-hook")
+    command = shlex.split(configured)
     if not command:
-        raise RuntimeError("QJS_HOOK_COMPILER resolved to an empty command")
+        raise RuntimeError("JSHOOKZ_HOOK_COMPILER resolved to an empty command")
 
     suffix = Path(filename).suffix.lower()
     with tempfile.TemporaryDirectory(prefix="hookz-qjs-") as temp:
