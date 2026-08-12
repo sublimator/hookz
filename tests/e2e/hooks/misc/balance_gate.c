@@ -3,8 +3,8 @@
  *
  * Exercises: util_keylet, slot_set, slot_subfield, slot_float, float_compare
  *
- * The minimum balance (in drops) is read from hook parameter "MIN_BAL".
- * If not set, defaults to 10,000,000 drops (10 XAH).
+ * The minimum balance (as XFL in XAH units) is read from hook parameter
+ * "MIN_BAL". If not set, it defaults to 10 XAH.
  */
 #include <stdint.h>
 #include "hookapi.h"
@@ -39,16 +39,13 @@ int64_t hook(uint32_t reserved)
     //@@end outgoing-pass
 
     //@@start min-balance
-    // Read minimum balance from parameter (default 10 XAH = 10M drops)
-    int64_t min_balance = float_set(-6, 10); // 10 * 10^-6 ... no wait
-    // Actually: 10 XAH = 10,000,000 drops. In XFL that's float_set(0, 10000000)
-    // But hooks work in drops for XAH. Let's use float_set(7, 1) = 10,000,000
-    min_balance = float_set(7, 1); // 1 * 10^7 = 10,000,000
+    // slot_float normalizes a native STAmount from drops to XAH units.
+    int64_t min_balance = float_set(0, 10);
 
     uint8_t min_buf[8];
     if (hook_param(SBUF(min_buf), "MIN_BAL", 7) == 8)
     {
-        // Parameter is an 8-byte XFL
+        // Parameter is an 8-byte XFL in the same XAH units.
         min_balance = *((int64_t*)min_buf);
     }
 

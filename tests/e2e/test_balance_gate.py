@@ -5,9 +5,9 @@ import struct
 import pytest
 
 from hookz import hookapi
-from hookz.ledger import account_root, account_root_keylet
+from hookz.ledger import account_root
 from hookz.runtime import HookRuntime
-from hookz.xfl import float_to_xfl, xfl_to_float
+from hookz.xfl import float_to_xfl
 
 
 ALICE = "rHb9CJAWyB4rj91VRWn96DkukG4bwdtyTh"
@@ -109,7 +109,7 @@ class TestBalanceGateCustomMinimum:
 
     def test_custom_min_100_xah(self, hook, rt):
         """Set MIN_BAL to 100 XAH (100M drops). Sender has 50 XAH → reject."""
-        min_xfl = float_to_xfl(100_000_000.0)  # 100M drops
+        min_xfl = float_to_xfl(100.0)
         rt.params[b"MIN_BAL"] = struct.pack("<q", min_xfl)
 
         kl, data = account_root(BOB, Balance="50000000")
@@ -120,7 +120,7 @@ class TestBalanceGateCustomMinimum:
 
     def test_custom_min_1_xah(self, hook, rt):
         """Set MIN_BAL to 1 XAH (1M drops). Sender has 5 XAH → pass."""
-        min_xfl = float_to_xfl(1_000_000.0)  # 1M drops
+        min_xfl = float_to_xfl(1.0)
         rt.params[b"MIN_BAL"] = struct.pack("<q", min_xfl)
 
         kl, data = account_root(BOB, Balance="5000000")
