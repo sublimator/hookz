@@ -6,7 +6,8 @@ real guard validation.
 
 ## Quick start (Docker)
 
-The easiest way to run these tests is with the pre-built Docker image:
+The easiest way to run these tests is with the pre-built Docker image,
+from `examples/tipbot`:
 
 ```bash
 # Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
@@ -29,8 +30,10 @@ installs hookz from the mounted checkout, compiles only your test files
 (~10s), and runs them. Mounting `entrypoint.sh` is required until the
 published image bakes the refresh helper.
 
-The image is built from [`docker/`](../../../docker/) on a build box and
-published to `ghcr.io/sublimator/hookz-xahaud`.
+The pinned 2026-07-30 image was copied unchanged from its old Google
+registry to `ghcr.io/sublimator/hookz-xahaud`; it is not a fresh xahaud
+build. New images are built from [`docker/`](../../../docker/) on a build
+box (see the header of `docker/Dockerfile`) and pushed there.
 
 ## CI
 
