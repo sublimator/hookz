@@ -546,7 +546,7 @@ class TestTheSkeletonStatesWhatFailsSilently:
         the directory its relative mounts assume."""
         doc = _doc(checkout)
 
-        assert "gcr.io/hookz-public/hookz-xahaud:<dated-tag>" in doc
+        assert "ghcr.io/sublimator/hookz-xahaud:<dated-tag>" in doc
         assert "no public `:latest`" in doc.lower()
         assert ("https://github.com/sublimator/hookz/blob/main/"
                 ".github/workflows/xahaud-integration.yml") in doc

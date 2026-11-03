@@ -1,3 +1,7 @@
+# Retired 2026-11-03 with the Google projects: gcr.io/xprv-server is deleted and
+# the image is now built from this directory on a build box and pushed to
+# ghcr.io/sublimator/hookz-xahaud (see the header of Dockerfile). Kept for
+# reference only.
 steps:
   # Pull conan-deps from xprv-server, or build from scratch if unavailable
   - name: gcr.io/cloud-builders/docker

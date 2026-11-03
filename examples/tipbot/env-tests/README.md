@@ -10,7 +10,7 @@ The easiest way to run these tests is with the pre-built Docker image:
 
 ```bash
 # Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
-IMAGE=gcr.io/hookz-public/hookz-xahaud:2026-07-30-hookz-cc80be0c
+IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c
 REPO_ROOT="$(cd ../.. && pwd)"
 docker run --rm \
   -v ./env-tests:/tests \
@@ -29,8 +29,8 @@ installs hookz from the mounted checkout, compiles only your test files
 (~10s), and runs them. Mounting `entrypoint.sh` is required until the
 published image bakes the refresh helper.
 
-The image is built on [Google Cloud Build](../../../docker/cloudbuild.yaml)
-and published to `gcr.io/hookz-public/hookz-xahaud`.
+The image is built from [`docker/`](../../../docker/) on a build box and
+published to `ghcr.io/sublimator/hookz-xahaud`.
 
 ## CI
 

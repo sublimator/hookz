@@ -667,7 +667,7 @@ def _harness_section(suite: str, name: str, stem: str) -> list[str]:
         "contains your `env-tests/` and `hooks/`:",
         "",
         "```bash",
-        "IMAGE=gcr.io/hookz-public/hookz-xahaud:<dated-tag>",
+        "IMAGE=ghcr.io/sublimator/hookz-xahaud:<dated-tag>",
         "docker run --rm --platform linux/amd64 \\",
         "  -v $PWD/env-tests:/tests \\",
         "  -v $PWD/hooks:/hooks/<domain> \\",

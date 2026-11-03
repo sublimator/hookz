@@ -7,9 +7,9 @@
 # Incremental rebuild (reuses ccache from previous image):
 #   docker build --build-arg PREV_IMAGE=hookz-xahaud:latest -t hookz-xahaud .
 #
-# Cloud build (pulls previous from registry for ccache, if it exists):
-#   docker build --build-arg BASE_IMAGE=gcr.io/xprv-server/hookz-conan-deps \
-#                --build-arg PREV_IMAGE=gcr.io/xprv-server/hookz-xahaud -t gcr.io/xprv-server/hookz-xahaud .
+# Publish (CI pulls the dated tag pinned in .github/workflows/xahaud-integration.yml):
+#   docker tag hookz-xahaud ghcr.io/sublimator/hookz-xahaud:<date>-hookz-<sha>
+#   docker push ghcr.io/sublimator/hookz-xahaud:<date>-hookz-<sha>
 #
 # Run:
 #   docker run --rm hookz-xahaud "ripple.app.SetHook"
