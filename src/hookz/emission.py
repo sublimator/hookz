@@ -139,11 +139,10 @@ KNOWN_GAPS = (
     # a constant, not xahaud's calculation. Rule 7 therefore only checks that a
     # fee is present in a live emit; the floor is reachable via the unit API.
     "the fee floor is not enforced in a live emit, only fee presence",
-    # TYPE_VALIDATORS covers SignerListSet, and preflight1's sfHookName rule
-    # applies to every type. Everything else — Payment, Remit, ClaimReward,
-    # URIToken, OfferCreate — gets the fourteen rules and no transactor
-    # preflight at all.
-    "ripple::preflight is ported for SignerListSet (and sfHookName) only",
+    # TYPE_VALIDATORS covers SignerListSet. Everything else — Payment, Remit,
+    # ClaimReward, URIToken, OfferCreate — gets the fourteen rules and no
+    # transactor preflight at all.
+    "ripple::preflight is ported for SignerListSet only",
     # prepare() is a copy-stub: it does not inject Sequence, FirstLedgerSequence,
     # LastLedgerSequence, SigningPubKey, Fee or EmitDetails. A hook that relies
     # on it emits a transaction missing all six.
@@ -258,52 +257,15 @@ TYPE_VALIDATORS = {
 # The fourteen rules
 # ---------------------------------------------------------------------------
 
-def _check_hook_name(value, amendments, check: EmissionCheck) -> None:
-    """preflight1's sfHookName rule, which every transaction type passes through
-    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:152). Each failure is
-    temMALFORMED, so emit() returns EMISSION_FAILURE."""
-    if "featureHooks" not in amendments or "featureNamedHooks" not in amendments:
-        # xahaud:src/xrpld/app/tx/detail/Transactor.cpp:155
-        check.refuse("preflight", "temMALFORMED: sfHookName needs featureNamedHooks, "
-                     "which this ledger does not have")
-        return
-    try:
-        name = bytes.fromhex(value) if isinstance(value, str) else bytes(value)
-    except (TypeError, ValueError):
-        check.refuse("preflight", f"temMALFORMED: sfHookName {value!r} is not a blob")
-        return
-    if not name:
-        if "fix20260929" in amendments:
-            # xahaud:src/xrpld/app/tx/detail/Transactor.cpp:160
-            check.refuse("preflight", "temMALFORMED: sfHookName is present but empty "
-                         "(fix20260929); omit the field instead")
-        return
-    if not 4 <= len(name) <= 16:
-        # SetHook::validateHookName, xahaud:src/xrpld/app/tx/detail/SetHook.cpp:654
-        check.refuse("preflight", f"temMALFORMED: sfHookName is {len(name)} bytes, "
-                     "not 4 to 16")
-        return
-    try:
-        name.decode("utf-8")
-    except UnicodeDecodeError:
-        # xahaud:src/xrpld/app/tx/detail/SetHook.cpp:660
-        check.refuse("preflight", "temMALFORMED: sfHookName is not valid UTF-8")
-
-
 def check_emission(txn: bytes, *, hook_account: bytes | None = None,
                    ledger_seq: int | None = None,
                    min_fee: int | None = None,
                    has_callback: bool | None = None,
-                   expanded_signer_list: bool = False,
-                   amendments: set[str] | frozenset[str] | None = None,
-                   ) -> EmissionCheck:
+                   expanded_signer_list: bool = False) -> EmissionCheck:
     """Would xahaud accept this emitted transaction?
 
     Returns every reason it would not, rather than the first — a hook that gets
     two things wrong should learn both at once.
-
-    `amendments` (the ledger's, as `HookRuntime.amendments` spells them) gates
-    the rules that depend on one; None skips those rules rather than guess.
     """
     from hookz.xrpl.txn_parser import parse_object
 
@@ -452,8 +414,6 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
             check.refuse("7-fee", f"fee {paid} is below the required {min_fee}")
 
     # the sliver of preflight we reproduce
-    if amendments is not None and "HookName" in fields:
-        _check_hook_name(fields["HookName"], amendments, check)
     validator = TYPE_VALIDATORS.get(fields.get("TransactionType"))
     if validator is not None:
         validator(fields, hook_account, check,
