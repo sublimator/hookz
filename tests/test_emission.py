@@ -808,3 +808,24 @@ class TestTheFieldTableMatchesThePin:
             "ArrayEndMarker", "ObjectEndMarker", "Generic", "Invalid",
             "hash", "index", "taker_gets_funded", "taker_pays_funded",
         }
+
+
+class TestPreflight1StopsEarlyForEmissions:
+    """preflight1 returns tesSUCCESS for an emitted transaction before it reads
+    sfHookName (or anything after the fee check): emit() requires sfEmitDetails
+    and preflights with tapPREFLIGHT_EMIT, which leaves at
+    xahaud:src/xrpld/app/tx/detail/Transactor.cpp:127-137. A port of the
+    HookName block (:152) was added and reverted during the 2026.10.13 re-pin
+    because it refused emissions the network accepts."""
+
+    @pytest.mark.parametrize("name", ["", "68656C6C6F", "41" * 40, "FFFEFDFC"])
+    def test_any_hook_name_on_an_emission_is_left_alone(self, name):
+        tx = _valid_tx()
+        tx["HookName"] = name
+        assert not [r for r in _check(tx).rejections if r.rule == "preflight"]
+
+    def test_the_cited_early_return_is_there(self):
+        assert "isEmittedTxn" in ref.cite("src/xrpld/app/tx/detail/Transactor.cpp", 127).snippet()
+        assert "tapPREFLIGHT_EMIT" in ref.cite("src/xrpld/app/tx/detail/Transactor.cpp", 131).snippet()
+        assert "return tesSUCCESS" in ref.cite("src/xrpld/app/tx/detail/Transactor.cpp", 137).snippet()
+        assert "tapPREFLIGHT_EMIT" in ref.cite("src/xrpld/app/hook/detail/HookAPI.cpp", 837).snippet()
