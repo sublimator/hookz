@@ -57,12 +57,42 @@ _EMIT_GENERATION_MAX = 10
 _EMIT_DETAIL_FIELDS = ("EmitGeneration", "EmitBurden", "EmitParentTxnID",
                        "EmitNonce", "EmitHookHash")
 
-# A hook may not emit a pseudo-transaction.
-# xahaud:src/libxrpl/protocol/STTx.cpp:686
-PSEUDO_TX_TYPES = frozenset({
-    "EnableAmendment", "SetFee", "UNLModify", "EmitFailure", "UNLReport",
-    "Cron",
+# A hook may not emit a pseudo-transaction (`if (isPseudoTx(*stpTrans))`,
+# xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:561). The set is isPseudoTx's,
+# by type code, as upstream compares it:
+#
+#     xahaud:src/libxrpl/protocol/STTx.cpp:686
+#         return tt == ttAMENDMENT || tt == ttFEE || tt == ttUNL_MODIFY ||
+#             tt == ttEMIT_FAILURE || tt == ttUNL_REPORT || tt == ttCRON ||
+#             tt == ttENTROPY;
+#
+# Codes rather than names: the parser hands back a name only when the vendored
+# definitions know the code, so a name set silently stops refusing whatever
+# the definitions lag behind — which is how ttENTROPY, added to the list at
+# the 2026.10.13 release, went unrefused here. Not ungated upstream, so not
+# gated here. ttMANIFEST_SET (91) is not on the list, and is not refused.
+PSEUDO_TX_CODES = frozenset({
+    hookapi.ttAMENDMENT, hookapi.ttFEE, hookapi.ttUNL_MODIFY,
+    hookapi.ttEMIT_FAILURE, hookapi.ttUNL_REPORT, hookapi.ttCRON,
+    hookapi.ttENTROPY,
 })
+
+
+def tx_type_code(value) -> int | None:
+    """The numeric type of a parsed `TransactionType`, whichever form it took.
+
+    `parse_object` resolves the code to a name when the definitions know it
+    and leaves the int otherwise; both mean the same type.
+    """
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        from xrpl.core.binarycodec.definitions import definitions
+        try:
+            return definitions.get_transaction_type_code(value)
+        except Exception:                                  # noqa: BLE001
+            return None
+    return None
 
 # Signer count bounds. 8 unless featureExpandedSignerList is active, then 32 —
 # xahaud:include/xrpl/protocol/STTx.h:56. hookz hardcoded 32, which accepts a
@@ -272,7 +302,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
             check.refuse(rule, detail)
 
     # pseudo-transactions may not be emitted at all
-    if fields.get("TransactionType") in PSEUDO_TX_TYPES:
+    if tx_type_code(fields.get("TransactionType")) in PSEUDO_TX_CODES:
         check.refuse("pseudo",
                      f"{fields['TransactionType']} is a pseudo-transaction")
 

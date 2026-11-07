@@ -435,6 +435,59 @@ class TestEachRuleFires:
             tx.pop(f, None)
         assert "pseudo" in _rules(_check(tx))
 
+    @pytest.mark.parametrize("tt", [
+        "EnableAmendment", "SetFee", "UNLModify", "EmitFailure", "UNLReport",
+        "Cron", "Entropy",
+    ])
+    def test_every_isPseudoTx_type_is_refused(self, tt):
+        """The whole of isPseudoTx at the pin
+        (xahaud:src/libxrpl/protocol/STTx.cpp:686), one type at a time."""
+        tx = _valid_tx()
+        tx["TransactionType"] = tt
+        assert "pseudo" in _rules(_check(tx))
+
+    def test_entropy_joined_the_list_at_the_release(self):
+        """ttENTROPY became a pseudo-transaction at 2026.10.13, ungated. The
+        cited line did not move, so a line check could not have noticed."""
+        c = ref.parse_citations("xahaud:src/libxrpl/protocol/STTx.cpp:688")[0]
+        assert "tt == ttENTROPY" in c.snippet()
+        tx = _valid_tx()
+        tx["TransactionType"] = "Entropy"
+        check = _check(tx)
+        assert "pseudo" in _rules(check)
+        assert "Entropy is a pseudo-transaction" in str(check)
+
+    def test_a_pseudo_type_the_definitions_cannot_name_is_still_refused(
+            self, monkeypatch):
+        """The parser leaves a code it cannot name as an int. Matching on
+        names let any pseudo type the definitions lagged behind through."""
+        from xrpl.core.binarycodec.definitions import definitions
+
+        from hookz import hookapi
+        from hookz.xrpl.txn_parser import parse_object
+
+        tx = _valid_tx()
+        tx["TransactionType"] = "Entropy"
+        blob = _encode(tx)
+        real = definitions.get_transaction_type_name
+
+        def blind(code):
+            if code == hookapi.ttENTROPY:
+                raise KeyError(code)
+            return real(code)
+
+        monkeypatch.setattr(definitions, "get_transaction_type_name", blind)
+        assert parse_object(blob).fields["TransactionType"] == hookapi.ttENTROPY
+        check = check_emission(blob, hook_account=HOOK_ACCOUNT,
+                               ledger_seq=LEDGER)
+        assert "pseudo" in _rules(check)
+
+    def test_set_manifest_is_not_a_pseudo_transaction(self):
+        """ttMANIFEST_SET (91) arrived with ttENTROPY and is not on the list."""
+        tx = _valid_tx()
+        tx["TransactionType"] = "SetManifest"
+        assert "pseudo" not in _rules(_check(tx))
+
     # -- NOPs do not disable any of the above -------------------------------
 
     def test_a_nop_does_not_switch_validation_off(self):
