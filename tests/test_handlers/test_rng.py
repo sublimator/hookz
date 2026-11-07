@@ -449,7 +449,10 @@ class TestThroughRun:
   (export "hook" (func $hook))
   (export "cbak" (func $cbak)))"""))
         chain.applied_txn_id = b"\x5A" * 32
-        result = chain.run_callback(cbak, tx_hash=b"\xE7" * 32,
+        from hookz.xrpl.txn_builder import serialize_fields
+        emission = serialize_fields({hookapi.sfTransactionType: (0).to_bytes(2, "big"),
+                                     hookapi.sfAccount: b"\x11" * 20})
+        result = chain.run_callback(cbak, emitted_tx=emission, tx_hash=b"\xE7" * 32,
                                     ctx=CALLBACK_NOT_APPLIED)
         assert result.return_code == 32
         assert result.random_draws[0].output == out(

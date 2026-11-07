@@ -544,7 +544,7 @@ class HookRuntime:
             rt.amendments.add("someNewFeature")
 
     Randomness (featureRNG — `dice`, `util_random`):
-        rt.amendments.add("featureRNG")       # DefaultNo, not on mainnet
+        rt.amendments.add("featureRNG")       # not yet enabled in the vendored manifest
         rt.seed_random(b"\\x11" * 32)          # this ledger's Random object
         result = rt.run(hook)
         result.random_data                    # state the first draw saw
@@ -721,8 +721,9 @@ class HookRuntime:
         `entropy_count`/`entropy_denominator` to model a round too few
         validators contributed to.
 
-        Draws also need the amendment — `featureRNG` is `DefaultNo` and not on
-        the mainnet manifest, so add it: `rt.amendments.add("featureRNG")`.
+        Draws also need the amendment. `featureRNG` had majority but was not
+        enabled when the vendored manifest was read (2026-11-07); until it is
+        re-read after activation, add it: `rt.amendments.add("featureRNG")`.
         Seeding does not, because the amendment set is the chain under test.
 
         Returns the new `rt.random`, whose `random_data` is the live state.
@@ -914,8 +915,10 @@ class HookRuntime:
                 of a previous run's `result.emitted_txns`. Its
                 `TransactionType` becomes `otxn_type`, its fields are what
                 `otxn_field` serves, and the hook can slot it — in both
-                modes. May be omitted when the callback under test only reads
-                hashes, in which case `tx_hash` is required.
+                modes. May be omitted for an applied delivery whose callback
+                only reads hashes, in which case `tx_hash` is required; a
+                failure delivery needs it (the ledger has the original or
+                skips the callback).
             ctx: what `cbak` receives. `CALLBACK_APPLIED` (0) means the
                 emission reached a ledger — **including as a `tec`**; see
                 `callback()` for why 0 does not mean success. Under
@@ -966,10 +969,12 @@ class HookRuntime:
         xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2124); `otxn_type` is
         the emission's (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1623);
         `otxn_id` is the pseudo's sfTransactionHash, which is the emission's
-        hash (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612). The field
-        overlay is the applied mode's, for the same reason: one object
-        describes the transaction. `otxn_param` is the exception: it reads
-        the pseudo, which has no HookParameters, so every name is
+        hash (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612). The
+        emission's fields are the whole set: caller entries in
+        `rt.otxn_fields` are set aside for the delivery, so a field the
+        emission lacks is DOESNT_EXIST, and `emitted_tx` is required.
+        `otxn_param` is the exception: it reads the pseudo, which has no
+        HookParameters, so every name is
         DOESNT_EXIST (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669).
 
         The ledger skips the callback outright when the original is not in
@@ -987,6 +992,17 @@ class HookRuntime:
                 "run_callback needs emitted_tx (to derive the hash from) or "
                 "an explicit tx_hash — without either there is no emission "
                 "to call back about")
+        failure = bool(ctx & 1)
+        if failure and emitted_tx is None and "fix20261005" in self.amendments:
+            # Under fix20261005 every otxn read in a failure callback answers
+            # from the original emission, and the ledger skips the callback
+            # when the original is missing
+            # (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1554), so a
+            # hash-only failure delivery is not one the ledger can make.
+            raise TypeError(
+                "a failure delivery (ctx & 1) needs emitted_tx: under "
+                "fix20261005 the callback reads the original emission, and "
+                "without it the ledger skips the callback")
         if tx_hash is None:
             tx_hash = emitted_txn_id(emitted_tx)
         elif len(tx_hash) != 32:
@@ -1020,9 +1036,15 @@ class HookRuntime:
                 # The emission is the authority for every field it carries:
                 # a caller-set value that disagrees with the blob would be a
                 # delivery the ledger cannot make, so the overlay wins.
-                # Caller entries for fields the emission does not carry
-                # still serve.
+                # Applied, caller entries for fields the emission does not
+                # carry still serve (the harness's overlay convention). Not
+                # applied, they do not: otxn_field checks presence on the
+                # emission alone (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591),
+                # so a field the emission lacks is DOESNT_EXIST and a
+                # trigger's leftover fields must not answer for it.
                 self.otxn_blob = emitted_tx
+                if failure:
+                    self.otxn_fields.clear()
                 self.otxn_fields.update(_emission_fields(emitted_tx))
                 # otxn_param reads the applied transaction's sfHookParameters
                 # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669) —

@@ -611,14 +611,34 @@ class TestNoMetadata:
 
 
 class TestArguments:
-    def test_hashes_alone_are_enough(self, wasm):
+    def test_hashes_alone_are_enough_when_applied(self, wasm):
         """otxn_id needs only the hash. sfTransactionHash is the pseudo's
-        field, not the emission's, so it is not served in either mode."""
+        field, not the emission's, so it is not served."""
         tx_hash = bytes(range(32))
         rt = HookRuntime()
-        rt.run_callback(wasm, tx_hash=tx_hash, ctx=CALLBACK_NOT_APPLIED)
+        rt.run_callback(wasm, tx_hash=tx_hash, ctx=CALLBACK_APPLIED)
         assert rt.state_db[K_ID] == tx_hash
         assert K_HASH not in rt.state_db
+
+    def test_a_failure_delivery_needs_the_emission(self, wasm):
+        """Under fix20261005 the callback reads the original emission, and
+        the ledger skips it when the original is missing
+        (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1554)."""
+        with pytest.raises(TypeError, match="needs emitted_tx"):
+            HookRuntime().run_callback(wasm, tx_hash=bytes(range(32)),
+                                       ctx=CALLBACK_NOT_APPLIED)
+
+    def test_a_failure_delivery_does_not_serve_the_triggers_fields(self, wasm):
+        """otxn_field checks presence on the emission alone
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591): a field the
+        trigger had and the emission lacks is DOESNT_EXIST, not the
+        trigger's value. Found by a blind review of the re-pin."""
+        rt = HookRuntime()
+        rt.otxn_fields[hookapi.sfSourceTag] = (7).to_bytes(4, "big")
+        rt.run_callback(wasm, emitted_tx=payment_blob(), ctx=CALLBACK_NOT_APPLIED)
+        assert K_TAG not in rt.state_db
+        assert rt.otxn_fields[hookapi.sfSourceTag] == (7).to_bytes(4, "big"), \
+            "the caller's entry is restored after the delivery"
 
     def test_neither_blob_nor_hash_is_an_error(self, wasm):
         with pytest.raises(TypeError, match="emitted_tx"):
