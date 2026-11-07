@@ -21,17 +21,19 @@ class Memory:
 
 def test_foreign_provider_can_bind_memory_and_dispatch_raw_accept():
     rt = HookRuntime()
-    memory = Memory(b"hello from another guest")
+    # Not at address 0: a null reason pointer means no reason at all
+    # (xahaud:include/xrpl/hook/Macro.h:239).
+    memory = Memory(b"_hello from another guest")
     store = object()
 
     with rt.bind_memory(memory, store):
         with pytest.raises(HookAccepted) as accepted:
-            rt.dispatch_host_call("accept", 0, 5, 17)
+            rt.dispatch_host_call("accept", 1, 5, 17)
 
     assert accepted.value.msg == b"hello"
     assert accepted.value.code == 17
     assert [(call.name, call.args) for call in rt.call_log] == [
-        ("accept", (0, 5, 17)),
+        ("accept", (1, 5, 17)),
     ]
     assert rt._memory is None
     assert rt._store is None

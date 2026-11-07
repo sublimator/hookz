@@ -5,6 +5,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 
+from hookz import hookapi
+
 # Functions with underscore-prefixed names that are real hook API imports
 __handlers__ = {"_g", "__on_source_line"}
 
@@ -55,16 +57,68 @@ def _g(rt: HookRuntime, id: int, maxiter: int) -> int:
     return 1
 
 
+def _is_utf16le(buf: bytes) -> bool:
+    """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:714 — a heuristic: an
+    even, non-zero length whose every even byte is non-zero and every odd
+    byte is zero."""
+    if len(buf) % 2 != 0 or len(buf) == 0:
+        return False
+    return all(buf[i] != 0 and buf[i + 1] == 0 for i in range(0, len(buf), 2))
+
+
+def _hook_exit(rt: HookRuntime, read_ptr: int, read_len: int, code: int,
+               exit_type: type[Exception]) -> int:
+    """The host's HOOK_EXIT macro, shared by accept() and rollback().
+
+    xahaud:include/xrpl/hook/Macro.h:235-276, in order:
+
+    - the reason is capped at 256 bytes, *before* the bounds test (:237);
+    - `read_ptr == 0` means no reason at all, whatever `read_len` says, and
+      skips the bounds test (:239);
+    - a reason outside memory: without fix20260929 the call *returns*
+      OUT_OF_BOUNDS and the hook keeps running (:247-248); with it the hook
+      ends there as a ROLLBACK with exit code OUT_OF_BOUNDS and no reason —
+      whichever of accept/rollback was called (:251-253);
+    - a reason that looks like UTF-16LE (AssemblyScript strings) keeps only
+      its even bytes (:257-265).
+
+    Raising is how a handler ends a hook here; returning is how it carries on.
+    """
+    from hookz.runtime import HookRejected
+
+    read_ptr &= 0xFFFFFFFF
+    read_len &= 0xFFFFFFFF
+    # xahaud:include/xrpl/hook/Macro.h:237
+    if read_len > 256:
+        read_len = 256
+    reason = b""
+    # xahaud:include/xrpl/hook/Macro.h:239
+    if read_ptr:
+        # xahaud:include/xrpl/hook/Macro.h:241
+        if _not_in_bounds(rt, read_ptr, read_len):
+            # xahaud:include/xrpl/hook/Macro.h:247
+            if "fix20260929" not in rt.amendments:
+                return hookapi.OUT_OF_BOUNDS
+            # xahaud:include/xrpl/hook/Macro.h:251
+            raise HookRejected(b"", hookapi.OUT_OF_BOUNDS)
+        reason = rt._read_memory(read_ptr, read_len)
+        # xahaud:include/xrpl/hook/Macro.h:257
+        if _is_utf16le(reason):
+            reason = reason[0::2]
+    # xahaud:include/xrpl/hook/Macro.h:271
+    raise exit_type(reason, code)
+
+
 def accept(rt: HookRuntime, msg_ptr: int, msg_len: int, code: int) -> int:
+    """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1770 — HOOK_EXIT as ACCEPT."""
     from hookz.runtime import HookAccepted
-    msg = rt._read_memory(msg_ptr, msg_len) if msg_len > 0 else b""
-    raise HookAccepted(msg, code)
+    return _hook_exit(rt, msg_ptr, msg_len, code, HookAccepted)
 
 
 def rollback(rt: HookRuntime, msg_ptr: int, msg_len: int, code: int) -> int:
+    """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1784 — HOOK_EXIT as ROLLBACK."""
     from hookz.runtime import HookRejected
-    msg = rt._read_memory(msg_ptr, msg_len) if msg_len > 0 else b""
-    raise HookRejected(msg, code)
+    return _hook_exit(rt, msg_ptr, msg_len, code, HookRejected)
 
 
 def _line(rt: HookRuntime) -> int | None:
