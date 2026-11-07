@@ -44,8 +44,14 @@ def pinned_terminal_width(monkeypatch):
     stdout is not a tty. Unpinned, every substring assertion in this file
     passes or fails on the window size of whoever runs it: at 120 the
     provenance line wraps mid-phrase, at 60 the sha256 splits in two.
+
+    LINES too: Rich honours a pinned size only when both dimensions are set.
+    Under TERM=dumb with FORCE_COLOR set (even to "0", which Rich counts as a
+    terminal) a console with only COLUMNS falls back to 80x25, and the
+    provenance line wraps again.
     """
     monkeypatch.setenv("COLUMNS", "200")
+    monkeypatch.setenv("LINES", "50")
 
 
 def result(*, hook=123, cbak=4, cbak_idx=2, **kw):
