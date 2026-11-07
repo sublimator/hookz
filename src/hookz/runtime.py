@@ -170,6 +170,68 @@ class StateWrite:
 
 
 @dataclass
+class RandomState:
+    """The ledger's Random object, as the featureRNG draw reads it.
+
+    The four fields `rng_next` consults
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1936). On chain the first
+    ttENTROPY of each ledger restarts the object for that ledger —
+    `sfLedgerSequence` set to it, the count zeroed, the denominator taken from
+    the UNLReport (xahaud:src/xrpld/app/tx/detail/Change.cpp:318) — and each
+    matching validator reveal is mixed in and counted
+    (xahaud:src/xrpld/app/tx/detail/Change.cpp:350). Here a test states the
+    result of that round directly, since the reveals are what no test knows.
+
+    Mutable on purpose: it is one ledger entry, and every successful draw
+    replaces `random_data` in place with `sha512Half('RNGI' | random_data)`,
+    whatever the run's outcome (see `hookz.handlers.rng`). Keep the bytes you
+    seeded with if a test needs them afterwards.
+
+    The defaults, one contribution and no UNLReport, are what a lone
+    standalone validator produces (xahaud:src/test/app/RNG_test.cpp:767) and
+    pass the 80% rule.
+    """
+    random_data: bytes          # sfRandomData — the RNG state, 32 bytes
+    ledger_seq: int             # sfLedgerSequence — the ledger it was seeded for
+    entropy_count: int = 1      # sfEntropyCount (UInt16)
+    entropy_denominator: int = 0  # sfEntropyDenominator (UInt16)
+
+    def __post_init__(self) -> None:
+        self._check()
+
+    def _check(self) -> None:
+        if len(self.random_data) != 32:
+            raise ValueError(
+                f"RandomState.random_data is a 32-byte Hash256, got "
+                f"{len(self.random_data)} bytes")
+        if not 0 <= self.ledger_seq <= 0xFFFFFFFF:
+            raise ValueError(
+                f"RandomState.ledger_seq is a UInt32, got {self.ledger_seq}")
+        for name in ("entropy_count", "entropy_denominator"):
+            value = getattr(self, name)
+            if not 0 <= value <= 0xFFFF:
+                raise ValueError(
+                    f"RandomState.{name} is a UInt16 on the ledger, got "
+                    f"{value}")
+
+
+@dataclass(frozen=True)
+class RandomDraw:
+    """One successful featureRNG draw, as evidence.
+
+    `state` is the RNG state the draw consumed — for a transaction's first
+    draw, exactly what its final metadata records as sfRandomData
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1973). `output` is the
+    32-byte block before `dice`/`util_random` shaped it. Refused calls draw
+    nothing and do not appear.
+    """
+    api: str                    # "dice" | "util_random"
+    state: bytes
+    output: bytes
+    export: str                 # "hook" | "cbak"
+
+
+@dataclass
 class HookResult:
     """Result of a hook execution."""
     accepted: bool = False
@@ -194,6 +256,20 @@ class HookResult:
     # (and in `rt.state_journal`) precisely so a test can prove ordering
     # without depending on what survives in the databases.
     state_writes: list = field(default_factory=list)
+    # This run's featureRNG draws, in order (RandomDraw) — like state_writes,
+    # whatever the outcome: a rolled-back hook's draws still advanced the
+    # ledger's state.
+    random_draws: list = field(default_factory=list)
+
+    @property
+    def random_data(self) -> bytes | None:
+        """The RNG state this run's first draw saw, or None if it drew nothing.
+
+        What a transaction's final metadata records as sfRandomData, when this
+        run is the first of the transaction's executions to draw — only the
+        first draw is recorded (xahaud:src/xrpld/ledger/ApplyViewImpl.h:136).
+        """
+        return self.random_draws[0].state if self.random_draws else None
 
     @property
     def return_msg_str(self) -> str:
@@ -466,6 +542,13 @@ class HookRuntime:
         enabled by default. Toggle with:
             rt.amendments.discard("fixHookAPI20251128")
             rt.amendments.add("someNewFeature")
+
+    Randomness (featureRNG — `dice`, `util_random`):
+        rt.amendments.add("featureRNG")       # DefaultNo, not on mainnet
+        rt.seed_random(b"\\x11" * 32)          # this ledger's Random object
+        result = rt.run(hook)
+        result.random_data                    # state the first draw saw
+        rt.random.random_data                 # the advanced state
     """
 
     def __init__(self) -> None:
@@ -514,6 +597,18 @@ class HookRuntime:
         self._callback_meta: bytes | None = None
         self.ledger_seq_val: int = 100
         self.ledger_last_time_val: int = 0  # seconds since Ripple epoch
+        # featureRNG. `random` is the ledger's Random object; None — the
+        # default — is a ledger no ttENTROPY round seeded, where every draw
+        # answers TOO_LITTLE_ENTROPY. Set it with `seed_random`. Durable, and
+        # advanced by every successful draw whatever the run's outcome.
+        self.random: RandomState | None = None
+        # The other per-execution inputs a draw hashes (hookz.handlers.rng).
+        # `hook_hash` None means sha512Half of the module bytes `run` was
+        # handed; `hook_chain_position` is the hook's index in the account's
+        # Hooks array; `applied_txn_id` None means what `otxn_id` serves.
+        self.hook_hash: bytes | None = None
+        self.hook_chain_position: int = 0
+        self.applied_txn_id: bytes | None = None
         self.call_log: list[HostCall] = []
         # Accepted emissions, accumulated across every run on this runtime —
         # the durable history a multi-delivery test reads. During a run the
@@ -571,6 +666,16 @@ class HookRuntime:
         self._etxn_reserved: bool = False
         self._etxn_count: int = 0
         self._emit_nonce_counter: int = 0
+        # featureRNG per-execution state: the draw count
+        # (xahaud:src/xrpld/app/hook/applyHook.h:214), this run's draws, the
+        # export's argument (wasmParam), and the module bytes the hook hash
+        # derives from — hashed lazily, so a hook that never draws pays
+        # nothing.
+        self._rng_draws: int = 0
+        self._random_draws: list[RandomDraw] = []
+        self._current_arg: int = 0
+        self._run_wasm: bytes | None = None
+        self._run_hook_hash: bytes | None = None
         self._foreign_state_db: dict[tuple[bytes, bytes, bytes], bytes] = {}
         self._param_overrides: dict[bytes, dict[bytes, bytes]] = {}
 
@@ -601,6 +706,34 @@ class HookRuntime:
         if isinstance(key, int):
             key = key.to_bytes(1, "little")
         self.tx_params[key] = value
+
+    def seed_random(self, random_data: bytes, *,
+                    ledger_seq: int | None = None,
+                    entropy_count: int = 1,
+                    entropy_denominator: int = 0) -> RandomState:
+        """Give the ledger a Random object, as a ttENTROPY round would.
+
+        `ledger_seq` defaults to the current `ledger_seq_val`, so the seed is
+        this ledger's. That is pinned at seeding, not tracked: bump
+        `ledger_seq_val` afterwards and draws answer TOO_LITTLE_ENTROPY, as
+        the chain does on a ledger whose entropy round has not run
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1959). Pass
+        `entropy_count`/`entropy_denominator` to model a round too few
+        validators contributed to.
+
+        Draws also need the amendment — `featureRNG` is `DefaultNo` and not on
+        the mainnet manifest, so add it: `rt.amendments.add("featureRNG")`.
+        Seeding does not, because the amendment set is the chain under test.
+
+        Returns the new `rt.random`, whose `random_data` is the live state.
+        """
+        self.random = RandomState(
+            random_data=bytes(random_data),
+            ledger_seq=self.ledger_seq_val if ledger_seq is None else ledger_seq,
+            entropy_count=entropy_count,
+            entropy_denominator=entropy_denominator,
+        )
+        return self.random
 
     def _read_memory(self, ptr: int, length: int) -> bytes:
         """Read bytes from WASM linear memory."""
@@ -943,7 +1076,10 @@ class HookRuntime:
         count (once per hook execution on chain), the nonce counter
         (`emit_nonce_counter` lives on the per-execution HookContext,
         xahaud:src/xrpld/app/hook/applyHook.h:211), and the
-        `emission_rejections` / `emission_undecided` diagnostics.
+        `emission_rejections` / `emission_undecided` diagnostics. Likewise
+        the featureRNG draw count (`rng_draws`, on the same HookContext,
+        xahaud:src/xrpld/app/hook/applyHook.h:214) and this run's
+        `result.random_draws`.
 
         *Durable* (carried across runs on one runtime, on purpose):
         `state_db`, `_foreign_state_db`, `ledger`, `params`/`tx_params`,
@@ -954,13 +1090,21 @@ class HookRuntime:
         slice). Multi-delivery tests depend on exactly this: a second
         callback on the same runtime must see the state and accepted
         emissions the first one left, and a later rejecting run must not be
-        able to reclassify or clear them.
+        able to reclassify or clear them. `random`, the ledger's RNG state,
+        is durable the same way and is never reverted: a rolled-back hook's
+        draws stay drawn, as the chain keeps them through a tec
+        (xahaud:src/xrpld/app/tx/detail/ApplyContext.cpp:74).
 
         The transaction-context fields (`otxn_fields`, `otxn_blob`,
         `otxn_type`, `otxn_id_val`, `_callback_meta`) are durable
         configuration too — `run` never touches them. `run_callback` sets
         them for a delivery and restores them on the way out, and swaps
         `tx_params` the same way when the emission carries HookParameters.
+        So are the execution's identity inputs to a draw — `hook_hash`,
+        `hook_chain_position`, `applied_txn_id` — which a test reusing one
+        runtime for a different hook must reset itself. The draw's other
+        inputs are derived from this call: `export` and `arg` say whether
+        the execution is a callback, strong, and what its wasmParam is.
         """
         if isinstance(hook, Hook):
             wasm_bytes = hook.wasm
@@ -985,10 +1129,18 @@ class HookRuntime:
         self._etxn_reserved = False
         self._etxn_count = 0
         self._emit_nonce_counter = 0
+        self._rng_draws = 0
+        self._random_draws = []
+        self._current_arg = arg
+        # The bytes the caller handed in — what SetHook would have hashed —
+        # captured before coverage instrumentation rewrites them.
+        self._run_wasm = wasm_bytes
+        self._run_hook_hash = None
         # share the lists so a caller can read checkpoints mid-run via an
         # observer, and off the result afterwards
         result.checkpoints = self.checkpoints
         result.dev_events = self.dev_events
+        result.random_draws = self._random_draws
         # Preserve markers if already loaded
         markers = self.coverage._markers
         self.coverage = CoverageTracker()
@@ -1060,6 +1212,7 @@ class HookRuntime:
         finally:
             self._store = None
             self._memory = None
+            self._run_wasm = None
 
         # Emitted transactions are held until the hook finishes and applied
         # only if it succeeded: `finalizeHookResult(hookResult, ctx_,

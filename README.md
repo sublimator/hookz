@@ -18,7 +18,7 @@ There are several ways to test Xahau hooks today:
 Multi-ledger scenarios (governance votes, settlement, cleanup) compound those per-ledger waits.
 
 - hookz runs hooks in Python via wasmtime with mocked host functions
-- All 68 hook API functions implemented
+- All 70 hook API functions implemented
 - Full power of Python and pytest for setup, assertions, parametrization
 - `hookz show` lets you (or AI agents) look up the C++ source for any host function
 - `/impl-handler` skill teaches agents to port handlers and write tests
@@ -131,7 +131,7 @@ hookz wce hook.c --loops             Add the partial guard-line loop mapping
 hookz guard-check hook.wasm          Validate guard calls and show WCE
 hookz clean hook.wasm                Clean WASM for deployment (strip + rewrite guards)
 hookz show float_multiply            Show C++ source + xahaud test vectors
-hookz show --list                    All 68 functions: implemented vs stub
+hookz show --list                    All 70 functions: implemented vs stub
 hookz coverage                       Tests + uncovered line report
 hookz find-tests tip.c:225-400       Which tests cover these lines?
 hookz surface hook.c                 Every host call, with the constants resolved
@@ -275,6 +275,37 @@ inclusive-high semantics as Xahau's `KEYLET_QUALITY` and `ledger_keylet` APIs;
 `slot_subfield`/`slot_count`/`slot_subarray` parse real serialized data and
 preserve the value-level VL prefix returned by Xahau for blob and Vector256
 slots.
+
+## Randomness (featureRNG)
+
+`dice` and `util_random` draw from the ledger's RNG state, which on chain comes
+from validator reveals. hookz emulates the draw deterministically from a state
+the test supplies:
+
+```python
+rt.amendments.add("featureRNG")     # DefaultNo — not on the mainnet manifest
+rt.seed_random(b"\x11" * 32)        # this ledger's Random object
+result = rt.run(hook)
+
+result.random_data                  # the state the first draw saw (sfRandomData)
+result.random_draws                 # every draw: api, state, output block
+rt.random.random_data               # the advanced state
+```
+
+With no `seed_random` (`rt.random is None`) every draw answers
+`TOO_LITTLE_ENTROPY`, as on a ledger no entropy round has seeded. The seed is
+pinned to the current `ledger_seq_val`; bump the sequence and draws refuse
+again. `seed_random(..., entropy_count=, entropy_denominator=)` models a round
+too few validators joined (fewer than 80% refuses). Each draw steps the state
+to `sha512Half("RNGI" | state)` whatever the run's outcome — a rolled-back
+hook's draws stay drawn — and at most 256 draws succeed per run.
+
+The block hashes the state with the execution: the transaction ID (`otxn_id`,
+or `rt.applied_txn_id`), `rt.hook_account`, the hook hash (sha512Half of the
+module bytes, or `rt.hook_hash`), `rt.hook_chain_position`, and whether the run
+is strong, a callback, and its argument — the last three from
+`run(..., export=, arg=)`. The exact byte layout, with a citation per rule, is
+in [`handlers/rng.py`](src/hookz/handlers/rng.py).
 
 ## Traces
 
@@ -433,7 +464,7 @@ For AI agents: `/impl-handler float_multiply` runs the full workflow.
 ```
 src/hookz/
   runtime.py              WASM executor + ledger model
-  handlers/               68 auto-discovered host functions
+  handlers/               70 auto-discovered host functions
   compiler.py             C → WASM via wasi-sdk clang (two-stage for DWARF on -O2)
   config.py               hookz.toml loading + HOOKZ_* env overrides
   wasm/                   WASM binary manipulation:

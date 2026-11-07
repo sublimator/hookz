@@ -49,6 +49,12 @@ CALLBACK_APPLIED = 0
 #: rather than model it.
 CALLBACK_NOT_APPLIED = 1
 
+#: What `otxn_id` serves on an ordinary run with `rt.otxn_id_val` unset — a
+#: stable placeholder, not a real hash. Shared with the featureRNG draw, which
+#: hashes the applied transaction's ID, so the hook's `otxn_id` and the ID its
+#: draws mixed in agree.
+_OTXN_ID_SENTINEL = b"\xAB" * 32
+
 
 def _write_or_return_int64(rt: HookRuntime, write_ptr: int, write_len: int,
                            data: bytes, is_account: bool = False) -> int:
@@ -268,7 +274,7 @@ def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
     """
     val = rt.otxn_id_val
     if val is None:
-        rt._write_memory(write_ptr, b"\xAB" * min(write_len, 32))
+        rt._write_memory(write_ptr, _OTXN_ID_SENTINEL[:max(write_len, 0)])
         return 32
     if len(val) != 32:
         # A short or long value here would make otxn_id and
