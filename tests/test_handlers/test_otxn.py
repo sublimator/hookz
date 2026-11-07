@@ -98,12 +98,19 @@ class TestOtxnParam:
         result = otxn_param(rt, 0, 4, 200, 1)
         assert result == hookapi.TOO_SMALL
 
-    def test_empty_value(self, rt):
+    def test_an_empty_value_does_not_exist(self, rt):
+        """xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1684 — an empty
+        sfHookParameterValue is DOESNT_EXIST, not a zero-length read."""
+        from hookz.wasm import xahaud_ref as ref
+
+        line = ref.parse_citations(
+            "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1684")[0].snippet()
+        assert "val.empty()" in line
         key = b"flag"
         rt.tx_params[key] = b""
         rt._write_memory(200, key)
         result = otxn_param(rt, 0, 128, 200, len(key))
-        assert result == 0
+        assert result == hookapi.DOESNT_EXIST
 
     def test_binary_key(self, rt):
         key = b"\x00\x01\x02"

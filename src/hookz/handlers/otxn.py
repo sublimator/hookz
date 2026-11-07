@@ -127,6 +127,18 @@ def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
 
     Separate namespace from the hook's install parameters (`rt.params`), as on
     chain: the same name may exist in both and they do not collide.
+
+    An empty value is DOESNT_EXIST, as is a parameter with no value at all:
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1680
+            if (!param.isFieldPresent(sfHookParameterValue))
+                return Unexpected(DOESNT_EXIST);
+            auto const& val = param.getFieldVL(sfHookParameterValue);
+            if (val.empty())
+                return Unexpected(DOESNT_EXIST);
+
+    so `rt.tx_params[name] = b""` reads to the hook exactly like an absent
+    name — the same answer `hook_param` gives an emptied override.
     """
     key = rt._read_memory(kread_ptr, kread_len)
     if kread_len < 1:
@@ -134,7 +146,7 @@ def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
     if kread_len > 32:
         return hookapi.TOO_BIG
     val = rt.tx_params.get(key)
-    if val is None:
+    if not val:
         return hookapi.DOESNT_EXIST
     if len(val) > write_len:
         return hookapi.TOO_SMALL
