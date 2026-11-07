@@ -585,10 +585,7 @@ class TestStoEmplaceXahaudVectors:
         rt._write_memory(100, ins)
         # Claim field_id is sfAmount but provide Sequence bytes
         result = sto_emplace(rt, 200, 256, 0, len(sto), 100, len(ins), SF_AMOUNT)
-        # Our impl doesn't validate this mismatch yet — xahaud returns PARSE_ERROR
-        # after fixHookAPI20251128. Track if we match:
-        # For now, just verify it doesn't crash and returns something.
-        assert isinstance(result, int)
+        assert result == hookapi.PARSE_ERROR
 
 
 class TestStoEmplaceComposed:
@@ -1512,3 +1509,404 @@ class TestStoValidateEdgeCases:
         off, length = _unpack_result(result)
         assert length == 4
         assert struct.unpack(">I", rt._read_memory(off, length))[0] == 25
+
+
+# ---------------------------------------------------------------------------
+# The host's own measurer, and fix20260929
+# ---------------------------------------------------------------------------
+#
+# Vectors from xahaud:src/test/app/HookAPI_test.cpp (at the release, not
+# vendored — line numbers there) and the vendored
+# xahaud:src/test/app/SetHook_test.cpp. Upstream runs both with every supported
+# amendment, so featureHookAPISerializedType240 is on wherever a vector needs
+# it; it is not on mainnet, which is hookz's default.
+
+def _rules(rt, *, fix20260929=True, fix20251128=True, type240=False):
+    for name, on in (("fix20260929", fix20260929),
+                     ("fixHookAPI20251128", fix20251128),
+                     ("featureHookAPISerializedType240", type240)):
+        (rt.amendments.add if on else rt.amendments.discard)(name)
+    return rt
+
+
+def _put(rt, hex_or_bytes, at=0) -> int:
+    data = bytes.fromhex(hex_or_bytes) if isinstance(hex_or_bytes, str) else hex_or_bytes
+    rt._write_memory(at, data)
+    return len(data)
+
+
+REGIMES = [True, False]
+REGIME_IDS = ["fix20260929", "pre-fix20260929"]
+
+
+class TestMainnetDefaults:
+    def test_the_fixes_are_on_and_type240_is_not(self, rt):
+        assert {"fix20260929", "fixHookAPI20251128"} <= rt.amendments
+        assert "featureHookAPISerializedType240" not in rt.amendments
+
+
+class TestStoSubfieldHostVectors:
+    """HookAPI_test.cpp:4632-4708 (test_sto_subfield)."""
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_too_small(self, rt, fix):
+        _rules(rt, fix20260929=fix)
+        assert sto_subfield(rt, 0, 0, 0) == hookapi.TOO_SMALL
+        assert sto_subfield(rt, 0, 1, 0) == hookapi.TOO_SMALL
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_garbage_is_a_parse_error(self, rt, fix):
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "FFFFFFFF")
+        assert sto_subfield(rt, 0, n, 0) == hookapi.PARSE_ERROR
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_truncated_later_field(self, rt, fix):
+        """HookAPI_test.cpp:4662-4679 — Sequence is whole, the Account after it
+        is one byte short. The fix validates the whole buffer first."""
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "2400000001" "8114" + "00" * 19)
+        got = sto_subfield(rt, 0, n, hookapi.sfSequence)
+        assert got == (hookapi.PARSE_ERROR if fix else (1 << 32) + 4)
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_doesnt_exist(self, rt, fix):
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "EA7D02BEEFE1")
+        assert sto_subfield(rt, 0, n, hookapi.sfMemoData) == hookapi.DOESNT_EXIST
+        n = _put(rt, "E05B614000000000000064E1")
+        assert sto_subfield(rt, 0, n, hookapi.sfAmount) == hookapi.DOESNT_EXIST
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_an_object_is_returned_as_its_payload(self, rt, fix):
+        """The closing E1 is not payload: (1, 4) and (2, 9), not (1, 5) and
+        (2, 10) as the old BinaryParser walk measured."""
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "EA7D02BEEFE1")
+        assert sto_subfield(rt, 0, n, hookapi.sfMemo) == (1 << 32) + 4
+        n = _put(rt, "E05B614000000000000064E1")
+        assert sto_subfield(rt, 0, n, hookapi.sfAmountEntry) == (2 << 32) + 9
+
+
+class TestStoSubarrayHostVectors:
+    """HookAPI_test.cpp:4541-4629 (test_sto_subarray)."""
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    @pytest.mark.parametrize("hex_", ["F9F1", "F05CF1"], ids=["Memos", "Amounts"])
+    def test_an_empty_wrapped_array_is_a_parse_error(self, rt, fix, hex_):
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, hex_)
+        assert sto_subarray(rt, 0, n, 0) == hookapi.PARSE_ERROR
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_wrong_end_marker(self, rt, fix):
+        """HookAPI_test.cpp:4575-4589 — `…E100` where `…E1F1` belongs."""
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "F9EA7D02BEEFE100")
+        got = sto_subarray(rt, 0, n, 0)
+        assert got == (hookapi.PARSE_ERROR if fix else (1 << 32) + 6)
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_truncated_later_element(self, rt, fix):
+        """HookAPI_test.cpp:4591-4605 — element 0 is whole, element 1 lost
+        its E1."""
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "F9EA7D02BEEFE1EA7D02BEEFF1")
+        got = sto_subarray(rt, 0, n, 0)
+        assert got == (hookapi.PARSE_ERROR if fix else (1 << 32) + 6)
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_doesnt_exist_and_success(self, rt, fix):
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "F9EA7D02BEEFE1F1")
+        assert sto_subarray(rt, 0, n, 2) == hookapi.DOESNT_EXIST
+        assert sto_subarray(rt, 0, n, 0) == (1 << 32) + 6
+        n = _put(rt, "F05CE05B614000000000000064E1F1")
+        assert sto_subarray(rt, 0, n, 2) == hookapi.DOESNT_EXIST
+        assert sto_subarray(rt, 0, n, 0) == (2 << 32) + 12
+
+    @pytest.mark.parametrize("fix20251128,fix,expected", [
+        # unwrapped correctly: one element at 2, length 12
+        (True, True, hookapi.DOESNT_EXIST + (2 << 32) + 12),
+        (True, False, hookapi.DOESNT_EXIST + (2 << 32) + 12),
+        # legacy one-byte unwrap leaves 5C as a UINT256 header; the fixed
+        # measurer refuses its 32 bytes, so both lookups fail
+        (False, True, hookapi.PARSE_ERROR + hookapi.PARSE_ERROR),
+        # without either, element 0 is "1, 33" and element 1 overruns
+        (False, False, hookapi.PARSE_ERROR + (1 << 32) + 33),
+    ], ids=["both", "20251128-only", "20260929-only", "neither"])
+    def test_a_two_byte_array_header_across_both_fixes(self, rt, fix20251128, fix, expected):
+        """xahaud:src/test/app/SetHook_test.cpp:13391-13497 — the hook
+        accepts with `sto_subarray(sto, 1) + sto_subarray(sto, 0)`."""
+        _rules(rt, fix20260929=fix, fix20251128=fix20251128)
+        n = _put(rt, "F05CE05B614000000000000064E1F1")
+        assert sto_subarray(rt, 0, n, 1) + sto_subarray(rt, 0, n, 0) == expected
+
+
+class TestStoValidateHostVectors:
+    """HookAPI_test.cpp:4743-4762 — whole is valid; either end trimmed is not."""
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    @pytest.mark.parametrize("hex_", ["EA7D02BEEFE1", "E05B614000000000000064E1"],
+                             ids=["Memo", "AmountEntry"])
+    def test_whole_and_trimmed(self, rt, fix, hex_):
+        _rules(rt, fix20260929=fix)
+        data = bytes.fromhex(hex_)
+        assert sto_validate(rt, 0, _put(rt, data)) == 1
+        assert sto_validate(rt, 0, _put(rt, data[:-1])) == 0
+        assert sto_validate(rt, 0, _put(rt, data[1:])) == 0
+
+
+# xahaud:src/test/app/SetHook_test.cpp:13745-13848 — sto_validate on one field
+# of each serialized type, with and without featureHookAPISerializedType240.
+# "type240" vectors validate only with it.
+SET_HOOK_STI = [
+    ("STI_UINT32", "2200000001", "always"),
+    ("STI_UINT64", "301100000000000003E8", "always"),
+    ("STI_UINT128", "4100000000000000000000000000000000", "always"),
+    ("STI_UINT256", "50" + "6" + "0" * 63 + "00", "always"),
+    ("STI_AMOUNT", "614000000000000064", "always"),
+    ("STI_AMOUNT-IOU",
+     "61D5038D7EA4C680000000000000000000000000005553440000000000"
+     "AE123A8556F3CF91154711376AFB0F894F832B3D", "always"),
+    ("STI_VL", "7504DEADBEEF", "always"),
+    ("STI_ACCOUNT", "8114AE123A8556F3CF91154711376AFB0F894F832B3D", "always"),
+    ("STI_OBJECT", "E05C22000000017504DEADBEEFE1", "always"),
+    ("STI_ARRAY",
+     "F05CE05B614000000000000064E1E05B61D5038D7EA4C6800000000000"
+     "00000000000000005553440000000000AE123A8556F3CF91154711376A"
+     "FB0F894F832B3DE1F1", "always"),
+    ("STI_UINT8", "00101003", "always"),
+    ("STI_UINT160", "01110000000000000000000000000000000000000000", "always"),
+    ("STI_PATHSET",
+     "0112300000000000000000000000005553440000000000AE123A8556F3"
+     "CF91154711376AFB0F894F832B3D00", "type240"),
+    ("STI_PATHSET-multi",
+     "0112310A20B3C85F482532A9578DBB3950B85CA06594D1000000000000"
+     "00000000000042544300000000000A20B3C85F482532A9578DBB3950B8"
+     "5CA06594D13000000000000000000000000055534400000000000A20B3"
+     "C85F482532A9578DBB3950B85CA06594D1FF3157180C769B66D942EE69"
+     "E6DCC940CA48D82337AD00000000000000000000000042544300000000"
+     "0057180C769B66D942EE69E6DCC940CA48D82337AD1000000000000000"
+     "0000000000000000000000000030000000000000000000000000555344"
+     "00000000000A20B3C85F482532A9578DBB3950B85CA06594D100", "type240"),
+    ("STI_VECTOR256",
+     "0013634000000000000000000000000000000000000000000000000000"
+     "0000000000000000000000000000000000000000000000000000000000"
+     "00000000000000000000", "always"),
+    ("STI_ISSUE",
+     "03180000000000000000000000005553440000000000AE123A8556F3CF"
+     "91154711376AFB0F894F832B3D", "type240"),
+    ("STI_ISSUE-native", "03180000000000000000000000000000000000000000", "type240"),
+    ("STI_XCHAIN_BRIDGE-native-native",
+     "011914AE123A8556F3CF91154711376AFB0F894F832B3D000000000000"
+     "000000000000000000000000000014AE123A8556F3CF91154711376AFB"
+     "0F894F832B3D0000000000000000000000000000000000000000", "type240"),
+    ("STI_XCHAIN_BRIDGE-iou-native",
+     "011914AE123A8556F3CF91154711376AFB0F894F832B3D000000000000"
+     "0000000000005553440000000000AE123A8556F3CF91154711376AFB0F"
+     "894F832B3D14AE123A8556F3CF91154711376AFB0F894F832B3D000000"
+     "0000000000000000000000000000000000", "type240"),
+    ("STI_XCHAIN_BRIDGE-iou-iou",
+     "011914AE123A8556F3CF91154711376AFB0F894F832B3D000000000000"
+     "0000000000005553440000000000AE123A8556F3CF91154711376AFB0F"
+     "894F832B3D14AE123A8556F3CF91154711376AFB0F894F832B3D000000"
+     "0000000000000000005553440000000000AE123A8556F3CF9115471137"
+     "6AFB0F894F832B3D", "type240"),
+    ("STI_CURRENCY", "011A0000000000000000000000005553440000000000", "type240"),
+]
+
+
+class TestStoValidateSetHookSTIs:
+    @pytest.mark.parametrize("type240", [True, False], ids=["type240", "no-type240"])
+    @pytest.mark.parametrize("label,hex_,needs", SET_HOOK_STI,
+                             ids=[v[0] for v in SET_HOOK_STI])
+    def test_sti(self, rt, type240, label, hex_, needs):
+        _rules(rt, type240=type240)
+        expected = 1 if needs == "always" or type240 else 0
+        assert sto_validate(rt, 0, _put(rt, hex_)) == expected
+
+
+# xahaud:src/test/app/HookAPI_test.cpp:4402-4459 — one field of each type to
+# inject into {Account: <zero>}; the last is only measured right by the fix
+# (HookAPI_test.cpp:4463-4477).
+_EMPLACE_SOURCE = "8114" + "00" * 20
+EMPLACE_FIELDS = [
+    ("sfVersion", "10100001"),
+    ("sfSequence", "2400000001"),
+    ("sfExchangeRate", "360000000000000001"),
+    ("sfEmailHash", "4100000000000000000000000000000000"),
+    ("sfObjectID", "5E" + "00" * 32),
+    ("sfAmount", "61" + "99" * 48),
+    ("sfAmount", "614999999999999999"),
+    ("sfAmountEntry", "E05B614000000000000064E1"),
+    ("sfMemos", "F9EA7D04DEADBEEFE1F1"),
+    ("sfTickSize", "00101001"),
+    ("sfTakerPaysCurrency", "01110000000000000000000000005553440000000000"),
+    ("sfPaths", "0112300000000000000000000000005553440000000000054F6F784A58F9EFB0A"
+                "9EB90B83464F9D166461900"),
+    ("sfAmendments", "03132042426C4D4F1009EE67080A9B7965B44656D7714D104A72F9B4369F97ABF"
+                     "044EE"),
+    ("sfClaimCurrency", "05180000000000000000000000005553440000000000054F6F784A58F9EFB0A9E"
+                        "B90B83464F9D1664619"),
+    ("sfXChainBridge", "011914AE123A8556F3CF91154711376AFB0F894F832B3D000000000000"
+                       "000000000000000000000000000014AE123A8556F3CF91154711376AFB"
+                       "0F894F832B3D0000000000000000000000000000000000000000"),
+    ("sfBaseAsset", "011A0000000000000000000000005553440000000000"),
+]
+EMPLACE_FIELDS_FIX_ONLY = [
+    ("sfXChainBridge", "0119000000000000000000000000005553440000000000AE123A85"
+                       "56F3CF91154711376AFB0F894F832B3D14AE123A8556F3CF911547"
+                       "11376AFB0F894F832B3D00000000000000000000000000000000000"
+                       "00000"),
+]
+
+
+def _emplace(rt, source: bytes, field: bytes | None, field_id: int):
+    """sto_emplace into a fresh output buffer; (result, bytes or None)."""
+    s = _put(rt, source, 0x1000)
+    if field is None:
+        r = sto_emplace(rt, 0x4000, 0x2000, 0x1000, s, 0, 0, field_id)
+    else:
+        f = _put(rt, field, 0x2000)
+        r = sto_emplace(rt, 0x4000, 0x2000, 0x1000, s, 0x2000, f, field_id)
+    return r, (rt._read_memory(0x4000, r) if r >= 0 else None)
+
+
+def _emplace_cases(fix):
+    cases = EMPLACE_FIELDS + (EMPLACE_FIELDS_FIX_ONLY if fix else [])
+    return [(getattr(hookapi, name), bytes.fromhex(h)) for name, h in cases]
+
+
+class TestStoEmplaceHostVectors:
+    """HookAPI_test.cpp:4479-4537 (test_sto_emplace)."""
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_insert_then_erase_round_trips(self, rt, fix):
+        _rules(rt, fix20260929=fix, type240=True)
+        source = bytes.fromhex(_EMPLACE_SOURCE)
+        for field_id, field in _emplace_cases(fix):
+            r, out = _emplace(rt, source, field, field_id)
+            expected = (field + source if field_id < hookapi.sfAccount
+                        else source + field)
+            assert out == expected, field.hex()
+            r2, erased = _emplace(rt, out, None, field_id)
+            assert erased == source, field.hex()
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_trailing_byte_after_the_field(self, rt, fix):
+        """HookAPI_test.cpp:4486-4494 — the legacy measurer ignores it, and
+        it is carried into the output."""
+        _rules(rt, fix20260929=fix, type240=True)
+        source = bytes.fromhex(_EMPLACE_SOURCE)
+        for field_id, field in _emplace_cases(fix):
+            r, out = _emplace(rt, source, field + b"\x00", field_id)
+            if fix:
+                assert r == hookapi.PARSE_ERROR, field.hex()
+            else:
+                assert r == len(source) + len(field) + 1, field.hex()
+
+    def test_with_fix_a_truncated_field_or_source_is_refused(self, rt):
+        """HookAPI_test.cpp:4496-4508 — only exercised with the fix, since
+        the legacy measurer can read past these buffers."""
+        _rules(rt, fix20260929=True, type240=True)
+        source = bytes.fromhex(_EMPLACE_SOURCE)
+        for field_id, field in _emplace_cases(True):
+            assert _emplace(rt, source, field[:-1], field_id)[0] == hookapi.PARSE_ERROR, field.hex()
+            assert _emplace(rt, source[:-1], field, field_id)[0] == hookapi.PARSE_ERROR, field.hex()
+
+    def test_the_success_vector(self, rt):
+        """HookAPI_test.cpp:4379-4397."""
+        r, out = _emplace(rt, bytes.fromhex(_EMPLACE_SOURCE),
+                          bytes.fromhex("2400000000"), hookapi.sfSequence)
+        assert out == bytes.fromhex("2400000000" + _EMPLACE_SOURCE)
+
+
+class TestStoEmplaceInjectedField:
+    """fixHookAPI20251128 (enabled on mainnet): the injected field must parse
+    and be `field_id` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:298-325).
+    Before it, any bytes were spliced in at `field_id`'s place."""
+
+    SOURCE = bytes([0x81, 0x14] + [0] * 20)       # {Account: <zero>}
+    SEQUENCE = bytes([0x24, 0x00, 0x00, 0x00, 0x01])
+
+    def test_a_field_that_is_not_field_id_is_refused(self, rt):
+        assert _emplace(rt, self.SOURCE, self.SEQUENCE, SF_AMOUNT)[0] == hookapi.PARSE_ERROR
+
+    def test_a_field_that_does_not_parse_is_refused(self, rt):
+        assert _emplace(rt, self.SOURCE, b"\xFF\xFF\xFF", SF_AMOUNT)[0] == hookapi.PARSE_ERROR
+
+    def test_without_the_fix_it_is_spliced_in_anyway(self, rt):
+        _rules(rt, fix20251128=False)
+        r, out = _emplace(rt, self.SOURCE, self.SEQUENCE, SF_AMOUNT)
+        assert out == self.SEQUENCE + self.SOURCE      # before Account, by id
+
+
+class TestGetStobjectLengthBounds:
+    """The measurer's own bounds checks under fix20260929
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:3306, :3329, :3338, :3360,
+    :3370, :3399). Without the fix a field's claimed length is reported even
+    when the buffer is shorter."""
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_short_fixed_width_payload(self, rt, fix):
+        """A UINT256 with five of its 32 bytes: the old answer points past the
+        buffer."""
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "55" + "11" * 5)
+        got = sto_subfield(rt, 0, n, 0x50005)
+        assert got == (hookapi.PARSE_ERROR if fix else (1 << 32) + 32)
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_short_vl_payload(self, rt, fix):
+        _rules(rt, fix20260929=fix)
+        n = _put(rt, "7510DEADBEEF")
+        got = sto_subfield(rt, 0, n, 0x70005)
+        assert got == (hookapi.PARSE_ERROR if fix else (2 << 32) + 0x10)
+
+    def test_a_short_payload_never_validates(self, rt):
+        """sto_validate needs the walk to end on the buffer's end, so it was
+        already 0 here; the fix changes the reason, not the answer."""
+        for fix in REGIMES:
+            _rules(rt, fix20260929=fix)
+            assert sto_validate(rt, 0, _put(rt, "55" + "11" * 5)) == 0
+
+    _STEP = "30" + "00" * 12 + "5553440000000000" + "AE123A8556F3CF91154711376AFB0F894F832B3D"
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_an_unterminated_pathset(self, rt, fix):
+        """Type240 PATHSET ending on FF ("another path follows") with no
+        path after it and no 00 terminator: the fix refuses it (:3329), the
+        legacy walk measures it."""
+        _rules(rt, fix20260929=fix, type240=True)
+        n = _put(rt, "0112" + self._STEP + "FF")
+        got = sto_subfield(rt, 0, n, hookapi.sfPaths)
+        assert got == (hookapi.PARSE_ERROR if fix else (2 << 32) + 42)
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_a_pathset_step_ending_on_the_buffer(self, rt, fix):
+        """With the fix, a step that ends the buffer is refused before the
+        next flag is read (:3306). Without it the host reads that flag past
+        the buffer; hookz answers what the fix answers."""
+        _rules(rt, fix20260929=fix, type240=True)
+        n = _put(rt, "0112" + self._STEP)
+        assert sto_subfield(rt, 0, n, hookapi.sfPaths) == hookapi.PARSE_ERROR
+
+    @pytest.mark.parametrize("fix", REGIMES, ids=REGIME_IDS)
+    def test_an_xchain_bridge_with_a_default_door(self, rt, fix):
+        """A door account may be the empty account (one 00 byte). The legacy
+        measurer assumes 21 bytes for every door, so it mismeasures this
+        (HookAPI_test.cpp:4463-4477)."""
+        _rules(rt, fix20260929=fix, type240=True)
+        bridge = EMPLACE_FIELDS_FIX_ONLY[0][1]
+        n = _put(rt, bridge)
+        assert sto_validate(rt, 0, n) == (1 if fix else 0)
+
+    def test_without_fix_a_read_past_the_buffer_is_a_parse_failure(self, rt):
+        """An ISSUE with fewer than 20 bytes: the host memcmp()s past the
+        copied buffer into heap. hookz cannot reproduce that, and answers what
+        the fix answers."""
+        _rules(rt, fix20260929=False, type240=True)
+        n = _put(rt, "0518" + "00" * 10)
+        assert sto_validate(rt, 0, n) == 0
+        assert sto_subfield(rt, 0, n, hookapi.sfClaimCurrency) == hookapi.PARSE_ERROR
