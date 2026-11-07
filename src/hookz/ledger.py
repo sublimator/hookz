@@ -63,6 +63,8 @@ class NS:
     NFTOKEN_BUY_OFFERS = 0x0068 # 'h'
     NFTOKEN_SELL_OFFERS = 0x0069 # 'i'
     URI_TOKEN = 0x0055          # 'U'
+    MANIFEST = 0x004D           # 'M'   xahaud:src/libxrpl/protocol/Indexes.cpp:93
+    RANDOM = 0x526E             # 'Rn'  xahaud:src/libxrpl/protocol/Indexes.cpp:97
 
 
 # LedgerEntryType prefix (first 2 bytes of keylet)
@@ -87,6 +89,8 @@ class LT:
     HOOK_DEFINITION = 0x0044
     HOOK_STATE = 0x0076
     EMITTED_TXN = 0x0045
+    MANIFEST = 0x004D  # xahaud:include/xrpl/protocol/detail/ledger_entries.macro:633
+    RANDOM = 0x526E    # xahaud:include/xrpl/protocol/detail/ledger_entries.macro:209
     ANY = 0xFFFF  # ltANY for unchecked
     CHILD = 0xFFFF  # ltCHILD
 
@@ -312,6 +316,16 @@ def fees_keylet() -> bytes:
 def negative_unl_keylet() -> bytes:
     """keylet::negativeUNL() → {ltNEGATIVE_UNL, indexHash(NEGATIVE_UNL)}"""
     return _make_keylet(LT.NEGATIVE_UNL, _index_hash(NS.NEGATIVE_UNL))
+
+
+def random_keylet() -> bytes:
+    """keylet::random() → {ltRANDOM, indexHash(RANDOM)}
+
+    The featureRNG singleton (xahaud:src/libxrpl/protocol/Indexes.cpp:283).
+    Hooks can never read it: slot_set refuses its key and ledger_keylet skips
+    it, unconditionally.
+    """
+    return _make_keylet(LT.RANDOM, _index_hash(NS.RANDOM))
 
 
 # --- NFT directories ---

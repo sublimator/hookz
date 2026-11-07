@@ -477,30 +477,67 @@ def slot_size(rt: HookRuntime, slot_no: int) -> int:
 # slot_set
 # ---------------------------------------------------------------------------
 
-def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int:
-    """Write data from WASM memory into a slot.
+def _first_free_slot(rt: HookRuntime) -> int | None:
+    for candidate in range(1, 256):
+        if f"slot_data:{candidate}" not in rt._slot_overrides:
+            return candidate
+    return None
 
-    If the data is a 34-byte keylet and rt.ledger contains that keylet,
-    the slot is populated with the ledger object. Otherwise the raw bytes
-    are stored directly.
+
+def slot_set(rt: HookRuntime, read_ptr: int, read_len: int, slot_no: int) -> int:
+    """Slot the ledger object a 34-byte keylet names, or a transaction by hash.
+
+    Both are looked up in ``rt.ledger``; a miss is DOESNT_EXIST. The refusals
+    come in the host's order (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2291):
+
+    - a 32-byte argument (a transaction hash) is INVALID_ARGUMENT under
+      fix20261005, checked after the no-free-slot test (HookAPI.cpp:2326);
+      without the fix it is looked up, and a ttENTROPY transaction is
+      refused (HookAPI.cpp:2343);
+    - the featureRNG Random object is refused by key whatever the keylet's
+      type, and whatever the amendments — it is matched on the key so an
+      ltANY keylet cannot reach it (HookAPI.cpp:2315).
     """
+    import hookz.ledger as L
+
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2293
     if read_len not in (32, 34):
         return hookapi.INVALID_ARGUMENT
     if slot_no > 255:
         return hookapi.INVALID_ARGUMENT
 
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2297
+    if slot_no == 0 and _first_free_slot(rt) is None:
+        return hookapi.NO_FREE_SLOTS
+
     data = rt._read_memory(read_ptr, read_len)
     ledger = rt.ledger
 
-    if data not in ledger:
-        return hookapi.DOESNT_EXIST
+    if read_len == 34:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2309
+        if data[2:] == bytes(32):
+            return hookapi.DOESNT_EXIST
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2315
+        if data[2:] == L.random_keylet()[2:]:
+            return hookapi.DOESNT_EXIST
+        if data not in ledger:
+            return hookapi.DOESNT_EXIST
+    else:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326
+        if "fix20261005" in rt.amendments:
+            return hookapi.INVALID_ARGUMENT
+        if data not in ledger:
+            return hookapi.DOESNT_EXIST
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2343-2345 — a
+        # transaction's first canonical field is TransactionType (UInt16,
+        # field 2: header 0x12), so a reveal begins 12 0059.
+        if ledger[data][:3] == b"\x12" + hookapi.ttENTROPY.to_bytes(2, "big"):
+            return hookapi.DOESNT_EXIST
 
     if slot_no == 0:
-        for candidate in range(1, 256):
-            if f"slot_data:{candidate}" not in rt._slot_overrides:
-                slot_no = candidate
-                break
-        else:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2353
+        slot_no = _first_free_slot(rt)
+        if slot_no is None:
             return hookapi.NO_FREE_SLOTS
 
     _set_slot_data(rt, slot_no, ledger[data], stype=_STI_OBJECT)

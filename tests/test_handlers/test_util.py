@@ -526,6 +526,40 @@ class TestLedgerKeylet:
         assert ledger_keylet(rt, 0, 34, 100, 34, 200, 34) == 34
         assert rt._read_memory(0, 34) == b"\x00\x64" + b"\x20" * 32
 
+    @pytest.mark.parametrize("rng", [True, False], ids=["featureRNG", "noRNG"])
+    def test_the_random_object_is_skipped(self, rt, rng):
+        """featureRNG: ledger_keylet never yields the Random object's key,
+        whatever the amendments (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2064-2066).
+
+        Vector: xahaud:src/test/app/RNG_test.cpp:913-916 (at the release, not
+        vendored) — ltANY bounds …C676 and …C678 around the key …C677 are
+        DOESNT_EXIST with the object present.
+        """
+        from hookz.ledger import random_keylet
+
+        (rt.amendments.add if rng else rt.amendments.discard)("featureRNG")
+        rnd = random_keylet()
+        rt.ledger[rnd] = b"random"
+        key = int.from_bytes(rnd[2:], "big")
+        rt._write_memory(100, b"\x00\x00" + (key - 1).to_bytes(32, "big"))
+        rt._write_memory(200, b"\x00\x00" + (key + 1).to_bytes(32, "big"))
+        assert ledger_keylet(rt, 0, 34, 100, 34, 200, 34) == hookapi.DOESNT_EXIST
+
+    def test_the_random_object_is_stepped_over(self, rt):
+        """The host re-runs succ() from the skipped key, so the next key in
+        range is still found (HookAPI.cpp:2066)."""
+        from hookz.ledger import random_keylet
+
+        rnd = random_keylet()
+        key = int.from_bytes(rnd[2:], "big")
+        after = b"\x00\x00" + (key + 1).to_bytes(32, "big")
+        rt.ledger[rnd] = b"random"
+        rt.ledger[after] = b"after"
+        rt._write_memory(100, b"\x00\x00" + (key - 1).to_bytes(32, "big"))
+        rt._write_memory(200, b"\x00\x00" + (key + 2).to_bytes(32, "big"))
+        assert ledger_keylet(rt, 0, 34, 100, 34, 200, 34) == 34
+        assert rt._read_memory(0, 34) == after
+
     def test_too_small_write(self, rt):
         assert ledger_keylet(rt, 0, 33, 100, 34, 200, 34) == hookapi.TOO_SMALL
 

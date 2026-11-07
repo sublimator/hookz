@@ -278,7 +278,14 @@ def ledger_keylet(
     lread_ptr: int, lread_len: int,
     hread_ptr: int, hread_len: int,
 ) -> int:
-    """Return the first ledger key strictly above ``lo`` and at most ``hi``."""
+    """Return the first ledger key strictly above ``lo`` and at most ``hi``.
+
+    The featureRNG Random object is skipped by key, whatever the amendments,
+    so a range holding only its key is DOESNT_EXIST
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2064-2066).
+    """
+    import hookz.ledger as L
+
     if write_len < 34 or lread_len < 34 or hread_len < 34:
         return hookapi.TOO_SMALL
     if write_len > 34 or lread_len > 34 or hread_len > 34:
@@ -291,10 +298,13 @@ def ledger_keylet(
 
     lo_index = lo[2:]
     hi_index = hi[2:]
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2065
+    random_index = L.random_keylet()[2:]
     candidates = sorted(
         keylet[2:]
         for keylet in rt.ledger
         if len(keylet) == 34 and lo_index < keylet[2:] <= hi_index
+        and keylet[2:] != random_index
     )
     if not candidates:
         return hookapi.DOESNT_EXIST

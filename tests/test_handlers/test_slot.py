@@ -381,8 +381,9 @@ class TestSlotSet:
         rt._write_memory(100, b"\x00" * 34)
         assert slot_set(rt, 100, 34, 256) == hookapi.INVALID_ARGUMENT
 
-    def test_32_byte_hash_lookup(self, rt):
-        """32-byte txn hash lookup."""
+    def test_32_byte_hash_lookup_without_fix20261005(self, rt):
+        """32-byte txn hash lookup, before fix20261005 retired it."""
+        rt.amendments.discard("fix20261005")
         txn_hash = b"\xCC" * 32
         obj_data = b"\xDD" * 100
         rt.ledger[txn_hash] = obj_data
@@ -390,6 +391,92 @@ class TestSlotSet:
         result = slot_set(rt, 100, 32, 3)
         assert result == 3
         assert rt._slot_overrides["slot_data:3"] == obj_data
+
+
+class TestSlotSetTxnHash:
+    """A 32-byte argument, either side of fix20261005.
+
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326. Vectors:
+    xahaud:src/test/app/HookAPI_test.cpp:3517-3540 (at the release, not
+    vendored) — `slot_set(Bytes(32, 0), 1)` is INVALID_ARGUMENT with the fix
+    and DOESNT_EXIST (looked up, not found) without — and
+    xahaud:src/test/app/SetHook_test.cpp:9899-9940, which slots the otxn by
+    its id: INVALID_ARGUMENT with the fix, slot 1 without.
+    """
+
+    def _with_otxn(self, rt):
+        txn_hash = b"\xCC" * 32
+        rt.ledger[txn_hash] = b"\x12\x00\x00" + b"\xDD" * 40   # a ttPAYMENT
+        rt._write_memory(100, txn_hash)
+
+    def test_with_fix_it_is_invalid_argument(self, rt):
+        assert "fix20261005" in rt.amendments, "mainnet default carries the fix"
+        self._with_otxn(rt)
+        assert slot_set(rt, 100, 32, 1) == hookapi.INVALID_ARGUMENT
+        assert "slot_data:1" not in rt._slot_overrides
+
+    def test_with_fix_an_unknown_hash_is_still_invalid_argument(self, rt):
+        rt._write_memory(100, bytes(32))
+        assert slot_set(rt, 100, 32, 1) == hookapi.INVALID_ARGUMENT
+
+    def test_without_fix_the_otxn_is_slotted(self, rt):
+        rt.amendments.discard("fix20261005")
+        self._with_otxn(rt)
+        assert slot_set(rt, 100, 32, 1) == 1
+
+    def test_without_fix_an_unknown_hash_doesnt_exist(self, rt):
+        rt.amendments.discard("fix20261005")
+        rt._write_memory(100, bytes(32))
+        assert slot_set(rt, 100, 32, 1) == hookapi.DOESNT_EXIST
+
+    def test_slot_no_beyond_max_comes_first(self, rt):
+        rt._write_memory(100, bytes(32))
+        assert slot_set(rt, 100, 32, 256) == hookapi.INVALID_ARGUMENT
+
+    def test_no_free_slot_comes_before_the_fix(self, rt):
+        """HookAPI.cpp:2297 runs before :2326, so a full slot table answers
+        NO_FREE_SLOTS for a hash too."""
+        for n in range(1, 256):
+            rt._slot_overrides[f"slot_data:{n}"] = b"\x00"
+        rt._write_memory(100, bytes(32))
+        assert slot_set(rt, 100, 32, 0) == hookapi.NO_FREE_SLOTS
+
+    def test_without_fix_a_validator_reveal_is_refused(self, rt):
+        """featureRNG: a ttENTROPY transaction is never slotted
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2343)."""
+        rt.amendments.discard("fix20261005")
+        txn_hash = b"\xEE" * 32
+        rt.ledger[txn_hash] = b"\x12" + hookapi.ttENTROPY.to_bytes(2, "big") + b"\x00" * 40
+        rt._write_memory(100, txn_hash)
+        assert slot_set(rt, 100, 32, 1) == hookapi.DOESNT_EXIST
+
+
+class TestSlotSetRandomObject:
+    """The featureRNG Random object is never slotted, by key, whatever the
+    keylet type and whatever the amendments
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2315).
+
+    Vectors: xahaud:src/test/app/RNG_test.cpp:893-911 (at the release, not
+    vendored) — the key is 125C53F2…C677, asked for as ltRANDOM (0x526E) and
+    as ltANY (0x0000); both are DOESNT_EXIST with the object present.
+    """
+
+    RANDOM_KEY = bytes.fromhex(
+        "125C53F238F6CA65C41A3287F760CCF04F2D0407A8FE016B59F460FE14F0C677")
+
+    def test_the_key_is_upstreams(self):
+        from hookz.ledger import random_keylet
+        assert random_keylet() == b"\x52\x6E" + self.RANDOM_KEY
+
+    @pytest.mark.parametrize("lt", [b"\x52\x6E", b"\x00\x00"], ids=["ltRANDOM", "ltANY"])
+    @pytest.mark.parametrize("rng", [True, False], ids=["featureRNG", "noRNG"])
+    def test_refused_even_when_present(self, rt, lt, rng):
+        (rt.amendments.add if rng else rt.amendments.discard)("featureRNG")
+        kl = lt + self.RANDOM_KEY
+        rt.ledger[kl] = b"\x11\x52\x6E"
+        rt._write_memory(100, kl)
+        assert slot_set(rt, 100, 34, 0) == hookapi.DOESNT_EXIST
+        assert "slot_data:1" not in rt._slot_overrides
 
     def test_roundtrip_keylet_to_slot_read(self, rt):
         """slot_set with keylet, then slot() reads the data back."""
