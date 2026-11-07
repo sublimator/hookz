@@ -64,6 +64,13 @@ ARG SCRIPTS_BRANCH=main
 ARG XAHAUD_REPO=https://github.com/sublimator/xahaud.git
 ARG XAHAUD_BRANCH=external-env-tests
 ARG WASI_SDK_VERSION=32
+# Node for `hookz build-test-hooks --hooks-compiler` (HOOKZ_HOOKS_COMPILER=1):
+# the reference compiler, tequdev/hooks-compiler, runs through npx and needs
+# Node >= 20.12. Ubuntu 24.04's nodejs is 18, so the official tarball, pinned
+# by sha256 per arch (nodejs.org/dist/v<NODE_VERSION>/SHASUMS256.txt).
+ARG NODE_VERSION=22.23.4
+ARG NODE_SHA256_X64=b8492284c76a54baf58d61668dd0e41ee0fc98adabf9503d30f05d08f55b4406
+ARG NODE_SHA256_ARM64=f7a1e486dbc8b286847815b477d4fb5e9fb963ed4489c3e1588853d685f589f9
 
 # Tools on PATH for external-env-tests (see docs/external-env-tests.md).
 #
@@ -84,6 +91,18 @@ RUN uv tool install "hookz @ git+${HOOKZ_REPO}@${HOOKZ_BRANCH}"
 RUN uv tool install "xahaud-scripts @ git+${SCRIPTS_REPO}@${SCRIPTS_BRANCH}"
 
 ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "arm64" ]; then ARCH=arm64; SUM=$NODE_SHA256_ARM64; \
+    else ARCH=x64; SUM=$NODE_SHA256_X64; fi \
+    && curl -sSLo /tmp/node.tgz https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${ARCH}.tar.gz \
+    && echo "$SUM  /tmp/node.tgz" | sha256sum -c - \
+    && tar xzf /tmp/node.tgz -C /opt && rm /tmp/node.tgz \
+    && ln -s /opt/node-v${NODE_VERSION}-linux-${ARCH} /opt/node
+ENV PATH="/opt/node/bin:${PATH}"
+# Fetch the pinned hooks-compiler into npm's cache now, at the version the
+# installed hookz pins, so a run needs no network for it.
+RUN /root/.local/share/uv/tools/hookz/bin/python -c \
+    "from hookz.hooks_compiler import ensure_available; ensure_available()"
+
 RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x86_64") \
     && curl -sSL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-${WASI_SDK_VERSION}/wasi-sdk-${WASI_SDK_VERSION}.0-${ARCH}-linux.tar.gz \
     | tar xz -C /opt \

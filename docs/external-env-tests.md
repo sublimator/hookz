@@ -30,20 +30,16 @@ through `npx` at a pinned version (Node >= 20.12). The mode records the
 compiler version, source hash and WASM hash in the generated output, and never
 falls back locally.
 
-xahaud's CMake still knows this switch by its old name: `HOOKZ_BUILDBOX=1`
-passes `--buildbox` and makes hook-header generation an always-run target.
-hook-buildbox.xrpl.org was retired in October 2026, so hookz now refuses
-`--buildbox` with a pointer instead of building. Until the external-env-tests
-branch renames the switch, set `HOOKZ_HOOKS_COMPILER=1` together with
-`HOOKS_FORCE_RECOMPILE=1`. hookz reads the first from the environment it
-inherits, and the second makes generation always run, so an existing
-locally generated header cannot satisfy an `OUTPUT`-cached build after the
-compiler mode changes.
+xahaud's CMake invocation recognizes `HOOKZ_HOOKS_COMPILER=1`, passes
+`--hooks-compiler` explicitly, and makes hook-header generation an always-run
+target. This prevents an existing locally generated header from satisfying an
+`OUTPUT`-cached build after the compiler mode changes. Forward the variable
+into Docker explicitly. The image carries Node and has the pinned
+hooks-compiler in npm's cache, so the mode needs no network there.
 
-This works where Node >= 20.12 and `npx` are on PATH. The CI image does not
-have them: `ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355` has no
-`node` or `npx`. Inside Docker this mode needs an image built with Node.
-That rebuild belongs with the CMake rename, on the external-env-tests branch.
+The old switch, `HOOKZ_BUILDBOX`, fails at configure with a pointer to the
+new one. hook-buildbox.xrpl.org was retired in October 2026, and hookz refuses
+`--buildbox` too.
 
 ### Swapping hookz inside a frozen image
 
@@ -175,15 +171,16 @@ options (`-DFOO=value`) or environment variables (`FOO=value`), or both:
 | `HOOKS_COVERAGE` | `ON` | set = enabled | Instrument hooks with coverage callbacks |
 | `HOOKS_TEST_ONLY` | `ON` | set = enabled | Exclude built-in `*_test.cpp` from `src/test/` |
 | `HOOKS_FORCE_RECOMPILE` | `ON` | set = enabled | Bypass dependency tracking and bytecode cache |
-| `HOOKZ_BUILDBOX` | `ON` | `1` | Retired: hookz refuses `--buildbox`. Use `HOOKZ_HOOKS_COMPILER=1` + `HOOKS_FORCE_RECOMPILE=1` |
+| `HOOKZ_HOOKS_COMPILER` | `ON` | `1` | Compile with the reference compiler (hooks-compiler) and always regenerate hook headers |
+| `HOOKZ_BUILDBOX` | `ON` | `1` | Retired: fails at configure. Use `HOOKZ_HOOKS_COMPILER` |
 
 **Note:** The `HOOKS_*` Boolean env vars are existence-checked — setting them
-to any value (even `0`) enables the feature. `HOOKZ_BUILDBOX` is stricter:
-its environment value must be `1`.
+to any value (even `0`) enables the feature. `HOOKZ_HOOKS_COMPILER` is
+stricter: its environment value must be `1`.
 
 CMake runs `hookz build-test-hooks` per test file. Local mode tracks `.c`/`.h`
-dependencies and recompiles when sources change; `HOOKS_FORCE_RECOMPILE`
-deliberately runs every time.
+dependencies and recompiles when sources change; `HOOKS_FORCE_RECOMPILE` and
+`HOOKZ_HOOKS_COMPILER` deliberately run every time.
 
 ### Enum.h: `__on_source_line` whitelist
 

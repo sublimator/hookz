@@ -665,7 +665,7 @@ class TestTheLegendExplainsWhatTheTableNames:
                     if "--full-patch` inlines the complete diff" in ln)
         assert "one- and two-line edits" not in line
         assert "applyHook.h" in line and "+141" in line
-        assert "RippledCore.cmake" in line and "+114" in line
+        assert "RippledCore.cmake" in line and "+123" in line
 
 
 class TestSectionOneIdentifiesSomethingReal:

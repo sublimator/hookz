@@ -22,13 +22,14 @@ PIN
 ---
 Repo    https://github.com/sublimator/xahaud  (Xahau/xahaud's copy stops at
         10b901ea0b; the branch is no longer pushed there)
-Branch  external-env-tests @ 16de3ee52f7563c955984d02d4b3abc34c8f7e20 (2026-11-07)
+Branch  external-env-tests @ 7e60972b458d9d93db2c05401fe073e7dd2503c2 (2026-11-07)
         (2026.10.13-release+4119 merged into 10b901ea0b as 89f9db8d8d,
-        then a clang-format fix to the merge's Enum.h comment)
+        a clang-format fix to the merge's Enum.h comment (16de3ee52f), then
+        HOOKZ_HOOKS_COMPILER replacing the retired HOOKZ_BUILDBOX)
 Base    generated as `git diff 2026.10.13-release+4119 external-env-tests`,
         the same commit `wasm/xahaud_ref.py` pins, so it applies to a
         checkout of that release
-Patch   sha256 95a881e05d354ac5d7ae0984d73a159429a3cf814aa588e731f899ee871b577c
+Patch   sha256 7fced831906d572c76af18a79cae7050a2ca2bdf2db8a7970ff84b4c711d0143
 
 The commit is recorded on direct evidence rather than on the dates lining up:
 `TestEnv.h` reconstructed from this patch is byte-identical to that commit's
@@ -53,12 +54,12 @@ from pathlib import Path
 
 REPO = "https://github.com/sublimator/xahaud"
 BRANCH = "external-env-tests"
-BRANCH_COMMIT = "16de3ee52f7563c955984d02d4b3abc34c8f7e20"
+BRANCH_COMMIT = "7e60972b458d9d93db2c05401fe073e7dd2503c2"
 BRANCH_COMMIT_DATE = "2026-11-07"
 BASE_REF = "2026.10.13-release+4119"  # = xahaud_ref.XAHAUD_REF
 
 PATCH_NAME = "xahaud-external-env-tests.patch"
-PATCH_SHA256 = "95a881e05d354ac5d7ae0984d73a159429a3cf814aa588e731f899ee871b577c"
+PATCH_SHA256 = "7fced831906d572c76af18a79cae7050a2ca2bdf2db8a7970ff84b4c711d0143"
 
 # The file the branch adds outright. Its diff is the file, so it can be handed
 # to a reader as C++ rather than as a diff — which is what a test author
@@ -81,7 +82,8 @@ HARNESS_HEADER = "src/test/jtx/TestEnv.h"
 FILES: dict[str, str] = {
     "cmake/RippledCore.cmake":
         "finds your *_test.cpp via HOOKS_TEST_DIR, runs `hookz "
-        "build-test-hooks` per file, and adds the HOOKS_* options",
+        "build-test-hooks` per file, and adds the HOOKS_* options and "
+        "HOOKZ_HOOKS_COMPILER (HOOKZ_BUILDBOX fails at configure)",
     "include/xrpl/basics/Log.h":
         "Logs::setTransform, so TestEnv can rewrite r-addresses to "
         "Account(name) across all output",
@@ -128,7 +130,7 @@ FILES: dict[str, str] = {
 #   python -c "from hookz.env_tests_ref import file_digests; print(file_digests())"
 FILE_DIGESTS: dict[str, str] = {
     'cmake/RippledCore.cmake':
-        'a9531e32c9a88667fdfd8438cdc59d872c56261b8632f8510fb52d92036d41e9',
+        'cf716a7938915fa49805ad789e0a0d6f9014147c2240be658da161f8a22d6a08',
     'include/xrpl/basics/Log.h':
         '4ca530d03fb94d97b2abc5c20724e7f9331dbd28f3be2923789465ae1968f196',
     'include/xrpl/hook/Enum.h':

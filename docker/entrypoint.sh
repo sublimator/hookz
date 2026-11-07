@@ -13,7 +13,7 @@ echo "  CCACHE_DIR: ${CCACHE_DIR:-<not set>}"
 [ -n "${HOOKS_TEST_DIR:-}" ]  && echo "  HOOKS_TEST_DIR: $HOOKS_TEST_DIR"
 [ -n "${HOOKS_C_DIR:-}" ]     && echo "  HOOKS_C_DIR: $HOOKS_C_DIR"
 [ -n "${HOOKS_COVERAGE:-}" ]  && echo "  HOOKS_COVERAGE: $HOOKS_COVERAGE"
-[ -n "${HOOKZ_BUILDBOX:-}" ]  && echo "  HOOKZ_BUILDBOX: $HOOKZ_BUILDBOX"
+[ -n "${HOOKZ_HOOKS_COMPILER:-}" ] && echo "  HOOKZ_HOOKS_COMPILER: $HOOKZ_HOOKS_COMPILER"
 
 # ---------------------------------------------------------------------------
 # Optional runtime hookz refresh (xahaud binary stays frozen).
@@ -74,5 +74,5 @@ if [ ! -f "./build/rippled" ]; then
     conan export external/wasmedge --version 0.11.2 --user xahaud --channel stable 2>/dev/null || true
 fi
 
-# x-run-tests: conan + cmake (HOOKS_* / HOOKZ_BUILDBOX) + build + run.
+# x-run-tests: conan + cmake (HOOKS_* / HOOKZ_HOOKS_COMPILER) + build + run.
 exec x-run-tests --ccache --reconfigure-build -- "$TEST_SUITE" "$@"

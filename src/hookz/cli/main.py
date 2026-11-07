@@ -218,8 +218,9 @@ def _unreadable(path, exc: Exception) -> str:
 
 
 # hook-buildbox.xrpl.org was retired in October 2026, and --buildbox with it.
-# Refused rather than dropped: xahaud's external-env-tests CMake still passes
-# --buildbox when HOOKZ_BUILDBOX=1, and "no such option" would not say why.
+# Refused rather than dropped: scripts, CI jobs and external-env-tests images
+# from before 7e60972b45 still pass --buildbox or set HOOKZ_BUILDBOX=1, and
+# "no such option" would not say why.
 BUILDBOX_RETIRED = (
     "--buildbox is gone: hook-buildbox.xrpl.org was retired in October 2026, "
     "and Xahau's own tools now compile with hooks-compiler. Use "

@@ -44,7 +44,9 @@ def _run(*args: str, env: dict[str, str]) -> None:
 
 
 @pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake is unavailable")
-def test_switching_to_buildbox_regenerates_an_existing_local_header(tmp_path):
+def test_switching_to_hooks_compiler_regenerates_an_existing_local_header(
+    tmp_path,
+):
     source_dir = tmp_path / "project"
     build_dir = tmp_path / "build"
     tests_dir = tmp_path / "env-tests"
@@ -71,7 +73,7 @@ def test_switching_to_buildbox_regenerates_an_existing_local_header(tmp_path):
         "import pathlib\n"
         "import sys\n"
         "source = pathlib.Path(sys.argv[2])\n"
-        "mode = 'buildbox' if '--buildbox' in sys.argv else 'local'\n"
+        "mode = 'reference' if '--hooks-compiler' in sys.argv else 'local'\n"
         "source.with_name(source.stem + '_hooks.h').write_text(mode)\n"
         "with pathlib.Path(os.environ['HOOKZ_TEST_LOG']).open('a') as log:\n"
         "    log.write(' '.join(sys.argv[1:]) + '\\n')\n"
@@ -82,8 +84,9 @@ def test_switching_to_buildbox_regenerates_an_existing_local_header(tmp_path):
     environment["PATH"] = f"{bin_dir}{os.pathsep}{environment['PATH']}"
     environment["HOOKS_TEST_DIR"] = str(tests_dir)
     environment["HOOKZ_TEST_LOG"] = str(invocation_log)
-    environment.pop("HOOKZ_BUILDBOX", None)
-    environment.pop("HOOKS_FORCE_RECOMPILE", None)
+    for name in ("HOOKZ_BUILDBOX", "HOOKZ_HOOKS_COMPILER",
+                 "HOOKS_FORCE_RECOMPILE"):
+        environment.pop(name, None)
 
     _run("cmake", "-S", str(source_dir), "-B", str(build_dir), env=environment)
     _run(
@@ -97,7 +100,7 @@ def test_switching_to_buildbox_regenerates_an_existing_local_header(tmp_path):
     header = tests_dir / "Proof_test_hooks.h"
     assert header.read_text() == "local"
 
-    environment["HOOKZ_BUILDBOX"] = "1"
+    environment["HOOKZ_HOOKS_COMPILER"] = "1"
     _run("cmake", "-S", str(source_dir), "-B", str(build_dir), env=environment)
     for _ in range(2):
         _run(
@@ -109,7 +112,39 @@ def test_switching_to_buildbox_regenerates_an_existing_local_header(tmp_path):
             env=environment,
         )
 
-    assert header.read_text() == "buildbox"
+    assert header.read_text() == "reference"
     invocations = invocation_log.read_text().splitlines()
     assert len(invocations) == 3
-    assert all("--buildbox" in line for line in invocations[-2:])
+    assert all("--hooks-compiler" in line for line in invocations[-2:])
+
+
+@pytest.mark.skipif(shutil.which("cmake") is None, reason="cmake is unavailable")
+@pytest.mark.parametrize("how", ["env", "define"])
+def test_the_retired_buildbox_switch_fails_at_configure(tmp_path, how):
+    """A -DHOOKZ_BUILDBOX=ON that CMake silently ignored would build locally
+    under a name that promised the reference compiler."""
+    source_dir = tmp_path / "project"
+    tests_dir = tmp_path / "env-tests"
+    source_dir.mkdir()
+    tests_dir.mkdir()
+    (source_dir / "dummy.cpp").write_text("int hookz_cmake_fixture;\n")
+    (tests_dir / "Proof_test.cpp").write_text("// fixture\n")
+    (source_dir / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.20)\n"
+        "project(hookz_external_test LANGUAGES CXX)\n"
+        "add_library(rippled STATIC dummy.cpp)\n"
+        + _external_test_block()
+    )
+    environment = os.environ.copy()
+    environment["HOOKS_TEST_DIR"] = str(tests_dir)
+    args = ["cmake", "-S", str(source_dir), "-B", str(tmp_path / "build")]
+    if how == "env":
+        environment["HOOKZ_BUILDBOX"] = "1"
+    else:
+        args.append("-DHOOKZ_BUILDBOX=ON")
+
+    result = subprocess.run(args, env=environment, text=True,
+                            capture_output=True)
+
+    assert result.returncode != 0
+    assert "HOOKZ_HOOKS_COMPILER=1" in result.stderr
