@@ -174,7 +174,7 @@ class TestCheckPinIsTheFunctionTheDocumentAsks:
 
 
 class TestTheChurnNumbersAreReal:
-    """`+142` and `+114` are what tell a reader the manifest is hiding
+    """`+141` and `+114` are what tell a reader the manifest is hiding
     something substantial, and nothing asserted them: swapping the added and
     removed columns, or replacing the whole column with a dash, left the suite
     green.
@@ -204,7 +204,7 @@ class TestTheChurnNumbersAreReal:
         they differ sharply."""
         rows = {p: (a, r) for p, a, r, _ in ref.files_in_patch()}
 
-        assert rows["src/xrpld/app/hook/applyHook.h"] == (142, 0)
+        assert rows["src/xrpld/app/hook/applyHook.h"] == (141, 0)
         assert rows["include/xrpl/hook/Guard.h"] == (42, 12)
 
 

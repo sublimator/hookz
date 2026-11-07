@@ -21,10 +21,12 @@ patch: its content hash, the files it touches, and what each one is for.
 PIN
 ---
 Repo    https://github.com/Xahau/xahaud
-Branch  external-env-tests @ 10b901ea0b17a89fc3279e70c661bd91dc3d21ef (2026-07-30)
-Base    generated as `git diff origin/dev external-env-tests`, so it applies
-        to a current dev checkout rather than to a fixed commit
-Patch   sha256 9241a45b1ee8445db2ec63b0645cbc903b9d23c9ae4d5d4e15e415b31d563eee
+Branch  external-env-tests @ 89f9db8d8d542db8238fb2091e168f6396aa6a72 (2026-11-07)
+        (2026.10.13-release+4119 merged into 10b901ea0b)
+Base    generated as `git diff 2026.10.13-release+4119 external-env-tests`,
+        the same commit `wasm/xahaud_ref.py` pins, so it applies to a
+        checkout of that release
+Patch   sha256 68ae0d0a9a9dc57c2e77a55ef317cbded283ee7f1509c73712715eaac76ed724
 
 The commit is recorded on direct evidence rather than on the dates lining up:
 `TestEnv.h` reconstructed from this patch is byte-identical to that commit's
@@ -34,7 +36,7 @@ hash; `check_branch()` checks a given checkout against it.
 
 REGENERATING
 ------------
-    git -C <xahaud> diff origin/dev external-env-tests \\
+    git -C <xahaud> diff <xahaud_ref.XAHAUD_REF> external-env-tests \\
         > patches/xahaud-external-env-tests.patch
 
 then update PATCH_SHA256 and BRANCH_COMMIT here. `test_env_tests_ref.py` fails
@@ -49,12 +51,12 @@ from pathlib import Path
 
 REPO = "https://github.com/Xahau/xahaud"
 BRANCH = "external-env-tests"
-BRANCH_COMMIT = "10b901ea0b17a89fc3279e70c661bd91dc3d21ef"
-BRANCH_COMMIT_DATE = "2026-07-30"
-BASE_REF = "origin/dev"
+BRANCH_COMMIT = "89f9db8d8d542db8238fb2091e168f6396aa6a72"
+BRANCH_COMMIT_DATE = "2026-11-07"
+BASE_REF = "2026.10.13-release+4119"  # = xahaud_ref.XAHAUD_REF
 
 PATCH_NAME = "xahaud-external-env-tests.patch"
-PATCH_SHA256 = "9241a45b1ee8445db2ec63b0645cbc903b9d23c9ae4d5d4e15e415b31d563eee"
+PATCH_SHA256 = "68ae0d0a9a9dc57c2e77a55ef317cbded283ee7f1509c73712715eaac76ed724"
 
 # The file the branch adds outright. Its diff is the file, so it can be handed
 # to a reader as C++ rather than as a diff — which is what a test author
@@ -82,7 +84,8 @@ FILES: dict[str, str] = {
         "Logs::setTransform, so TestEnv can rewrite r-addresses to "
         "Account(name) across all output",
     "include/xrpl/hook/Enum.h":
-        "adds __on_source_line to the import whitelist with a void_t return",
+        "adds __on_source_line to the import whitelist with a void (0x00) "
+        "return, its wasm codes spelled out",
     "include/xrpl/hook/Guard.h":
         "consults the whitelist for void returns instead of requiring every "
         "import to return exactly one value",
@@ -123,29 +126,29 @@ FILES: dict[str, str] = {
 #   python -c "from hookz.env_tests_ref import file_digests; print(file_digests())"
 FILE_DIGESTS: dict[str, str] = {
     'cmake/RippledCore.cmake':
-        'f7e869ea65ee23bedd42525f6d4d261d4360d76c19ea12775949d3a35bba2417',
+        'a9531e32c9a88667fdfd8438cdc59d872c56261b8632f8510fb52d92036d41e9',
     'include/xrpl/basics/Log.h':
-        'd7bbf14263763092f18b19ecd8d22ec0d254fdb7ad15d0f1b454d8fffaa29c75',
+        '4ca530d03fb94d97b2abc5c20724e7f9331dbd28f3be2923789465ae1968f196',
     'include/xrpl/hook/Enum.h':
-        '721ba50c9e54e9f3cda4cbb6d264e5df5f8717a8a8fd42ad8b68a453c1d7d1e6',
+        '845b2e1a3ec5d0a3daaaf6616d9bf5701f3da9d6a8b0dc1b5072df3ecea312e2',
     'include/xrpl/hook/Guard.h':
-        'd031abc49ed26b9768e42b77b18d358a829d3d312101c0c18dae027200a6ffdc',
+        'ce973782283d842c3c369a196d33cb92c12cfb565bc2d2707e8092310696d876',
     'include/xrpl/hook/Macro.h':
-        '133bc559d987e08ce05e795c4a017ecb3944eded669a2007fdaf6979b6f83889',
+        'c6a89add74c7061e8a3ec5984d4899d04a0167d2d1ec1fb86dfb47a2f5fdd199',
     'src/libxrpl/basics/Log.cpp':
-        'b924e1482b4d665831470c9352849d8a2b3c7cfd2cc1c2ad9190db474080b142',
+        '6c80c5f902b1b491a9a09c941f492cf4d5da051f46afc7afc4fabbfb29d64eb3',
     'src/test/jtx/Env.h':
-        '93c52badf4dd7a88b3c2aa7c11ce07264f55a46f2a9ac9d0aceda10411b8f010',
+        'a14fb1332ff1c7eaf2a401ede78736f5df20e63f463ace7123818330fb9bbd54',
     'src/test/jtx/TestEnv.h':
-        '83a6868997897414a2c7e516202eceed92110d1d51555a7ad264a08344c81038',
+        '0078b4ac0c53480044c29ddbfd90b198d1cd617037da4f23c861c419fcd38ca8',
     'src/test/unit_test/SuiteJournal.h':
-        'ab554de027f83254feed7672e8dd9ff4a0ddf1f44891a7a809c5cb83c483deb8',
+        'e688272eb7714bf78e6fbf697d64c13a0eef2d68df27bc47fbfc237864aef5c2',
     'src/xrpld/app/hook/applyHook.h':
-        'b20067331fc8c1c997880a5fe57a68f4e615cdff24b2654a9443e48102e71d90',
+        'e2d345443297f134dea176780c12a8aca12d1bb626b467bc3b120f9e7211acb1',
     'src/xrpld/app/hook/detail/applyHook.cpp':
-        'b5e82fc6f5d36b625a03983dffce375ab362a4905ae7c3d8150940a991764ad6',
+        '8698dd412db2ecfc41737fe63c34ca85f307787fae1d73b7cdac3d893f6dda57',
     'src/xrpld/app/tx/detail/SetHook.cpp':
-        '4e15c9cab42df2c502c94e3bba477c577ae7ff2eb320faf31459846771b7ea6f',
+        'b93c5e1577421d56c2e6c628c35f3994ba0072e1a235154e2d99be66cf8a7f7c',
 }
 
 

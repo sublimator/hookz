@@ -127,26 +127,27 @@ than emitting a document that looks complete without the harness half.
 
 The canonical branch is [`external-env-tests` on Xahau/xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests).
 The Docker image fetches it from GitHub at image build time, so images are
-only as fresh as the branch. `origin/dev` was merged into the branch on
-2026-07-05, so it carries dev plus the env-tests changes and nothing else.
+only as fresh as the branch. The 2026.10.13-release+4119 tag was merged into
+the branch on 2026-11-07, so it carries that release plus the env-tests
+changes and nothing else.
 
 The change is vendored in this repo as
 [`patches/xahaud-external-env-tests.patch`](../patches/xahaud-external-env-tests.patch),
-generated as the branch's diff against `origin/dev`, so it applies cleanly
-to a current `dev` checkout:
+generated as the branch's diff against the release hookz pins
+(`xahaud_ref.XAHAUD_REF`), so it applies cleanly to a checkout of it:
 
 ```bash
-git checkout dev
+git checkout 2026.10.13-release+4119
 git apply /path/to/hookz/patches/xahaud-external-env-tests.patch
 ```
 
-Keep the branch fresh by merging dev into it periodically — conflicts, if
+Keep the branch fresh by merging each new pinned release into it — conflicts, if
 any, concentrate in `applyHook.h`/`.cpp` (the trace/coverage code) — then
 regenerate the patch and push (the Docker build pulls the branch, not your
 local checkout):
 
 ```bash
-git diff origin/dev external-env-tests > patches/xahaud-external-env-tests.patch
+git diff 2026.10.13-release+4119 external-env-tests > patches/xahaud-external-env-tests.patch
 ```
 
 ## What the external-env-tests branch changes
@@ -300,10 +301,10 @@ post-processing symbolication needed.
 
 hookz ships a minimal subset of xahaud in `src/hookz/xahaud_lite/` so
 it can compile hooks and run `hookz show` without a full xahaud checkout.
-Files are vendored from `origin/dev`:
+Files are vendored from the pinned release (`xahaud_ref.XAHAUD_COMMIT`):
 
 ```bash
-python scripts/vendor-xahaud.py ~/projects/xahaud --ref origin/dev
+python scripts/vendor-xahaud.py ~/projects/xahaud --ref 2026.10.13-release+4119
 ```
 
 All paths are centralized in `XahaudFile` enum (`src/hookz/xahaud_files.py`).

@@ -1,5 +1,5 @@
 diff --git a/cmake/RippledCore.cmake b/cmake/RippledCore.cmake
-index 2d593599c..aa76c634f 100644
+index 2d593599cd..aa76c634fd 100644
 --- a/cmake/RippledCore.cmake
 +++ b/cmake/RippledCore.cmake
 @@ -179,7 +179,121 @@ if(xrpld)
@@ -125,7 +125,7 @@ index 2d593599c..aa76c634f 100644
  
    target_link_libraries(rippled
 diff --git a/include/xrpl/basics/Log.h b/include/xrpl/basics/Log.h
-index 13128bfea..d055cba6b 100644
+index 13128bfea6..d055cba6b9 100644
 --- a/include/xrpl/basics/Log.h
 +++ b/include/xrpl/basics/Log.h
 @@ -25,6 +25,7 @@
@@ -179,38 +179,26 @@ index 13128bfea..d055cba6b 100644
      rotate();
  
 diff --git a/include/xrpl/hook/Enum.h b/include/xrpl/hook/Enum.h
-index 9dbce0f33..46dd71e32 100644
+index 9d474965b9..94befb1af4 100644
 --- a/include/xrpl/hook/Enum.h
 +++ b/include/xrpl/hook/Enum.h
-@@ -417,6 +417,7 @@ getImportWhitelist(Rules const& rules)
- #define int64_t 0x7EU
- #define int32_t 0x7FU
- #define uint32_t 0x7FU
-+#define void_t 0x00U
- 
- #define HOOK_WRAP_PARAMS(...) __VA_ARGS__
- 
-@@ -428,11 +429,15 @@ getImportWhitelist(Rules const& rules)
+@@ -439,6 +439,11 @@ getImportWhitelist(Rules const& rules)
  
  #include "hook_api.macro"
  
 +    // Coverage callback: void __on_source_line(uint32_t line, uint32_t col)
-+    whitelist["__on_source_line"] = {void_t, uint32_t, uint32_t};
++    // wasm codes spelled out: since the 2026.10 release the macro above maps
++    // types with detail::wasmSignature, so no void_t/uint32_t defines exist here
++    whitelist["__on_source_line"] = {0x00U, 0x7FU, 0x7FU};
 +
  #undef HOOK_API_DEFINITION
- #undef HOOK_WRAP_PARAMS
- #undef int64_t
- #undef int32_t
- #undef uint32_t
-+#undef void_t
  #pragma pop_macro("HOOK_API_DEFINITION")
  
-     return whitelist;
 diff --git a/include/xrpl/hook/Guard.h b/include/xrpl/hook/Guard.h
-index 53d9f010f..bbe488d50 100644
+index 5e1d9e8c87..eff267ac37 100644
 --- a/include/xrpl/hook/Guard.h
 +++ b/include/xrpl/hook/Guard.h
-@@ -1383,21 +1383,51 @@ validateGuards(
+@@ -1387,21 +1387,51 @@ validateGuards(
                  int result_count = parseLeb128(wasm, i, &i);
                  CHECK_SHORT_HOOK();
  
@@ -275,7 +263,7 @@ index 53d9f010f..bbe488d50 100644
                  {
                      int result_type = parseLeb128(wasm, i, &i);
 diff --git a/include/xrpl/hook/Macro.h b/include/xrpl/hook/Macro.h
-index 45e6a8db9..36ef0b1f8 100644
+index 10bf331077..b3227a0267 100644
 --- a/include/xrpl/hook/Macro.h
 +++ b/include/xrpl/hook/Macro.h
 @@ -150,22 +150,23 @@
@@ -319,7 +307,7 @@ index 45e6a8db9..36ef0b1f8 100644
  
  #define HOOK_TEARDOWN()                                        \
 diff --git a/src/libxrpl/basics/Log.cpp b/src/libxrpl/basics/Log.cpp
-index 8e687d66f..3dbdbed63 100644
+index 8e687d66f6..3dbdbed634 100644
 --- a/src/libxrpl/basics/Log.cpp
 +++ b/src/libxrpl/basics/Log.cpp
 @@ -196,9 +196,10 @@ Logs::write(
@@ -336,7 +324,7 @@ index 8e687d66f..3dbdbed63 100644
      if (!silent_)
          std::cerr << s << '\n';
 diff --git a/src/test/jtx/Env.h b/src/test/jtx/Env.h
-index 34056d3b0..936ea5374 100644
+index 34056d3b08..936ea5374a 100644
 --- a/src/test/jtx/Env.h
 +++ b/src/test/jtx/Env.h
 @@ -106,7 +106,8 @@ public:
@@ -351,7 +339,7 @@ index 34056d3b0..936ea5374 100644
  
 diff --git a/src/test/jtx/TestEnv.h b/src/test/jtx/TestEnv.h
 new file mode 100644
-index 000000000..1c6bb305a
+index 0000000000..1c6bb305ae
 --- /dev/null
 +++ b/src/test/jtx/TestEnv.h
 @@ -0,0 +1,148 @@
@@ -504,7 +492,7 @@ index 000000000..1c6bb305a
 +
 +#endif
 diff --git a/src/test/unit_test/SuiteJournal.h b/src/test/unit_test/SuiteJournal.h
-index d25164e42..92b70f31a 100644
+index d25164e42e..92b70f31a3 100644
 --- a/src/test/unit_test/SuiteJournal.h
 +++ b/src/test/unit_test/SuiteJournal.h
 @@ -19,6 +19,7 @@
@@ -551,10 +539,10 @@ index d25164e42..92b70f31a 100644
  }
  
 diff --git a/src/xrpld/app/hook/applyHook.h b/src/xrpld/app/hook/applyHook.h
-index df553d2ea..6fd3514c4 100644
+index a1bfeffad5..f055112e45 100644
 --- a/src/xrpld/app/hook/applyHook.h
 +++ b/src/xrpld/app/hook/applyHook.h
-@@ -12,9 +12,11 @@
+@@ -12,6 +12,7 @@
  #include <xrpl/protocol/TER.h>
  #include <xrpl/protocol/digest.h>
  #include <any>
@@ -562,11 +550,7 @@ index df553d2ea..6fd3514c4 100644
  #include <memory>
  #include <optional>
  #include <queue>
-+#include <set>
- #include <utility>
- #include <vector>
- #include <wasmedge/wasmedge.h>
-@@ -305,6 +307,130 @@ static WasmEdge_String hookFunctionName =
+@@ -318,6 +319,130 @@ static WasmEdge_String hookFunctionName =
  // see: lib/system/allocator.cpp
  #define WasmEdge_kPageSize 65536ULL
  
@@ -697,7 +681,7 @@ index df553d2ea..6fd3514c4 100644
  /**
   * HookExecutor is effectively a two-part function:
   * The first part sets up the Hook Api inside the wasm import, ready for use
-@@ -483,6 +609,22 @@ public:
+@@ -496,6 +621,22 @@ public:
  #undef HOOK_WRAP_PARAMS
  #pragma pop_macro("HOOK_API_DEFINITION")
  
@@ -721,10 +705,10 @@ index df553d2ea..6fd3514c4 100644
              WasmEdge_TableInstanceCreate(tableType);
          WasmEdge_ModuleInstanceAddTable(importObj, tableName, hostTable);
 diff --git a/src/xrpld/app/hook/detail/applyHook.cpp b/src/xrpld/app/hook/detail/applyHook.cpp
-index 14855b73c..4ac9728f3 100644
+index e6f325b7cf..89546038e4 100644
 --- a/src/xrpld/app/hook/detail/applyHook.cpp
 +++ b/src/xrpld/app/hook/detail/applyHook.cpp
-@@ -1111,7 +1111,7 @@ DEFINE_HOOK_FUNCTION(
+@@ -1131,7 +1131,7 @@ DEFINE_HOOK_FUNCTION(
      if (NOT_IN_BOUNDS(read_ptr, read_len, memory_length))
          return OUT_OF_BOUNDS;
  
@@ -733,7 +717,7 @@ index 14855b73c..4ac9728f3 100644
          return 0ULL;
  
      if (read_len > 128)
-@@ -1125,16 +1125,16 @@ DEFINE_HOOK_FUNCTION(
+@@ -1145,16 +1145,16 @@ DEFINE_HOOK_FUNCTION(
  
          if (read_len > 0)
          {
@@ -755,7 +739,7 @@ index 14855b73c..4ac9728f3 100644
      return 0ULL;
      HOOK_TEARDOWN();
  }
-@@ -1154,7 +1154,7 @@ DEFINE_HOOK_FUNCTION(
+@@ -1174,7 +1174,7 @@ DEFINE_HOOK_FUNCTION(
          NOT_IN_BOUNDS(dread_ptr, dread_len, memory_length))
          return OUT_OF_BOUNDS;
  
@@ -764,7 +748,7 @@ index 14855b73c..4ac9728f3 100644
          return 0ULL;
  
      if (mread_len > 128)
-@@ -1214,8 +1214,9 @@ DEFINE_HOOK_FUNCTION(
+@@ -1234,8 +1234,9 @@ DEFINE_HOOK_FUNCTION(
  
      if (out_len > 0)
      {
@@ -776,7 +760,7 @@ index 14855b73c..4ac9728f3 100644
      }
  
      return 0ULL;
-@@ -3403,7 +3404,7 @@ DEFINE_HOOK_FUNCTION(
+@@ -3508,7 +3509,7 @@ DEFINE_HOOK_FUNCTION(
      if (NOT_IN_BOUNDS(read_ptr, read_len, memory_length))
          return OUT_OF_BOUNDS;
  
@@ -785,7 +769,7 @@ index 14855b73c..4ac9728f3 100644
          return 0ULL;
  
      if (read_len > 128)
-@@ -3420,8 +3421,8 @@ DEFINE_HOOK_FUNCTION(
+@@ -3525,8 +3526,8 @@ DEFINE_HOOK_FUNCTION(
  
      if (float1 == 0)
      {
@@ -796,7 +780,7 @@ index 14855b73c..4ac9728f3 100644
          return 0ULL;
      }
  
-@@ -3432,14 +3433,14 @@ DEFINE_HOOK_FUNCTION(
+@@ -3537,14 +3538,14 @@ DEFINE_HOOK_FUNCTION(
          man.value() > maxMantissa || exp.value() < minExponent ||
          exp.value() > maxExponent)
      {
@@ -817,10 +801,10 @@ index 14855b73c..4ac9728f3 100644
  
      HOOK_TEARDOWN();
 diff --git a/src/xrpld/app/tx/detail/SetHook.cpp b/src/xrpld/app/tx/detail/SetHook.cpp
-index 53b3b6b7e..44653a1b1 100644
+index db414506e3..311d215a58 100644
 --- a/src/xrpld/app/tx/detail/SetHook.cpp
 +++ b/src/xrpld/app/tx/detail/SetHook.cpp
-@@ -546,7 +546,7 @@ SetHook::validateHookSetEntry(SetHookCtx& ctx, STObject const& hookSetObj)
+@@ -573,7 +573,7 @@ SetHook::validateHookSetEntry(SetHookCtx& ctx, STObject const& hookSetObj)
                  }
  
                  auto result = validateGuards(

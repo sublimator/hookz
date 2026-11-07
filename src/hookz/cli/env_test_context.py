@@ -872,7 +872,7 @@ def _default_patch(patch_path: Path | None) -> Path:
     Packaged copy first: `patches/` sits outside `src/hookz`, so a wheel gets
     it only via the force-include in pyproject, and only under `hookz/data/`.
     A source checkout has no packaged copy, so it falls through to the repo
-    path — which is also the one `git diff origin/dev … > patches/…` writes,
+    path — which is also the one `git diff <pinned release> … > patches/…` writes,
     so a developer who regenerates it sees the new one immediately.
     """
     if patch_path is not None:

@@ -626,7 +626,7 @@ class TestTheLegendExplainsWhatTheTableNames:
             assert label in explained, label
 
     def test_the_churn_column_shows_the_real_numbers(self, checkout):
-        """`+142` and `+114` are what tell a reader the manifest is hiding
+        """`+141` and `+114` are what tell a reader the manifest is hiding
         something substantial — they are the evidence for the sentence below
         the table, so a swapped or blanked column makes that sentence
         unfalsifiable from the document alone.
@@ -642,8 +642,8 @@ class TestTheLegendExplainsWhatTheTableNames:
 
         row = next(ln for ln in doc.splitlines()
                    if ln.startswith("| `src/xrpld/app/hook/applyHook.h`"))
-        assert churn["src/xrpld/app/hook/applyHook.h"] == (142, 0)
-        assert "+142" in row, row
+        assert churn["src/xrpld/app/hook/applyHook.h"] == (141, 0)
+        assert "+141" in row, row
 
         row = next(ln for ln in doc.splitlines()
                    if ln.startswith("| `include/xrpl/hook/Guard.h`"))
@@ -664,7 +664,7 @@ class TestTheLegendExplainsWhatTheTableNames:
         line = next(ln for ln in doc.splitlines()
                     if "--full-patch` inlines the complete diff" in ln)
         assert "one- and two-line edits" not in line
-        assert "applyHook.h" in line and "+142" in line
+        assert "applyHook.h" in line and "+141" in line
         assert "RippledCore.cmake" in line and "+114" in line
 
 
