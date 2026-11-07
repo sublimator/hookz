@@ -23,17 +23,22 @@ At build time, CMake:
 
 Your tests and hooks live in your repo. xahaud is just the engine.
 
-By default, `build-test-hooks` compiles locally. For report or CI proofs that
-must embed artifacts from the public Xahau compiler, pass `--buildbox`
-(`--build-box` is equivalent). Remote mode records the endpoint, request hash,
-source hash, and WASM hash in the generated output, retries transient failures,
-and never falls back locally.
+By default, `build-test-hooks` compiles locally with hookz's own pipeline.
+For report or CI proofs that must embed what Xahau's own tools build, pass
+`--hooks-compiler`: the reference compiler, tequdev/hooks-compiler, run
+through `npx` at a pinned version (Node >= 20.12). The mode records the
+compiler version, source hash and WASM hash in the generated output, and never
+falls back locally.
 
-xahaud's CMake invocation recognizes `HOOKZ_BUILDBOX=1`, passes `--buildbox`
-explicitly, and makes hook-header generation an always-run target. This
-prevents an existing locally generated header from satisfying an
-`OUTPUT`-cached build after the compiler mode changes. Forward the variable
-into Docker explicitly.
+xahaud's CMake still knows this switch by its old name: `HOOKZ_BUILDBOX=1`
+passes `--buildbox` and makes hook-header generation an always-run target.
+hook-buildbox.xrpl.org was retired in October 2026, so hookz now refuses
+`--buildbox` with a pointer instead of building. Until the external-env-tests
+branch renames the switch, set `HOOKZ_HOOKS_COMPILER=1` together with
+`HOOKS_FORCE_RECOMPILE=1`. hookz reads the first from the environment it
+inherits, and the second makes generation always run, so an existing
+locally generated header cannot satisfy an `OUTPUT`-cached build after the
+compiler mode changes. Forward both into Docker explicitly.
 
 ### Swapping hookz inside a frozen image
 
@@ -165,15 +170,15 @@ options (`-DFOO=value`) or environment variables (`FOO=value`), or both:
 | `HOOKS_COVERAGE` | `ON` | set = enabled | Instrument hooks with coverage callbacks |
 | `HOOKS_TEST_ONLY` | `ON` | set = enabled | Exclude built-in `*_test.cpp` from `src/test/` |
 | `HOOKS_FORCE_RECOMPILE` | `ON` | set = enabled | Bypass dependency tracking and bytecode cache |
-| `HOOKZ_BUILDBOX` | `ON` | `1` | Use the canonical service and always regenerate hook headers |
+| `HOOKZ_BUILDBOX` | `ON` | `1` | Retired: hookz refuses `--buildbox`. Use `HOOKZ_HOOKS_COMPILER=1` + `HOOKS_FORCE_RECOMPILE=1` |
 
 **Note:** The `HOOKS_*` Boolean env vars are existence-checked — setting them
 to any value (even `0`) enables the feature. `HOOKZ_BUILDBOX` is stricter:
 its environment value must be `1`.
 
 CMake runs `hookz build-test-hooks` per test file. Local mode tracks `.c`/`.h`
-dependencies and recompiles when sources change; buildbox mode deliberately
-runs every time.
+dependencies and recompiles when sources change; `HOOKS_FORCE_RECOMPILE`
+deliberately runs every time.
 
 ### Enum.h: `__on_source_line` whitelist
 

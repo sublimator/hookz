@@ -249,7 +249,7 @@ class TestPipelineSelection:
         # Not asserted on "buildbox": that is in the input, so it also appears
         # in the generic "unknown build pipeline 'buildbox'" message and the
         # pointer could rot away with this still green.
-        assert "--buildbox" in out.output
+        assert "--hooks-compiler" in out.output
         assert "--pipeline local-structural" in out.output
 
     def test_a_refused_name_does_not_call_a_good_artifact_stale(self, tmp_path):
@@ -318,7 +318,7 @@ class TestPipelinesListing:
         left to read "unknown pipeline" and wonder if the service went too."""
         out = self._run()
         assert "buildbox" in out.output
-        assert "--buildbox" in out.output
+        assert "--hooks-compiler" in out.output
         assert "local-structural" in out.output
 
     def test_does_not_offer_a_refused_name_as_a_choice(self):
@@ -914,14 +914,15 @@ class TestAMistypedPathIsAUsageErrorNotATraceback:
         assert "Traceback" not in r.output
 
 
-class TestSourceTheBuildboxCannotBeGivenIsAVerdict:
-    """The buildbox takes source as text, so both call sites did a bare
-    `read_text()` inside a `try` that catches only `BuildboxError`.
+class TestSourceTheReferenceCompilerCannotBeGivenIsAVerdict:
+    """hooks-compiler is given source as text, so both call sites read it
+    themselves; they used to do a bare `read_text()` inside a `try` that
+    caught only the compiler's own error.
 
     A latin-1 byte in a comment is an ordinary thing to have in a C file, and
-    it came out as a UnicodeDecodeError traceback from `build --buildbox` and
-    `wce --buildbox` alike. Neither reaches the network, so neither test needs
-    it.
+    it came out as a UnicodeDecodeError traceback from the remote-compiler
+    mode of `build` and `wce` alike. Neither reaches npx, so neither test
+    needs Node.
     """
 
     @staticmethod
@@ -940,7 +941,7 @@ class TestSourceTheBuildboxCannotBeGivenIsAVerdict:
 
     def test_build_says_which_byte_and_where(self, tmp_path, latin1_hook):
         r = self._run(["build", str(latin1_hook), "-o",
-                       str(tmp_path / "o.wasm"), "--buildbox"])
+                       str(tmp_path / "o.wasm"), "--hooks-compiler"])
 
         assert r.exit_code == 1
         assert "not valid UTF-8" in r.output
@@ -948,7 +949,7 @@ class TestSourceTheBuildboxCannotBeGivenIsAVerdict:
         assert "Traceback" not in r.output
 
     def test_wce_says_the_same_thing(self, latin1_hook):
-        r = self._run(["wce", str(latin1_hook), "--buildbox"])
+        r = self._run(["wce", str(latin1_hook), "--hooks-compiler"])
 
         assert r.exit_code != 0
         assert "not valid UTF-8" in r.output

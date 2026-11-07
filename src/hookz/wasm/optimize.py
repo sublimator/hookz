@@ -124,8 +124,8 @@ DEFAULT_OPT_PROFILE = LOCAL_STRUCTURAL
 MISNOMERS = {
     "buildbox": (
         "'buildbox' is not a wasm-opt profile — these flags are "
-        "'local-structural', a local approximation of the service. The "
-        "service itself is selected by the CLI's --buildbox flag."
+        "'local-structural', copied from the retired buildbox service. The "
+        "reference compiler is selected by the CLI's --hooks-compiler flag."
     ),
 }
 

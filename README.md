@@ -124,7 +124,7 @@ uv run hookz test
 hookz doctor                         Check install: toolchain, config, smoke test
 hookz test [pytest args...]          Run tests
 hookz build hook.c                   Local structural build + validation
-hookz build hook.c --buildbox        Canonical remote build + local validation
+hookz build hook.c --hooks-compiler  Reference compiler build + local validation
 hookz wce hook.wasm                  WCE of the exact artifact you hand it
 hookz wce hook.c                     Build production-style, then weigh the result
 hookz wce hook.c --loops             Add the partial guard-line loop mapping
@@ -141,7 +141,7 @@ hookz debug-compile hook.c           Debug build for testing (not for deployment
 
 ## Production builds
 
-`hookz build` uses the local `local-structural` pipeline and produces
+`hookz build` uses hookz's own `local-structural` pipeline and produces
 deployment-ready WASM from C source in one command:
 
 ```bash
@@ -161,37 +161,34 @@ amendments that manifest records.
 
 The cleaner (Python port of [hook-cleaner-c](https://github.com/RichardAH/hook-cleaner-c)) strips custom sections, rebuilds exports to only `hook`/`cbak`, rewrites guard calls to canonical loop-top form, and remaps type indices. The guard checker (port of xahaud `Guard.h`) validates the result.
 
-For the artifact produced by the public Xahau compiler, select the actual
-network service explicitly:
+`local-structural` is not a reference build. Its flags were copied from the
+retired hook-buildbox service, and its bytes match no Xahau compiler exactly.
+For the artifact Xahau's own tools produce, use the reference compiler:
 
 ```bash
-hookz build reward.c --buildbox
-hookz build-test-hooks Reward_test.cpp --buildbox
+hookz build reward.c --hooks-compiler
+hookz build-test-hooks Reward_test.cpp --hooks-compiler
 ```
 
-`--build-box` is an equivalent spelling. Remote mode strips hookz audit
-annotations, sends the exact source to
-[`hook-buildbox.xrpl.org`](https://hook-buildbox.xrpl.org), records request and
-WASM SHA-256 identities, and independently guard-checks the returned bytes.
-It never falls back to a local compiler and does not use the persistent build
-cache.
+That is [tequdev/hooks-compiler](https://github.com/tequdev/hooks-compiler),
+which `@xahau/hooks-cli` 3.x and the Hooks Builder IDE both use: clang 22,
+wasm-ld, `wasm-opt -Oz` and hook-cleaner, all run as WebAssembly inside Node,
+deterministically, with no server. hookz runs it through `npx` at a pinned
+version (`hookz.hooks_compiler.VERSION`), so this mode needs Node >= 20.12. The
+first run downloads the toolchain (about 30 MB) into npm's cache; later builds
+take a few seconds each.
 
-Transient network failures, HTTP 408/425/429, and selected 5xx responses are
-retried with bounded exponential backoff. The default is two attempts locally
-and four when `CI` is set. Override with:
+The mode strips hookz audit annotations, compiles the one source file with the
+configured hook headers (`-I`), records the source and WASM SHA-256, and
+independently guard-checks the returned bytes. It never falls back to a local
+compiler. `HOOKZ_HOOKS_COMPILER=1` selects it in CMake/CI pipelines.
 
-```bash
-HOOKZ_BUILDBOX_ATTEMPTS=3       # 1..10
-HOOKZ_BUILDBOX_TIMEOUT=180      # seconds per request
-HOOKZ_BUILDBOX_URL=https://...  # alternate compatible endpoint
-HOOKZ_BUILDBOX=1                # select remote mode in CMake/CI pipelines
-```
-
-`hookz build --pipeline buildbox` is refused, and says so. It used to be an
-alias for the **local** `local-structural` pipeline, which meant one command
-carried two spellings of buildbox and only `--buildbox` called the service. Use
-`--buildbox` for the service, or `--pipeline local-structural` for the local
-approximation of it — `hookz pipelines` lists what the flag will take.
+`--buildbox` and `HOOKZ_BUILDBOX=1` are refused, and say where to go:
+hook-buildbox.xrpl.org was retired in October 2026, when Xahau's tools moved to
+hooks-compiler. `hookz build --pipeline buildbox` is refused too. It used to be
+an alias for the **local** `local-structural` pipeline. Use `--hooks-compiler`
+for the reference compiler, or `--pipeline local-structural` for hookz's own
+build — `hookz pipelines` lists what the flag will take.
 
 ## WCE analysis
 
@@ -222,15 +219,15 @@ prints which vote produced which bit.
 See [`src/hookz/wasm/README.md`](src/hookz/wasm/README.md).
 
 Given C instead, it builds first and names the compiler it used: the local
-`local-structural` pipeline by default, or the canonical service with
-`--buildbox`. Only then does it weigh the result. Deployability is the headline
+`local-structural` pipeline by default, or the reference compiler with
+`--hooks-compiler`. Only then does it weigh the result. Deployability is the headline
 — a hook xahaud would reject exits non-zero, and its WCE total is reported as a
 floor rather than a number.
 
 Add `--loops` for the per-loop breakdown. Loop rows come from guard IDs (`_g`
 encodes `__LINE__`), and they are labelled a partial mapping on purpose: loop
 subtree costs nest, so they overlap and do not sum to the total. When the build
-stripped hookz annotations — `local-structural` and `--buildbox` both do — each
+stripped hookz annotations — `local-structural` and `--hooks-compiler` both do — each
 row cites the annotated line alongside the artifact's own, as
 `line 43 (artifact 42)`.
 
@@ -369,7 +366,7 @@ This compiles your test files (~10s) and runs them against real xahaud. See [exa
 
 ### How it works
 
-You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_BUILDBOX=1` when the generated header must contain canonical-service artifacts rather than local builds; the integration makes that mode always regenerate the header so an older local artifact cannot satisfy the build. Your tests and hooks stay in your repo — xahaud is just the engine.
+You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_HOOKS_COMPILER=1` with `HOOKS_FORCE_RECOMPILE=1` when the generated header must contain reference-compiler artifacts rather than local builds; forcing regeneration keeps an older local artifact from satisfying the build. (xahaud's CMake still has the old `HOOKZ_BUILDBOX` switch, which hookz now refuses; see [docs/external-env-tests.md](docs/external-env-tests.md).) Your tests and hooks stay in your repo — xahaud is just the engine.
 
 Inline `[test.tshook]` / `[test.jshook]` blocks and `.ts` / `.js` file
 references are compiled by `jshookz compile-hook`. Install `jshookz` on PATH,

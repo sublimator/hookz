@@ -184,16 +184,21 @@ When it detects this pattern (two `i32.const` values followed by `call _g` follo
 
 The result is a binary where every loop has a clean guard pattern at the top, which the guard checker can then validate.
 
-## Canonical and local production pipelines
+## Reference and local production pipelines
 
-The canonical network service is implemented by `xrpl-hooks-compiler`,
-`compiler-api/src/chooks.ts`. Call it directly through hookz:
+The reference compiler is [tequdev/hooks-compiler](https://github.com/tequdev/hooks-compiler),
+which Xahau's hooks-cli 3.x and the Hooks Builder IDE use (clang 22, `-O2`,
+wasm-ld, `wasm-opt -Oz`, hook-cleaner, all as WebAssembly in Node). hookz runs
+it through `npx` at a pinned version:
 
 ```bash
-hookz build hook.c --buildbox
+hookz build hook.c --hooks-compiler
 ```
 
-The historical service profile copied into hookz used:
+The former network service, `xrpl-hooks-compiler`'s
+`compiler-api/src/chooks.ts` at hook-buildbox.xrpl.org, was retired in October
+2026. hookz's local `local-structural` pipeline still uses that service's
+historical profile, so it is hookz's own build and not a reference one:
 
 ```bash
 # 1. Compile and link
@@ -228,8 +233,8 @@ Our hookz equivalent:
 # Local structural build (compile + optimize + clean + guard-check)
 hookz build hook.c
 
-# Actual canonical build service, followed by local validation
-hookz build hook.c --buildbox
+# The reference compiler, followed by local validation
+hookz build hook.c --hooks-compiler
 
 # What each stage did to size, block depth and WCE
 hookz build hook.c --explain
@@ -265,10 +270,10 @@ The artifact is weighed first, and everything that maps it back to source is
 downstream of that and labelled as secondary.
 
 ```
-hook.wasm ─────────────────────────────┐   (weighed as given)
-                                       │
-source.c → local-structural | buildbox ┤   (named in the provenance line)
-                                       ↓
+hook.wasm ───────────────────────────────────┐   (weighed as given)
+                                             │
+source.c → local-structural | hooks-compiler ┤   (named in the provenance line)
+                                             ↓
                           validate_guards → deployability verdict
                             └ on rejection: analyze_wce, totals are a floor
                                        ↓

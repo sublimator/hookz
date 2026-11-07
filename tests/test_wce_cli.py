@@ -32,6 +32,7 @@ from hookz.wasm.pipeline import (
 
 
 WASM = b"\x00asm\x01\x00\x00\x00exact-artifact"
+HEADERS = Path("/configured/hook-headers")
 
 # One annotation line up front, so every published line sits one line lower in
 # the annotated file: published 42 is annotated 43.
@@ -124,28 +125,34 @@ def local_build(monkeypatch):
     return SimpleNamespace(seen=seen, trace=trace)
 
 
-@pytest.fixture
-def buildbox(monkeypatch):
-    """Stub the remote compiler, recording exactly what it was asked to build."""
-    calls = []
-    remote = SimpleNamespace(
-        wasm=WASM,
-        endpoint="https://compiler.example/api/build",
-        request_sha256="a" * 64,
+def reference_result():
+    return SimpleNamespace(
+        wasm=WASM, compiler="hooks-compiler@0.2.0", source_sha256="a" * 64
     )
+
+
+def with_headers(**_):
+    return SimpleNamespace(hook_headers=HEADERS)
+
+
+@pytest.fixture
+def reference(monkeypatch):
+    """Stub the reference compiler, recording exactly what it was asked to build."""
+    calls = []
+    built = reference_result()
 
     def compile_source(*a, **k):
         calls.append((a, k))
-        return remote
+        return built
 
-    monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
-    monkeypatch.setattr("hookz.buildbox.compile_source", compile_source)
+    monkeypatch.setattr("hookz.config.load_config", with_headers)
+    monkeypatch.setattr("hookz.hooks_compiler.compile_source", compile_source)
     monkeypatch.setattr(
         "hookz.wasm.pipeline.run_pipeline",
-        explode("buildbox mode used the local pipeline"),
+        explode("hooks-compiler mode used the local pipeline"),
     )
     monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm, **kw: result())
-    return SimpleNamespace(calls=calls, remote=remote)
+    return SimpleNamespace(calls=calls, built=built)
 
 
 @pytest.fixture
@@ -358,7 +365,7 @@ class TestSourceCompilationChoice:
 
         assert out.exit_code == 0, out.output
         assert local_build.seen == [None]
-        assert "production-like approximation, not buildbox provenance" in out.output
+        assert "production-like, not reference-compiler provenance" in out.output
         assert "exact-artifact WCE" in out.output
 
     def test_stage_table_describes_the_build_that_was_weighed(
@@ -398,69 +405,50 @@ class TestSourceCompilationChoice:
         assert "local-structural" in out.output
         assert "local pipeline failed" not in out.output
 
-    def test_buildbox_weighs_the_exact_remote_result(self, c_source, buildbox):
-        out = run(c_source, "--buildbox")
+    def test_hooks_compiler_weighs_its_exact_result(self, c_source, reference):
+        out = run(c_source, "--hooks-compiler")
 
         assert out.exit_code == 0, out.output
-        assert "canonical buildbox result" in out.output
+        assert "reference compiler result" in out.output
+        assert "hooks-compiler@0.2.0" in out.output
         assert "a" * 64 in out.output
 
-    def test_the_service_is_sent_this_source_under_this_name(
-        self, c_source, buildbox
+    def test_the_compiler_is_given_this_source_name_and_headers(
+        self, c_source, reference
     ):
         """Stubbing compile_source and asserting only on the reply proves the
         report renders; it does not prove the right file was compiled."""
-        run(c_source, "--buildbox")
+        run(c_source, "--hooks-compiler")
 
-        args, kwargs = buildbox.calls[0]
+        args, kwargs = reference.calls[0]
         assert args[0] == c_source.read_text()
         assert kwargs["filename"] == "hook.c"
+        assert kwargs["headers"] == HEADERS
 
-    def test_buildbox_url_and_options_reach_the_request(self, c_source, buildbox):
-        run(
-            c_source,
-            "--buildbox",
-            "--buildbox-url",
-            "https://elsewhere.example/api/build",
-            "--buildbox-options",
-            "-Oz",
-        )
-
-        _, kwargs = buildbox.calls[0]
-        assert kwargs["endpoint"] == "https://elsewhere.example/api/build"
-        assert kwargs["options"] == "-Oz"
-
-    def test_default_compiler_options_are_the_documented_ones(
-        self, c_source, buildbox
-    ):
-        run(c_source, "--buildbox")
-
-        _, kwargs = buildbox.calls[0]
-        assert kwargs["options"] == "-O3"
-        assert kwargs["endpoint"] is None  # the client picks its own default
-
-    def test_buildbox_failure_never_falls_back_to_a_local_compiler(
+    def test_hooks_compiler_failure_never_falls_back_to_a_local_compiler(
         self, c_source, monkeypatch
     ):
-        from hookz.buildbox import BuildboxError
+        from hookz.hooks_compiler import HooksCompilerError
 
-        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
+        monkeypatch.setattr("hookz.config.load_config", with_headers)
         monkeypatch.setattr(
-            "hookz.buildbox.compile_source",
-            lambda *a, **k: (_ for _ in ()).throw(BuildboxError("503")),
+            "hookz.hooks_compiler.compile_source",
+            lambda *a, **k: (_ for _ in ()).throw(HooksCompilerError("no npx")),
         )
         monkeypatch.setattr(
             "hookz.wasm.pipeline.run_pipeline",
-            explode("buildbox failure fell back to the local compiler"),
+            explode("a hooks-compiler failure fell back to the local compiler"),
         )
 
-        out = run(c_source, "--buildbox")
+        out = run(c_source, "--hooks-compiler")
 
         assert out.exit_code == 1
-        assert "buildbox failed: 503" in out.output
+        assert "hooks-compiler failed: no npx" in out.output
 
-    def test_buildbox_and_local_pipeline_are_mutually_exclusive(self, c_source):
-        out = run(c_source, "--buildbox", "--pipeline", "debug")
+    def test_hooks_compiler_and_local_pipeline_are_mutually_exclusive(
+        self, c_source
+    ):
+        out = run(c_source, "--hooks-compiler", "--pipeline", "debug")
 
         assert out.exit_code == 2
         assert "cannot be combined" in out.output
@@ -483,25 +471,48 @@ class TestSourceCompilationChoice:
         out = run(c_source, "--pipeline", "buildbox")
 
         assert out.exit_code == 2
-        assert "--buildbox" in out.output
+        assert "--hooks-compiler" in out.output
         assert "--pipeline local-structural" in out.output
         assert "local pipeline failed" not in out.output
 
-    def test_buildbox_url_without_buildbox_is_refused(self, c_source):
-        out = run(c_source, "--buildbox-url", "https://elsewhere.example")
+    @pytest.mark.parametrize("flag", ["--buildbox", "--build-box"])
+    def test_the_retired_buildbox_flag_says_where_to_go(
+        self, c_source, monkeypatch, flag
+    ):
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            explode("a retired flag still started a build"),
+        )
+
+        out = run(c_source, flag)
 
         assert out.exit_code == 2
-        assert "--buildbox-url requires --buildbox" in out.output
+        assert "retired" in out.output
+        assert "--hooks-compiler" in out.output
 
-    def test_env_switch_selects_the_remote_compiler_for_c(
+    def test_the_retired_env_switch_is_refused_for_c(self, c_source, monkeypatch):
+        """HOOKZ_BUILDBOX=1 used to send C to the service. Building locally
+        under it instead would hand back bytes the caller did not ask for."""
+        monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
+        monkeypatch.setattr(
+            "hookz.wasm.pipeline.run_pipeline",
+            explode("HOOKZ_BUILDBOX=1 fell through to a local build"),
+        )
+
+        out = run(c_source)
+
+        assert out.exit_code == 2
+        assert "HOOKZ_HOOKS_COMPILER=1" in out.output
+
+    def test_env_switch_selects_the_reference_compiler_for_c(
         self, c_source, monkeypatch
     ):
-        remote = SimpleNamespace(
-            wasm=WASM, endpoint="https://ci.example", request_sha256="b" * 64
+        monkeypatch.setenv("HOOKZ_HOOKS_COMPILER", "1")
+        monkeypatch.setattr("hookz.config.load_config", with_headers)
+        monkeypatch.setattr(
+            "hookz.hooks_compiler.compile_source",
+            lambda *a, **k: reference_result(),
         )
-        monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
-        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
-        monkeypatch.setattr("hookz.buildbox.compile_source", lambda *a, **k: remote)
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
@@ -509,14 +520,15 @@ class TestSourceCompilationChoice:
         out = run(c_source)
 
         assert out.exit_code == 0, out.output
-        assert "canonical buildbox result" in out.output
+        assert "reference compiler result" in out.output
 
+    @pytest.mark.parametrize("switch", ["HOOKZ_HOOKS_COMPILER", "HOOKZ_BUILDBOX"])
     def test_env_switch_does_not_reject_a_prebuilt_artifact(
-        self, artifact, monkeypatch
+        self, artifact, monkeypatch, switch
     ):
-        """CI sets HOOKZ_BUILDBOX once per job; weighing a .wasm in that job
-        must not become a usage error about compiler selection."""
-        monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
+        """CI sets the switch once per job; weighing a .wasm in that job must
+        not become a usage error about compiler selection."""
+        monkeypatch.setenv(switch, "1")
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result()
         )
@@ -529,15 +541,15 @@ class TestSourceCompilationChoice:
     def test_an_explicit_pipeline_beats_the_env_switch(
         self, c_source, monkeypatch
     ):
-        """CI sets HOOKZ_BUILDBOX once per job. Inside that job --pipeline must
-        still work, and must not be refused by an error naming --buildbox,
-        which is not on the command line."""
+        """CI sets HOOKZ_HOOKS_COMPILER once per job. Inside that job
+        --pipeline must still work, and must not be refused by an error naming
+        --hooks-compiler, which is not on the command line."""
         seen = []
-        monkeypatch.setenv("HOOKZ_BUILDBOX", "1")
+        monkeypatch.setenv("HOOKZ_HOOKS_COMPILER", "1")
         monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
         monkeypatch.setattr(
-            "hookz.buildbox.compile_source",
-            explode("an explicit --pipeline still went to the buildbox"),
+            "hookz.hooks_compiler.compile_source",
+            explode("an explicit --pipeline still went to hooks-compiler"),
         )
         monkeypatch.setattr(
             "hookz.wasm.pipeline.run_pipeline",
@@ -555,7 +567,7 @@ class TestSourceCompilationChoice:
 
     def test_both_flags_typed_together_are_still_refused(self, c_source):
         """The mutual exclusion is between two things the user asked for."""
-        out = run(c_source, "--buildbox", "--pipeline", "analysis")
+        out = run(c_source, "--hooks-compiler", "--pipeline", "analysis")
 
         assert out.exit_code == 2
         assert "cannot be combined" in out.output
@@ -581,12 +593,12 @@ class TestSourceCompilationChoice:
         assert "NOT what you would deploy" in out.output
         assert "production-like" not in out.output
 
-    def test_the_production_pipeline_still_says_it_is_not_the_buildbox(
+    def test_the_production_pipeline_says_it_is_not_the_reference(
         self, c_source, local_build
     ):
         out = run(c_source)
 
-        assert "production-like approximation, not buildbox provenance" in out.output
+        assert "production-like, not reference-compiler provenance" in out.output
 
     def test_a_failed_compile_is_reported_not_raised(self, c_source, monkeypatch):
         """clang failing is the most ordinary way for this command to fail,
@@ -606,7 +618,7 @@ class TestSourceCompilationChoice:
         assert "hook.c:3:1: error" in out.output
 
     def test_explicit_compiler_flags_on_a_wasm_are_still_refused(self, artifact):
-        out = run(artifact, "--buildbox")
+        out = run(artifact, "--hooks-compiler")
 
         assert out.exit_code == 2
         assert "already the artifact" in out.output
@@ -666,21 +678,21 @@ class TestGuardLineProvenance:
         assert "line 42" in out.output
         assert "artifact 42" not in out.output
 
-    def test_buildbox_result_is_mapped_because_the_service_gets_stripped_source(
+    def test_reference_result_is_mapped_because_the_compiler_gets_stripped_source(
         self, tmp_path, monkeypatch
     ):
         source = tmp_path / "hook.c"
         source.write_text(ANNOTATED_C)
-        remote = SimpleNamespace(
-            wasm=WASM, endpoint="https://compiler.example", request_sha256="c" * 64
+        monkeypatch.setattr("hookz.config.load_config", with_headers)
+        monkeypatch.setattr(
+            "hookz.hooks_compiler.compile_source",
+            lambda *a, **k: reference_result(),
         )
-        monkeypatch.setattr("hookz.config.load_config", lambda **k: object())
-        monkeypatch.setattr("hookz.buildbox.compile_source", lambda *a, **k: remote)
         monkeypatch.setattr(
             "hookz.wasm.guard.validate_guards", lambda wasm, **kw: result_with_loop()
         )
 
-        out = run(source, "--buildbox", "--loops")
+        out = run(source, "--hooks-compiler", "--loops")
 
         assert out.exit_code == 0, out.output
         assert "line 43 (artifact 42)" in out.output
@@ -955,7 +967,7 @@ class TestErrorsReachTheUserAsErrors:
         self, artifact, monkeypatch, capsys
     ):
         code, out = self._run_main(
-            ["wce", str(artifact), "--buildbox"], monkeypatch, capsys
+            ["wce", str(artifact), "--hooks-compiler"], monkeypatch, capsys
         )
 
         assert code == 2

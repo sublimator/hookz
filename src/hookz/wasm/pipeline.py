@@ -214,13 +214,14 @@ class BuildPipeline:
 # trace have to be able to ask.
 STRIP_ANNOTATIONS = "hookz.annotations:strip"
 
-# A local structural approximation using the historical web compiler's flags.
-# It does not call the buildbox and is not byte-identical to it; the local
-# clang, binaryen and cleaner differ. Provenance and known divergences:
-# hookz.wasm.compiler_ref.
+# hookz's own production build, using the flags of the retired web compiler
+# (hook-buildbox.xrpl.org). It is not a reference build: the reference compiler
+# is now hooks-compiler (`--hooks-compiler`), which uses -O2 and wasm-opt -Oz,
+# and this pipeline is byte-identical to neither. Provenance and known
+# divergences: hookz.wasm.compiler_ref.
 LOCAL_STRUCTURAL_PIPELINE = BuildPipeline(
     name="local-structural",
-    summary="local structural approximation (clang -O3 → binaryen → cleaner)",
+    summary="hookz's own build (clang -O3 → binaryen → cleaner)",
     provenance=f"{compiler_ref.COMPILER_SOURCE} @ "
                f"{compiler_ref.COMPILER_COMMIT[:8]} "
                f"({compiler_ref.COMPILER_COMMIT_DATE})",
@@ -274,15 +275,13 @@ DEFAULT_PIPELINE = LOCAL_STRUCTURAL_PIPELINE
 
 # Rejected, not resolved. `buildbox` used to alias local-structural, so one
 # command carried two spellings of the same word and only `--buildbox` called
-# the service — the other quietly built here and exited 0. Every place that
-# *described* the alias said so, but none of them is on the path of someone who
-# types it and reads the exit code. A name that means its opposite is worse
-# than an unknown name, so the wrong spelling exits pointing at both right ones.
+# the service — the other quietly built here and exited 0. The service has
+# since been retired; the name still points at both real options.
 PIPELINE_MISNOMERS = {
     "buildbox": (
-        "--pipeline buildbox is not the buildbox service — it builds locally. "
-        "Use --buildbox to compile through the service, or "
-        "--pipeline local-structural for the local approximation of it."
+        "--pipeline buildbox is not a pipeline: the buildbox service was "
+        "retired in October 2026. Use --hooks-compiler for the reference "
+        "compiler, or --pipeline local-structural for hookz's own build."
     ),
 }
 
@@ -290,9 +289,9 @@ PIPELINE_MISNOMERS = {
 def _misnomer(name: str) -> str | None:
     """The pointer for `name`, however the caller spelled it.
 
-    Matched loosely on purpose. The sibling flag is `--buildbox`/`--build-box`
-    and `--compiler` takes its choices case-insensitively, so this CLI has
-    taught people at least four spellings of the word. An exact-match table
+    Matched loosely on purpose. The retired flag was `--buildbox`/`--build-box`
+    and `--compiler` took its choices case-insensitively, so this CLI taught
+    people at least four spellings of the word. An exact-match table
     would hand the pointer to `buildbox` and drop `BuildBox` and `build-box`
     into the generic "unknown pipeline" message — which is honest but tells
     the reader nothing about why the name they had every reason to expect is

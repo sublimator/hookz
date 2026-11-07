@@ -201,19 +201,35 @@ def _rules_line(rules_version: int, dim: bool = False) -> str:
 
 
 def _unreadable(path, exc: Exception) -> str:
-    """Why a hook source could not be handed to the buildbox, in one line.
+    """Why a hook source could not be handed to hooks-compiler, in one line.
 
-    The buildbox takes source as text, so both call sites did a bare
-    `read_text()` inside a `try` that catches only `BuildboxError`. A latin-1
+    hooks-compiler is given source as text (annotations stripped), so both
+    call sites read it themselves. They used to do a bare `read_text()` inside
+    a `try` that caught only the compiler's own error. A latin-1
     byte in a comment — an ordinary thing to have in a C file — came out as a
     UnicodeDecodeError traceback, and the fix belongs to whoever owns the
     file, so it has to be legible rather than a stack.
     """
     if isinstance(exc, UnicodeDecodeError):
         return (f"{path} is not valid UTF-8: byte 0x{exc.object[exc.start]:02x} "
-                f"at offset {exc.start}. The buildbox takes source as text — "
+                f"at offset {exc.start}. hooks-compiler takes source as text — "
                 "re-save the file as UTF-8.")
     return f"could not read {path}: {exc}"
+
+
+# hook-buildbox.xrpl.org was retired in October 2026, and --buildbox with it.
+# Refused rather than dropped: xahaud's external-env-tests CMake still passes
+# --buildbox when HOOKZ_BUILDBOX=1, and "no such option" would not say why.
+BUILDBOX_RETIRED = (
+    "--buildbox is gone: hook-buildbox.xrpl.org was retired in October 2026, "
+    "and Xahau's own tools now compile with hooks-compiler. Use "
+    "--hooks-compiler (or HOOKZ_HOOKS_COMPILER=1) for that compiler."
+)
+
+
+def _refuse_buildbox(asked: bool) -> None:
+    if asked:
+        raise click.UsageError(BUILDBOX_RETIRED)
 
 
 def _say_rules(rules_version: int, log=print) -> None:
@@ -769,17 +785,16 @@ def debug_compile(source, output):
 @click.option("--coverage", is_flag=True, help="Instrument with __on_source_line coverage callbacks.")
 @click.option("--pipeline", "pipeline_name", default=None,
               help="Local build toolchain to use (default: local-structural). See `hookz pipelines`.")
-@click.option("--buildbox", "--build-box", "use_buildbox", is_flag=True,
-              help="Compile through hook-buildbox.xrpl.org; never falls back locally.")
-@click.option("--buildbox-url", default=None, hidden=True,
-              help="Override the buildbox endpoint (or HOOKZ_BUILDBOX_URL).")
-@click.option("--buildbox-options", default="-O3", show_default=True,
-              help="Compiler options sent to the buildbox.")
+@click.option("--hooks-compiler", "use_hooks_compiler", is_flag=True,
+              help="Compile with the reference compiler (hooks-compiler, via npx); "
+                   "never falls back locally.")
+@click.option("--buildbox", "--build-box", "retired_buildbox", is_flag=True,
+              hidden=True)
 @click.option("--explain", is_flag=True,
               help="Print size/depth/WCE after every stage.")
 @waiver_options
-def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
-          buildbox_options, explain, ignore_depth, ignore_wce_overage,
+def build(source, output, coverage, pipeline_name, use_hooks_compiler,
+          retired_buildbox, explain, ignore_depth, ignore_wce_overage,
           ignore_guard_calls):
     """Compile, clean, and guard-check a hook.
 
@@ -792,19 +807,18 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
 
     if os.environ.get("HOOKZ_NO_COVERAGE"):
         coverage = False
-    if os.environ.get("HOOKZ_BUILDBOX") == "1":
-        use_buildbox = True
+    _refuse_buildbox(retired_buildbox or os.environ.get("HOOKZ_BUILDBOX") == "1")
+    if os.environ.get("HOOKZ_HOOKS_COMPILER") == "1":
+        use_hooks_compiler = True
 
-    if use_buildbox and coverage:
+    if use_hooks_compiler and coverage:
         raise click.UsageError(
-            "--buildbox produces canonical deployable WASM and cannot be "
+            "--hooks-compiler produces canonical deployable WASM and cannot be "
             "combined with --coverage")
-    if use_buildbox and pipeline_name:
+    if use_hooks_compiler and pipeline_name:
         raise click.UsageError(
-            "--buildbox selects the remote compiler and cannot be combined "
-            "with the local --pipeline option")
-    if buildbox_url and not use_buildbox:
-        raise click.UsageError("--buildbox-url requires --buildbox")
+            "--hooks-compiler selects the reference compiler and cannot be "
+            "combined with the local --pipeline option")
 
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
     rules = _rules()
@@ -841,11 +855,10 @@ def build(source, output, coverage, pipeline_name, use_buildbox, buildbox_url,
 
     config = load_config(source_file=source)
 
-    if use_buildbox:
-        _build_buildbox(
+    if use_hooks_compiler:
+        _build_hooks_compiler(
             source, output, stdout_mode, ignore, rules,
-            endpoint=buildbox_url, options=buildbox_options,
-            request_filename=request_filename,
+            request_filename=request_filename, headers=config.hook_headers,
         )
     elif coverage:
         _build_coverage(source, output, config, stdout_mode, ignore, rules)
@@ -933,9 +946,9 @@ def pipelines():
     for name in PIPELINE_MISNOMERS:
         console.print(
             f"[dim]rejected:[/dim] {escape(name)} [dim]— builds locally, so it is not "
-            "a name this flag will take. Use[/dim] --buildbox [dim]for the "
-            "service or[/dim] --pipeline local-structural [dim]for the local "
-            "approximation.[/dim]"
+            "a name this flag will take. Use[/dim] --hooks-compiler [dim]for the "
+            "reference compiler or[/dim] --pipeline local-structural [dim]for "
+            "hookz's own build.[/dim]"
         )
 
 
@@ -1067,19 +1080,18 @@ def _build_normal(source: Path, output, config, stdout_mode: bool = False,
     sys.exit(1 if result.waived else 0)
 
 
-def _build_buildbox(
+def _build_hooks_compiler(
     source: Path,
     output,
     stdout_mode: bool = False,
     ignore: frozenset[str] = frozenset(),
     rules_version: int | None = None,
     *,
-    endpoint: str | None = None,
-    options: str = "-O3",
     request_filename: str | None = None,
+    headers: Path | None = None,
 ) -> None:
-    """Canonical remote build followed by independent local validation."""
-    from hookz.buildbox import BuildboxError, compile_source
+    """Reference-compiler build followed by independent local validation."""
+    from hookz.hooks_compiler import HooksCompilerError, compile_source
     from hookz.wasm.guard import GuardError, validate_guards
 
     if rules_version is None:
@@ -1100,23 +1112,21 @@ def _build_buildbox(
         result = compile_source(
             source_text,
             filename=request_filename or source.name,
-            endpoint=endpoint,
-            options=options,
+            headers=headers,
         )
-    except BuildboxError as exc:
-        _build_fail(log, output, stdout_mode, f"Buildbox FAILED: {exc}")
+    except HooksCompilerError as exc:
+        _build_fail(log, output, stdout_mode, f"hooks-compiler FAILED: {exc}")
 
     wasm = result.wasm
-    log(f"Built {source.name} via canonical buildbox")
-    log(f"  endpoint: {result.endpoint}")
-    log(f"  request sha256: {result.request_sha256}")
+    log(f"Built {source.name} via {result.compiler} (reference compiler)")
     log(f"  source sha256: {result.source_sha256}")
     log(f"  wasm sha256: {result.wasm_sha256}")
-    log(f"  attempts: {result.attempts}, bytes: {len(wasm):,}")
+    log(f"  bytes: {len(wasm):,} (raw {result.raw_size:,}, "
+        f"optimized {result.optimized_size:,})")
 
-    # The service guard-checks the artifact, but a remote success is not
-    # authority over the local consumer. Validate the exact returned bytes
-    # independently before allowing them to reach the output path.
+    # hooks-compiler runs hook-cleaner, but its success is not authority over
+    # the local consumer. Validate the exact bytes independently before
+    # allowing them to reach the output path.
     try:
         validation = validate_guards(
             wasm, rules_version=rules_version, ignore=ignore
@@ -1126,9 +1136,9 @@ def _build_buildbox(
             f"  Local guard check {verdict} "
             f"(hook WCE={validation.hook_wce:,})"
         )
-        # Whose rules judged the remote bytes. Most needed here of the three:
-        # the artifact came from a compiler this machine did not run, so the
-        # only thing the local verdict contributes is the basis it used.
+        # Whose rules judged the bytes. Most needed here of the three: the
+        # artifact came from a compiler hookz does not control, so the only
+        # thing the local verdict contributes is the basis it used.
         _say_rules(rules_version, log)
     except GuardError as exc:
         _build_fail(
@@ -1299,14 +1309,15 @@ def guard_check(hook_wasm, ignore_depth, ignore_wce_overage,
     help="Local production-like pipeline for C input (default: local-structural).",
 )
 @click.option(
-    "--buildbox", "--build-box", "use_buildbox", is_flag=True,
-    help="Compile C through hook-buildbox.xrpl.org, then weigh its exact result.",
+    "--hooks-compiler", "use_hooks_compiler", is_flag=True,
+    help="Compile C with the reference compiler (hooks-compiler, via npx), "
+         "then weigh its exact result.",
 )
-@click.option("--buildbox-url", default=None, hidden=True)
-@click.option("--buildbox-options", default="-O3", show_default=True)
+@click.option("--buildbox", "--build-box", "retired_buildbox", is_flag=True,
+              hidden=True)
 @waiver_options
-def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
-        buildbox_url, buildbox_options, ignore_depth, ignore_wce_overage,
+def wce(input_path, show_source, show_loops, pipeline_name, use_hooks_compiler,
+        retired_buildbox, ignore_depth, ignore_wce_overage,
         ignore_guard_calls):
     """Weigh exact WASM, or build C production-style and weigh the result.
 
@@ -1333,22 +1344,21 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
     # once for a whole job: it must not make --pipeline unusable inside that
     # job, nor blame a flag nobody typed. A .wasm has already been compiled, so
     # compiler selection does not apply to it either.
-    if use_buildbox and pipeline_name:
+    env_applies = not is_wasm and not pipeline_name
+    _refuse_buildbox(
+        retired_buildbox
+        or (os.environ.get("HOOKZ_BUILDBOX") == "1" and env_applies)
+    )
+    if use_hooks_compiler and pipeline_name:
         raise click.UsageError(
-            "--buildbox selects the remote compiler and cannot be combined "
-            "with --pipeline"
+            "--hooks-compiler selects the reference compiler and cannot be "
+            "combined with --pipeline"
         )
-    if (
-        os.environ.get("HOOKZ_BUILDBOX") == "1"
-        and not is_wasm
-        and not pipeline_name
-    ):
-        use_buildbox = True
-    if buildbox_url and not use_buildbox:
-        raise click.UsageError("--buildbox-url requires --buildbox")
+    if os.environ.get("HOOKZ_HOOKS_COMPILER") == "1" and env_applies:
+        use_hooks_compiler = True
     if not is_wasm and source is None:
         raise click.UsageError("INPUT_PATH must end in .c or .wasm")
-    if is_wasm and (use_buildbox or pipeline_name):
+    if is_wasm and (use_hooks_compiler or pipeline_name):
         raise click.UsageError(
             "a .wasm input is already the artifact; compiler selection only "
             "applies to .c input"
@@ -1372,30 +1382,29 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
         if not wasm.startswith(WASM_MAGIC + WASM_VERSION):
             raise click.ClickException(f"{input_path} is not a WebAssembly 1 module")
         provenance = f"provided artifact: {input_path}"
-    elif use_buildbox:
-        from hookz.buildbox import BuildboxError, compile_source
+    elif use_hooks_compiler:
+        from hookz.hooks_compiler import HooksCompilerError, compile_source
 
         try:
             source_text = source.read_text()
         except (UnicodeDecodeError, OSError) as exc:
             raise click.ClickException(_unreadable(source, exc)) from None
 
+        analysis_config = load_config(source_file=source)
         try:
-            remote = compile_source(
+            built = compile_source(
                 source_text,
                 filename=source.name,
-                endpoint=buildbox_url,
-                options=buildbox_options,
+                headers=analysis_config.hook_headers,
             )
-        except BuildboxError as exc:
-            raise click.ClickException(f"buildbox failed: {exc}") from exc
-        wasm = remote.wasm
+        except HooksCompilerError as exc:
+            raise click.ClickException(f"hooks-compiler failed: {exc}") from exc
+        wasm = built.wasm
         provenance = (
-            f"canonical buildbox result: {remote.endpoint}; "
-            f"request {remote.request_sha256}"
+            f"reference compiler result: {built.compiler}; "
+            f"source {built.source_sha256}"
         )
-        analysis_config = load_config(source_file=source)
-        stripped_before_compile = True  # buildbox strips before it sends
+        stripped_before_compile = True  # compile_source strips before it runs
     else:
         from hookz.wasm.clean import CleanError
         from hookz.wasm.optimize import WasmOptError
@@ -1430,12 +1439,12 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
         # actually compiled, which removes the need for this gate.
         stripped_before_compile = STRIP_ANNOTATIONS in trace.pipeline.transforms
         # Read the caveat off the pipeline rather than asserting one. Only
-        # local-structural aims at the production compiler; calling the debug
-        # pipeline a "production-like approximation" in the same sentence as
-        # its own "for reading, not deploying" is the label-over-the-numbers
-        # mistake this command was rewritten to stop making.
+        # local-structural aims at a production build; calling the debug
+        # pipeline "production-like" in the same sentence as its own "for
+        # reading, not deploying" is the label-over-the-numbers mistake this
+        # command was rewritten to stop making.
         caveat = (
-            "production-like approximation, not buildbox provenance"
+            "production-like, not reference-compiler provenance"
             if trace.pipeline.targets_production
             else "an analysis build — NOT what you would deploy"
         )
@@ -1584,17 +1593,16 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_buildbox,
 @click.option("--hook-coverage/--no-hook-coverage", default=False,
               help="Compile with coverage instrumentation.")
 @click.option("--no-cache", is_flag=True, help="Bypass compilation cache.")
-@click.option("--compiler", type=click.Choice(["hookz", "wasmcc", "buildbox"], case_sensitive=False),
+@click.option("--compiler", type=click.Choice(["hookz", "wasmcc", "hooks-compiler"], case_sensitive=False),
               default=None, help="Compiler backend (default: wasmcc for SetHook_test, hookz otherwise).")
-@click.option("--buildbox", "--build-box", "use_buildbox", is_flag=True,
-              help="Compile C blocks through the canonical service; no local fallback.")
-@click.option("--buildbox-url", default=None, hidden=True,
-              help="Override the buildbox endpoint (or HOOKZ_BUILDBOX_URL).")
-@click.option("--buildbox-options", default="-O3", show_default=True,
-              help="Compiler options sent to the buildbox.")
+@click.option("--hooks-compiler", "use_hooks_compiler", is_flag=True,
+              help="Compile C blocks with the reference compiler (hooks-compiler, "
+                   "via npx); no local fallback.")
+@click.option("--buildbox", "--build-box", "retired_buildbox", is_flag=True,
+              hidden=True)
 def build_test_hooks(input_file, output, symbol, jobs, force_write,
                      hooks_c_dir_raw, hook_coverage, no_cache, compiler,
-                     use_buildbox, buildbox_url, buildbox_options):
+                     use_hooks_compiler, retired_buildbox):
     """Generate _hooks.h from a C++ test file containing WASM blocks.
 
     Extracts inline hooks (R"[test.hook](...)[test.hook]") and file
@@ -1613,19 +1621,20 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write,
 
     if os.environ.get("HOOKZ_NO_COVERAGE"):
         hook_coverage = False
-    if os.environ.get("HOOKZ_BUILDBOX") == "1":
-        use_buildbox = True
+    _refuse_buildbox(retired_buildbox or os.environ.get("HOOKZ_BUILDBOX") == "1")
+    if os.environ.get("HOOKZ_HOOKS_COMPILER") == "1":
+        use_hooks_compiler = True
 
-    if use_buildbox and compiler not in (None, "buildbox"):
+    if compiler:
+        compiler = compiler.lower()
+    if use_hooks_compiler and compiler not in (None, "hooks-compiler"):
         raise click.UsageError(
-            "--buildbox cannot be combined with a different --compiler")
-    if buildbox_url and not (use_buildbox or compiler == "buildbox"):
-        raise click.UsageError("--buildbox-url requires --buildbox")
-    if use_buildbox:
-        compiler = "buildbox"
-    if compiler == "buildbox" and hook_coverage:
+            "--hooks-compiler cannot be combined with a different --compiler")
+    if use_hooks_compiler:
+        compiler = "hooks-compiler"
+    if compiler == "hooks-compiler" and hook_coverage:
         raise click.UsageError(
-            "--buildbox produces canonical deployable WASM and cannot be "
+            "--hooks-compiler produces canonical deployable WASM and cannot be "
             "combined with --hook-coverage")
 
     _logging.basicConfig(
@@ -1664,8 +1673,6 @@ def build_test_hooks(input_file, output, symbol, jobs, force_write,
             output_file=Path(output) if output else None,
             symbol_name=symbol,
             compiler=compiler,
-            buildbox_endpoint=buildbox_url,
-            buildbox_options=buildbox_options,
         )
         builder.build()
     except RuntimeError as e:

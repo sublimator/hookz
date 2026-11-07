@@ -9,8 +9,14 @@ between installing and being rejected outright.
 So the flags are not ours to choose. They are copied from the official web
 compiler, and this module records exactly which revision they were copied from.
 `hookz.wasm.optimize.LOCAL_STRUCTURAL` and
-`hookz.wasm.pipeline.LOCAL_STRUCTURAL_PIPELINE` are the local approximation;
-this is the citation. Actual service compilation is `hookz build --buildbox`.
+`hookz.wasm.pipeline.LOCAL_STRUCTURAL_PIPELINE` are hookz's own build; this is
+the citation.
+
+The service these flags came from (hook-buildbox.xrpl.org) was retired in
+October 2026. Xahau's tools now compile with tequdev/hooks-compiler (clang 22,
+-O2, wasm-opt -Oz, hook-cleaner), which hookz runs as the reference compiler:
+`hookz build --hooks-compiler`, pinned in `hookz.hooks_compiler`. These flags
+remain hookz's default local build, which is not byte-identical to it.
 
 PIN
 ---

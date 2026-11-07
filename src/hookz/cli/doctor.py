@@ -174,6 +174,16 @@ def _check_environment(rep: _Report, cfg, cfg_error: Exception | None) -> tuple[
                                  "and hookz wce on C input",
                      hint=_binaryen_hint())
 
+    # node (optional — only --hooks-compiler runs it, through npx)
+    from hookz.hooks_compiler import NODE_REQUIREMENT, SPEC
+
+    if shutil.which("npx"):
+        ver = _first_line(["node", "--version"]) or "version unknown"
+        rep.ok("node", f"{ver} (for --hooks-compiler: {SPEC}, needs {NODE_REQUIREMENT})")
+    else:
+        rep.optional("node", f"not found — only --hooks-compiler needs it "
+                             f"(Node {NODE_REQUIREMENT} with npx)")
+
     # docker (optional — xahaud integration mode)
     docker = shutil.which("docker")
     if docker:

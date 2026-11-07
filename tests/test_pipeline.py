@@ -151,11 +151,12 @@ class TestProfileRegistry:
         assert LOCAL_STRUCTURAL.name == "local-structural"
 
     def test_buildbox_is_refused_and_says_what_it_is_not(self):
-        """These flags approximate the service; they are not it."""
+        """These flags were copied from the retired service; they are not
+        the reference compiler."""
         with pytest.raises(WasmOptError) as e:
             get_opt_profile("buildbox")
         assert "local-structural" in str(e.value)
-        assert "--buildbox" in str(e.value)
+        assert "--hooks-compiler" in str(e.value)
 
     def test_unknown_name_lists_the_known_ones(self):
         with pytest.raises(WasmOptError, match="local-structural"):
@@ -224,18 +225,18 @@ class TestRunPipeline:
         """
         with pytest.raises(ValueError) as e:
             get_pipeline("buildbox")
-        assert "--buildbox" in str(e.value)
+        assert "--hooks-compiler" in str(e.value)
         assert "--pipeline local-structural" in str(e.value)
 
     @pytest.mark.parametrize(
         "spelling", ["buildbox", "BuildBox", "BUILDBOX", "build-box", "build_box"]
     )
     def test_every_spelling_this_cli_taught_gets_the_pointer(self, spelling):
-        """--buildbox/--build-box are both real flags and --compiler is
+        """--buildbox/--build-box were both real flags and --compiler was
         case-insensitive, so the near-misses are names people were taught."""
         with pytest.raises(ValueError) as e:
             get_pipeline(spelling)
-        assert "--buildbox" in str(e.value)
+        assert "--hooks-compiler" in str(e.value)
         assert "--pipeline local-structural" in str(e.value)
 
     def test_a_genuinely_unknown_name_is_not_swallowed_by_the_loose_match(self):
