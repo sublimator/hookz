@@ -351,7 +351,7 @@ No local xahaud build required — a public image ships with xahaud pre-compiled
 ```bash
 cd examples/tipbot
 # Pin lives in .github/workflows/xahaud-integration.yml (DEFAULT_IMAGE).
-IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c
+IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355
 # Mount this repo's entrypoint if the image predates HOOKZ_REF/HOOKZ_SPEC.
 docker run --rm \
   -v ./env-tests:/tests \

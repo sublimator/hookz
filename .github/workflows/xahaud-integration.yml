@@ -17,9 +17,12 @@ on:
         default: ""
 
 env:
-  # Real tag — :latest is not published. Bump when xahaud/base changes.
+  # Tag plus digest, so the pin cannot move — :latest is not published. Bump
+  # when xahaud/base changes; the image must carry env_tests_ref.BRANCH_COMMIT
+  # (checked below). Built on a build box from docker/ at hookz fdbb355,
+  # xahaud external-env-tests 16de3ee52f (2026.10.13-release+4119).
   # (Cannot use env.* inside jobs.*.env; pin is duplicated in IMAGE below.)
-  DEFAULT_IMAGE: ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c
+  DEFAULT_IMAGE: ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355@sha256:b1fec07e0e638ea25d5e9d91d3a53a289fa323fec29ea1a2c6fefcb020696eda
   TIPBOT: ${{ github.workspace }}/examples/tipbot
 
 jobs:
@@ -28,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Job env cannot reference env.DEFAULT_IMAGE (GHA context rules).
-      IMAGE: ${{ github.event.inputs.image || 'ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c' }}
+      IMAGE: ${{ github.event.inputs.image || 'ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355@sha256:b1fec07e0e638ea25d5e9d91d3a53a289fa323fec29ea1a2c6fefcb020696eda' }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -38,6 +41,19 @@ jobs:
         run: |
           echo "Using image: $IMAGE"
           docker pull "$IMAGE"
+
+      - name: Check the image carries the pinned xahaud
+        # The image's /xahaud must be the external-env-tests commit hookz pins
+        # (env_tests_ref.BRANCH_COMMIT); an image built from anything else is
+        # not testing what this checkout was ported against. Skipped for an
+        # explicit workflow_dispatch image.
+        if: ${{ !github.event.inputs.image }}
+        run: |
+          want=$(sed -n 's/^BRANCH_COMMIT = "\([0-9a-f]*\)".*/\1/p' src/hookz/env_tests_ref.py)
+          got=$(docker run --rm --entrypoint git "$IMAGE" -C /xahaud rev-parse HEAD)
+          echo "image /xahaud: $got"
+          echo "env_tests_ref.BRANCH_COMMIT: $want"
+          test -n "$want" && test "$got" = "$want"
 
       - name: Run tipbot Env tests (this checkout's hookz)
         run: |

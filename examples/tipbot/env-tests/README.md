@@ -11,7 +11,7 @@ from `examples/tipbot`:
 
 ```bash
 # Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
-IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c
+IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355
 REPO_ROOT="$(cd ../.. && pwd)"
 docker run --rm \
   -v ./env-tests:/tests \
@@ -30,10 +30,11 @@ installs hookz from the mounted checkout, compiles only your test files
 (~10s), and runs them. Mounting `entrypoint.sh` is required until the
 published image bakes the refresh helper.
 
-The pinned 2026-07-30 image was copied unchanged from its old Google
-registry to `ghcr.io/sublimator/hookz-xahaud`; it is not a fresh xahaud
-build. New images are built from [`docker/`](../../../docker/) on a build
-box (see the header of `docker/Dockerfile`) and pushed there.
+The pinned 2026-11-07 image was built from [`docker/`](../../../docker/) on
+a build box (see the header of `docker/Dockerfile`) and pushed to
+`ghcr.io/sublimator/hookz-xahaud`: xahaud is sublimator/xahaud's
+`external-env-tests` at 16de3ee52f (2026.10.13-release+4119 plus the
+env-tests changes), which CI checks against `env_tests_ref.BRANCH_COMMIT`.
 
 ## CI
 

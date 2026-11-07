@@ -101,7 +101,7 @@ cd examples/tipbot        # every path below assumes this directory
 
 # No public :latest — pin a dated tag. This repo pins its own in
 # .github/workflows/xahaud-integration.yml (DEFAULT_IMAGE).
-IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-07-30-hookz-cc80be0c
+IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355
 
 docker run --rm --platform linux/amd64 \
   -v ./env-tests:/tests \
