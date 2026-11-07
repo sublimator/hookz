@@ -194,6 +194,7 @@ def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
             min_fee=None,          # the mock's fee base is not xahaud's
             has_callback=getattr(rt, "_has_cbak", None),
             expanded_signer_list="featureExpandedSignerList" in rt.amendments,
+            amendments=rt.amendments,
         )
         if not check.ok:
             rt.emission_rejections.append(check)

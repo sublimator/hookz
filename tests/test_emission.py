@@ -808,3 +808,63 @@ class TestTheFieldTableMatchesThePin:
             "ArrayEndMarker", "ObjectEndMarker", "Generic", "Invalid",
             "hash", "index", "taker_gets_funded", "taker_pays_funded",
         }
+
+
+class TestHookNamePreflight:
+    """preflight1's sfHookName rule (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:152),
+    which every emitted transaction passes through before its own preflight.
+    Found by grok's review of the 2026.10.13 re-pin."""
+
+    @staticmethod
+    def _named(name_hex):
+        tx = _valid_tx()
+        tx["HookName"] = name_hex
+        return tx
+
+    @staticmethod
+    def _amendments(*extra):
+        from hookz.runtime import HookRuntime
+        return set(HookRuntime().amendments) | set(extra)
+
+    @staticmethod
+    def _preflight(check):
+        return [r.detail for r in check.rejections if r.rule == "preflight"]
+
+    def test_mainnet_has_no_named_hooks_so_any_name_is_malformed(self):
+        mainnet = self._amendments()
+        assert "featureNamedHooks" not in mainnet, "manifest changed; revisit"
+        check = _check(self._named("68656C6C6F"), amendments=mainnet)
+        assert any("featureNamedHooks" in d for d in self._preflight(check))
+
+    def test_omitting_the_field_is_fine(self):
+        assert self._preflight(_check(_valid_tx(), amendments=self._amendments())) == []
+
+    def test_an_empty_name_is_malformed_under_fix20260929(self):
+        on = self._amendments("featureNamedHooks", "fix20260929")
+        off = on - {"fix20260929"}
+        assert any("empty" in d for d in self._preflight(_check(self._named(""), amendments=on)))
+        assert self._preflight(_check(self._named(""), amendments=off)) == []
+
+    @pytest.mark.parametrize("size, ok", [(3, False), (4, True), (16, True), (17, False)])
+    def test_a_name_is_4_to_16_bytes(self, size, ok):
+        named = self._amendments("featureNamedHooks", "fix20260929")
+        check = _check(self._named("61" * size), amendments=named)
+        assert (self._preflight(check) == []) is ok
+
+    def test_a_name_must_be_utf8(self):
+        named = self._amendments("featureNamedHooks", "fix20260929")
+        check = _check(self._named("FFFEFDFC"), amendments=named)
+        assert any("UTF-8" in d for d in self._preflight(check))
+
+    def test_without_amendments_the_rule_is_skipped(self):
+        assert self._preflight(_check(self._named(""))) == []
+
+    def test_the_cited_lines_say_what_is_claimed(self):
+        for path, line, text in [
+            ("src/xrpld/app/tx/detail/Transactor.cpp", 152, "isFieldPresent(sfHookName)"),
+            ("src/xrpld/app/tx/detail/Transactor.cpp", 155, "featureNamedHooks"),
+            ("src/xrpld/app/tx/detail/Transactor.cpp", 160, "fix20260929"),
+            ("src/xrpld/app/tx/detail/SetHook.cpp", 654, "name.size() < 4 || 16 < name.size()"),
+            ("src/xrpld/app/tx/detail/SetHook.cpp", 660, "isValidUTF8"),
+        ]:
+            assert text in ref.cite(path, line).snippet(), (path, line)
