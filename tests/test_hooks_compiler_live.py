@@ -14,7 +14,7 @@ import os
 import pytest
 
 from hookz.config import load_config
-from hookz.hooks_compiler import SPEC, compile_source
+from hookz.hooks_compiler import SPEC, compile_source, include_dirs
 from hookz.wasm.guard import validate_guards
 
 pytestmark = pytest.mark.skipif(
@@ -58,7 +58,7 @@ PINNED = {
 def test_the_pinned_compiler_builds_the_pinned_bytes(name):
     source, sha256 = PINNED[name]
     result = compile_source(
-        source, filename=f"{name}.c", headers=load_config().hook_headers
+        source, filename=f"{name}.c", include_dirs=include_dirs(load_config())
     )
 
     assert result.compiler == SPEC

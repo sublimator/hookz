@@ -10,9 +10,11 @@ bytes it wrote. It never falls back to the local pipelines in
 ``hookz.wasm.pipeline``: those are hookz's own builds and are not byte-identical
 to this one.
 
-What is sent matches the buildbox it replaces: one C file, with hookz audit
-annotations stripped, plus the configured hook headers (``-I``). Other files
-beside the source are not visible to it.
+It is given what a local build would find, in clang's order: the C file
+with hookz audit annotations stripped, the ``.h`` files beside it (clang
+searches the including file's directory first), then the project's
+``extra_cflags`` ``-I`` directories, then the hook headers. hooks-compiler
+reads every file under each ``-I`` directory.
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Sequence
 
 from hookz.annotations import strip as strip_annotations
 
@@ -78,16 +80,47 @@ def stripped_source(source: str) -> tuple[str, str]:
     return stripped, hashlib.sha256(stripped.encode("utf-8")).hexdigest()
 
 
-def headers_digest(headers: Path | None) -> str:
-    """sha256 over every file hooks-compiler reads under ``-I``.
+def include_dirs(config) -> list[Path]:
+    """The ``-I`` directories a local build of this project uses, in clang's
+    order: the ``-I`` entries of ``extra_cflags``, then the hook headers.
+    Relative entries resolve against the working directory, as clang's do."""
+    flags = list(getattr(config, "extra_cflags", None) or [])
+    dirs: list[Path] = []
+    i = 0
+    while i < len(flags):
+        flag = flags[i]
+        if flag == "-I" and i + 1 < len(flags):
+            dirs.append(Path(flags[i + 1]))
+            i += 2
+            continue
+        if flag.startswith("-I") and len(flag) > 2:
+            dirs.append(Path(flag[2:]))
+        i += 1
+    dirs = [d.expanduser().resolve() for d in dirs]
+    headers = getattr(config, "hook_headers", None)
+    if headers is not None:
+        dirs.append(Path(headers))
+    return dirs
 
-    It loads the whole tree, keyed by relative path, so any of those files can
-    change the output. Symlinked files count; symlinked directories are not
-    walked, as in hooks-compiler's own walk.
+
+def sibling_headers(source: Path) -> list[Path]:
+    """The ``.h`` files beside a hook source, which clang finds first."""
+    return sorted(p for p in Path(source).resolve().parent.glob("*.h")
+                  if p.is_file())
+
+
+def headers_digest(dirs: Sequence[Path]) -> str:
+    """sha256 over every file hooks-compiler reads under its ``-I`` dirs.
+
+    It loads each whole tree, keyed by relative path, so any of those files
+    can change the output, and so can their order. Symlinked files count;
+    symlinked directories are not walked, as in hooks-compiler's own walk.
     """
     h = hashlib.sha256()
-    if headers is not None and Path(headers).is_dir():
-        root = Path(headers)
+    for index, root in enumerate(Path(d) for d in dirs):
+        if not root.is_dir():
+            continue
+        h.update(f"dir {index}".encode())
         for path in sorted(root.rglob("*")):
             if path.is_file():
                 for part in (path.relative_to(root).as_posix().encode(),
@@ -151,12 +184,17 @@ def compile_source(
     source: str,
     *,
     filename: str = "hook.c",
-    headers: Path | None = None,
+    include_dirs: Sequence[Path] = (),
+    extra_files: Sequence[Path] = (),
     npx: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> HooksCompilerResult:
-    """Compile one C hook with the pinned hooks-compiler."""
+    """Compile one C hook with the pinned hooks-compiler.
+
+    ``extra_files`` are passed by name beside the entry (sibling headers);
+    ``include_dirs`` become ``-I`` in order. A name found earlier wins.
+    """
     text, source_sha256 = stripped_source(source)
     name = safe_filename(filename)
     with tempfile.TemporaryDirectory(prefix="hookz-hooks-compiler-") as tmp:
@@ -165,9 +203,11 @@ def compile_source(
         src.write_text(text, encoding="utf-8")
         out = Path(tmp) / "hook.wasm"
         argv = [_npx(npx), "--yes", SPEC, "build", str(src),
+                *(str(f) for f in extra_files if Path(f).name != name),
                 "-o", str(out), "--json"]
-        if headers is not None and Path(headers).is_dir():
-            argv += ["-I", str(headers)]
+        for directory in include_dirs:
+            if Path(directory).is_dir():
+                argv += ["-I", str(directory)]
         proc = _run(run, argv, timeout, cwd=tmp)
         if proc.returncode != 0:
             raise HooksCompilerError(

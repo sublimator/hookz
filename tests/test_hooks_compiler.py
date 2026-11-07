@@ -25,7 +25,10 @@ from hookz.hooks_compiler import (
     HooksCompilerError,
     compile_source,
     ensure_available,
+    headers_digest,
+    include_dirs,
     safe_filename,
+    sibling_headers,
 )
 
 WASM = b"\x00asm\x01\x00\x00\x00reference"
@@ -114,18 +117,74 @@ class TestCompileSource:
         compile_source("int x;", filename=given, npx="npx", run=fake)
         assert fake.calls[0].name == sent
 
-    def test_the_configured_headers_are_passed_when_they_exist(self, tmp_path):
+    def test_include_dirs_are_passed_in_order(self, tmp_path):
+        first, second = tmp_path / "a", tmp_path / "b"
+        first.mkdir(), second.mkdir()
         fake = FakeCompiler()
-        compile_source("int x;", headers=tmp_path, npx="npx", run=fake)
+        compile_source("int x;", include_dirs=[first, second], npx="npx",
+                       run=fake)
 
         argv = fake.calls[0].argv
-        assert argv[argv.index("-I") + 1] == str(tmp_path)
+        dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "-I"]
+        assert dirs == [str(first), str(second)]
 
-    def test_a_missing_headers_directory_is_not_passed(self, tmp_path):
+    def test_a_missing_include_directory_is_not_passed(self, tmp_path):
         fake = FakeCompiler()
-        compile_source("int x;", headers=tmp_path / "nope", npx="npx", run=fake)
+        compile_source("int x;", include_dirs=[tmp_path / "nope"], npx="npx",
+                       run=fake)
 
         assert "-I" not in fake.calls[0].argv
+
+    def test_sibling_files_go_beside_the_entry(self, tmp_path):
+        """hooks-compiler keys positional files by basename, before any -I,
+        which is clang's own-directory-first lookup."""
+        helper = tmp_path / "encode_macros.h"
+        helper.write_text("#define X 1\n")
+        fake = FakeCompiler()
+        compile_source("int x;", filename="treasury.c", extra_files=[helper],
+                       npx="npx", run=fake)
+
+        argv = fake.calls[0].argv
+        entry = argv.index("build") + 1
+        assert argv[entry + 1] == str(helper)
+        assert argv.index(str(helper)) < argv.index("-o")
+
+    def test_include_dirs_follow_clang_order(self, tmp_path, monkeypatch):
+        """extra_cflags -I entries (both spellings, relative to the working
+        directory), then the hook headers."""
+        monkeypatch.chdir(tmp_path)
+        config = SimpleNamespace(
+            extra_cflags=["-Ihooks/misc", "-O2", "-I", "/abs/inc", "-DX"],
+            hook_headers=Path("/hdrs"),
+        )
+
+        assert include_dirs(config) == [
+            (tmp_path / "hooks/misc").resolve(), Path("/abs/inc").resolve(),
+            Path("/hdrs"),
+        ]
+
+    def test_sibling_headers_are_the_h_files_beside_the_source(self, tmp_path):
+        (tmp_path / "a.h").write_text("")
+        (tmp_path / "b.h").write_text("")
+        (tmp_path / "other.c").write_text("")
+        (tmp_path / "sub").mkdir()
+        (tmp_path / "sub" / "deep.h").write_text("")
+
+        assert [p.name for p in sibling_headers(tmp_path / "hook.c")] == [
+            "a.h", "b.h"]
+
+    def test_the_digest_covers_every_include_dir_and_their_order(
+        self, tmp_path
+    ):
+        a, b = tmp_path / "a", tmp_path / "b"
+        a.mkdir(), b.mkdir()
+        (a / "x.h").write_text("1")
+        (b / "y.h").write_text("2")
+        before = headers_digest([a, b])
+        (b / "y.h").write_text("3")
+
+        assert headers_digest([a, b]) != before
+        assert headers_digest([b, a]) != headers_digest([a, b])
 
     def test_no_npx_says_what_to_install(self, monkeypatch):
         monkeypatch.setattr(hooks_compiler.shutil, "which", lambda name: None)
@@ -214,7 +273,7 @@ class TestBuildTestHooks:
 
         def compile_source(source, **kwargs):
             reference.append((source, kwargs))
-            tree = (kwargs["headers"] / "answer.h").read_bytes()
+            tree = (kwargs["include_dirs"][-1] / "answer.h").read_bytes()
             return SimpleNamespace(wasm=WASM + tree)
 
         monkeypatch.setattr(hooks_compiler, "compile_source", compile_source)
@@ -318,7 +377,7 @@ class TestBuildTestHooks:
 
         builder._compile_block(0, self._block())
 
-        assert reference[0][1]["headers"] == Path("/hdrs")
+        assert reference[0][1]["include_dirs"] == [Path("/hdrs")]
 
 
 class TestCli:

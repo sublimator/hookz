@@ -856,9 +856,15 @@ def build(source, output, coverage, pipeline_name, use_hooks_compiler,
     config = load_config(source_file=source)
 
     if use_hooks_compiler:
+        from hookz.hooks_compiler import include_dirs, sibling_headers
+
         _build_hooks_compiler(
             source, output, stdout_mode, ignore, rules,
-            request_filename=request_filename, headers=config.hook_headers,
+            request_filename=request_filename,
+            include_dirs=include_dirs(config),
+            # stdin was spooled to a temp dir; its neighbours are not the hook's
+            extra_files=() if request_filename == "stdin.c"
+            else sibling_headers(source),
         )
     elif coverage:
         _build_coverage(source, output, config, stdout_mode, ignore, rules)
@@ -1088,7 +1094,8 @@ def _build_hooks_compiler(
     rules_version: int | None = None,
     *,
     request_filename: str | None = None,
-    headers: Path | None = None,
+    include_dirs=(),
+    extra_files=(),
 ) -> None:
     """Reference-compiler build followed by independent local validation."""
     from hookz.hooks_compiler import HooksCompilerError, compile_source
@@ -1112,7 +1119,8 @@ def _build_hooks_compiler(
         result = compile_source(
             source_text,
             filename=request_filename or source.name,
-            headers=headers,
+            include_dirs=include_dirs,
+            extra_files=extra_files,
         )
     except HooksCompilerError as exc:
         _build_fail(log, output, stdout_mode, f"hooks-compiler FAILED: {exc}")
@@ -1383,7 +1391,9 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_hooks_compiler,
             raise click.ClickException(f"{input_path} is not a WebAssembly 1 module")
         provenance = f"provided artifact: {input_path}"
     elif use_hooks_compiler:
-        from hookz.hooks_compiler import HooksCompilerError, compile_source
+        from hookz.hooks_compiler import (
+            HooksCompilerError, compile_source, include_dirs, sibling_headers,
+        )
 
         try:
             source_text = source.read_text()
@@ -1395,7 +1405,8 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_hooks_compiler,
             built = compile_source(
                 source_text,
                 filename=source.name,
-                headers=analysis_config.hook_headers,
+                include_dirs=include_dirs(analysis_config),
+                extra_files=sibling_headers(source),
             )
         except HooksCompilerError as exc:
             raise click.ClickException(f"hooks-compiler failed: {exc}") from exc

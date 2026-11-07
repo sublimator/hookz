@@ -312,13 +312,14 @@ def _compile_hook_reference(
     source: str,
     filename: str,
     *,
-    headers: Path | None,
+    include_dirs: list[Path],
 ) -> bytes:
     """Compile with the pinned hooks-compiler, then independently validate."""
     from hookz.hooks_compiler import compile_source
     from hookz.wasm.guard import validate_guards
 
-    wasm = compile_source(source, filename=filename, headers=headers).wasm
+    wasm = compile_source(source, filename=filename,
+                          include_dirs=include_dirs).wasm
     validate_guards(wasm)
     return wasm
 
@@ -588,16 +589,16 @@ class TestHookBuilder:
         self.coverage = coverage
         self.compiler = compiler
         self.input_file = input_file
-        self.hook_headers: Path | None = None
+        self.include_dirs: list[Path] = []
         self._headers_sha256 = ""
         if compiler == "hooks-compiler":
             from hookz.config import load_config
-            from hookz.hooks_compiler import headers_digest
+            from hookz.hooks_compiler import headers_digest, include_dirs
 
-            self.hook_headers = load_config().hook_headers
-            # hooks-compiler reads the whole -I tree, so a header edit with
-            # the source unchanged must miss the cache.
-            self._headers_sha256 = headers_digest(self.hook_headers)
+            self.include_dirs = include_dirs(load_config())
+            # hooks-compiler reads every -I tree, so a header edit with the
+            # source unchanged must miss the cache.
+            self._headers_sha256 = headers_digest(self.include_dirs)
 
         stem = input_file.stem
 
@@ -690,7 +691,7 @@ class TestHookBuilder:
             bytecode = _compile_hook_wasmcc(block.source, label)
         elif self.compiler == "hooks-compiler":
             bytecode = _compile_hook_reference(
-                block.source, block.filename, headers=self.hook_headers
+                block.source, block.filename, include_dirs=self.include_dirs
             )
         else:
             bytecode = _compile_hook_hookz(block.source, label, coverage=self.coverage)
