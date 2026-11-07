@@ -22,12 +22,13 @@ PIN
 ---
 Repo    https://github.com/sublimator/xahaud  (Xahau/xahaud's copy stops at
         10b901ea0b; the branch is no longer pushed there)
-Branch  external-env-tests @ 89f9db8d8d542db8238fb2091e168f6396aa6a72 (2026-11-07)
-        (2026.10.13-release+4119 merged into 10b901ea0b)
+Branch  external-env-tests @ 16de3ee52f7563c955984d02d4b3abc34c8f7e20 (2026-11-07)
+        (2026.10.13-release+4119 merged into 10b901ea0b as 89f9db8d8d,
+        then a clang-format fix to the merge's Enum.h comment)
 Base    generated as `git diff 2026.10.13-release+4119 external-env-tests`,
         the same commit `wasm/xahaud_ref.py` pins, so it applies to a
         checkout of that release
-Patch   sha256 68ae0d0a9a9dc57c2e77a55ef317cbded283ee7f1509c73712715eaac76ed724
+Patch   sha256 95a881e05d354ac5d7ae0984d73a159429a3cf814aa588e731f899ee871b577c
 
 The commit is recorded on direct evidence rather than on the dates lining up:
 `TestEnv.h` reconstructed from this patch is byte-identical to that commit's
@@ -52,12 +53,12 @@ from pathlib import Path
 
 REPO = "https://github.com/sublimator/xahaud"
 BRANCH = "external-env-tests"
-BRANCH_COMMIT = "89f9db8d8d542db8238fb2091e168f6396aa6a72"
+BRANCH_COMMIT = "16de3ee52f7563c955984d02d4b3abc34c8f7e20"
 BRANCH_COMMIT_DATE = "2026-11-07"
 BASE_REF = "2026.10.13-release+4119"  # = xahaud_ref.XAHAUD_REF
 
 PATCH_NAME = "xahaud-external-env-tests.patch"
-PATCH_SHA256 = "68ae0d0a9a9dc57c2e77a55ef317cbded283ee7f1509c73712715eaac76ed724"
+PATCH_SHA256 = "95a881e05d354ac5d7ae0984d73a159429a3cf814aa588e731f899ee871b577c"
 
 # The file the branch adds outright. Its diff is the file, so it can be handed
 # to a reader as C++ rather than as a diff — which is what a test author
@@ -131,7 +132,7 @@ FILE_DIGESTS: dict[str, str] = {
     'include/xrpl/basics/Log.h':
         '4ca530d03fb94d97b2abc5c20724e7f9331dbd28f3be2923789465ae1968f196',
     'include/xrpl/hook/Enum.h':
-        '845b2e1a3ec5d0a3daaaf6616d9bf5701f3da9d6a8b0dc1b5072df3ecea312e2',
+        '75a6fae09f56839a09f3270987809c4307105e909ccc9c7017d4fc455054f709',
     'include/xrpl/hook/Guard.h':
         'ce973782283d842c3c369a196d33cb92c12cfb565bc2d2707e8092310696d876',
     'include/xrpl/hook/Macro.h':

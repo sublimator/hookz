@@ -179,16 +179,15 @@ index 13128bfea6..d055cba6b9 100644
      rotate();
  
 diff --git a/include/xrpl/hook/Enum.h b/include/xrpl/hook/Enum.h
-index 9d474965b9..94befb1af4 100644
+index 9d474965b9..5dd40b7330 100644
 --- a/include/xrpl/hook/Enum.h
 +++ b/include/xrpl/hook/Enum.h
-@@ -439,6 +439,11 @@ getImportWhitelist(Rules const& rules)
+@@ -439,6 +439,10 @@ getImportWhitelist(Rules const& rules)
  
  #include "hook_api.macro"
  
 +    // Coverage callback: void __on_source_line(uint32_t line, uint32_t col)
-+    // wasm codes spelled out: since the 2026.10 release the macro above maps
-+    // types with detail::wasmSignature, so no void_t/uint32_t defines exist here
++    // Wasm codes spelled out: detail::wasmSignature replaced the type defines.
 +    whitelist["__on_source_line"] = {0x00U, 0x7FU, 0x7FU};
 +
  #undef HOOK_API_DEFINITION
