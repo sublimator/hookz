@@ -818,11 +818,48 @@ class TestPreflight1StopsEarlyForEmissions:
     HookName block (:152) was added and reverted during the 2026.10.13 re-pin
     because it refused emissions the network accepts."""
 
-    @pytest.mark.parametrize("name", ["", "68656C6C6F", "41" * 40, "FFFEFDFC"])
+    NAMES = [None, "", "68656C6C6F", "41" * 40, "FFFEFDFC"]
+
+    @pytest.mark.parametrize("name", NAMES)
     def test_any_hook_name_on_an_emission_is_left_alone(self, name):
+        """The unit view. Not the control: the reverted rule ran only when
+        emit() passed the runtime's amendments, which this call never did, so
+        it passed with the bug present (codex re-check). The emit() test
+        below is the one that fails if the rule comes back."""
         tx = _valid_tx()
-        tx["HookName"] = name
+        if name is not None:
+            tx["HookName"] = name
         assert not [r for r in _check(tx).rejections if r.rule == "preflight"]
+
+    @pytest.mark.parametrize("name", NAMES)
+    def test_emit_itself_accepts_every_hook_name(self, name):
+        """Through the real emit() handler, which supplies the runtime's
+        amendments. Promoted from codex's follow-up probe for the re-pin."""
+        import wasmtime
+        from hookz.runtime import HookRuntime
+
+        tx = _valid_tx()
+        if name is not None:
+            tx["HookName"] = name
+        blob = _encode(tx)
+        data = "".join(f"\\{byte:02x}" for byte in blob)
+        emitter = bytes(wasmtime.wat2wasm(f"""(module
+          (import "env" "etxn_reserve" (func $reserve (param i32) (result i64)))
+          (import "env" "emit" (func $emit (param i32 i32 i32 i32) (result i64)))
+          (import "env" "accept" (func $accept (param i32 i32 i64) (result i64)))
+          (memory (export "memory") 1)
+          (data (i32.const 1024) "{data}")
+          (func (export "hook") (param i32) (result i64) (local $rc i64)
+            i32.const 1 call $reserve drop
+            i32.const 64 i32.const 32 i32.const 1024 i32.const {len(blob)} call $emit
+            local.set $rc
+            i32.const 0 i32.const 0 local.get $rc call $accept))"""))
+        rt = HookRuntime()
+        rt.hook_account = HOOK_ACCOUNT
+        rt.ledger_seq_val = LEDGER
+        result = rt.run(emitter)
+        assert result.accepted and result.return_code == 32, (name, result)
+        assert len(result.emitted_txns) == 1
 
     def test_the_cited_early_return_is_there(self):
         assert "isEmittedTxn" in ref.cite("src/xrpld/app/tx/detail/Transactor.cpp", 127).snippet()
