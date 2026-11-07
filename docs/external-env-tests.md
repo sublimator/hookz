@@ -37,8 +37,9 @@ target. This prevents an existing locally generated header from satisfying an
 into Docker explicitly. The image carries Node and has the pinned
 hooks-compiler in npm's cache at `/root/.npm`, and sets
 `npm_config_prefer_offline=true` so npx uses that copy without asking the
-registry first. The mode needs no network there. Running as another user or
-with another `HOME` misses that cache and fetches it.
+registry first, so the compiler needs no network there (a run still does:
+conan checks its remote). Running as another user or with another `HOME`
+misses that cache and fetches it.
 
 The old switch, `HOOKZ_BUILDBOX`, fails at configure with a pointer to the
 new one. hook-buildbox.xrpl.org was retired in October 2026, and hookz refuses

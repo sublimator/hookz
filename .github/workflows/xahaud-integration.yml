@@ -19,10 +19,10 @@ on:
 env:
   # Tag plus digest, so the pin cannot move — :latest is not published. Bump
   # when xahaud/base changes; the image must carry env_tests_ref.BRANCH_COMMIT
-  # (checked below). Built on a build box from docker/ at hookz fdbb355,
-  # xahaud external-env-tests 16de3ee52f (2026.10.13-release+4119).
+  # (checked below). Built on a build box from docker/ at hookz 4e3999e,
+  # xahaud external-env-tests 7e60972b45 (2026.10.13-release+4119).
   # (Cannot use env.* inside jobs.*.env; pin is duplicated in IMAGE below.)
-  DEFAULT_IMAGE: ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355@sha256:b1fec07e0e638ea25d5e9d91d3a53a289fa323fec29ea1a2c6fefcb020696eda
+  DEFAULT_IMAGE: ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-4e3999e@sha256:e5f13934db90a25d7cc4ad4097a5b9f242d7262b03a001f0eeb073faa572d81b
   TIPBOT: ${{ github.workspace }}/examples/tipbot
 
 jobs:
@@ -31,7 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       # Job env cannot reference env.DEFAULT_IMAGE (GHA context rules).
-      IMAGE: ${{ github.event.inputs.image || 'ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355@sha256:b1fec07e0e638ea25d5e9d91d3a53a289fa323fec29ea1a2c6fefcb020696eda' }}
+      IMAGE: ${{ github.event.inputs.image || 'ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-4e3999e@sha256:e5f13934db90a25d7cc4ad4097a5b9f242d7262b03a001f0eeb073faa572d81b' }}
     steps:
       - uses: actions/checkout@v7
         with:

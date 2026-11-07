@@ -11,7 +11,7 @@ from `examples/tipbot`:
 
 ```bash
 # Image pin: see DEFAULT_IMAGE in xahaud-integration.yml (no public :latest).
-IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355
+IMAGE=ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-4e3999e
 REPO_ROOT="$(cd ../.. && pwd)"
 docker run --rm \
   -v ./env-tests:/tests \
@@ -33,7 +33,7 @@ published image bakes the refresh helper.
 The pinned 2026-11-07 image was built from [`docker/`](../../../docker/) on
 a build box (see the header of `docker/Dockerfile`) and pushed to
 `ghcr.io/sublimator/hookz-xahaud`: xahaud is sublimator/xahaud's
-`external-env-tests` at 16de3ee52f (2026.10.13-release+4119 plus the
+`external-env-tests` at 7e60972b45 (2026.10.13-release+4119 plus the
 env-tests changes), which CI checks against `env_tests_ref.BRANCH_COMMIT`.
 
 ## CI
