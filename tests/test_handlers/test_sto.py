@@ -790,7 +790,30 @@ class TestStoValidateXahaudVectors:
 
     def test_too_small(self, rt):
         rt._write_memory(0, b"\x22")
+        rt.amendments.discard("fix20261005")
         assert sto_validate(rt, 0, 1) == hookapi.TOO_SMALL
+
+
+class TestStoValidateShortBuffer:
+    """A buffer under two bytes, either side of fix20261005.
+
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:74-81. Vectors:
+    xahaud:src/test/app/HookAPI_test.cpp:4729-4740 (at the release, not
+    vendored) and xahaud:src/test/app/SetHook_test.cpp:13852-13857, which
+    sends `E1` as the hook parameter.
+    """
+
+    @pytest.mark.parametrize("data", [b"", b"\x00", b"\xE1"], ids=["empty", "00", "E1"])
+    def test_with_fix_it_is_invalid(self, rt, data):
+        assert "fix20261005" in rt.amendments, "mainnet default carries the fix"
+        rt._write_memory(0, data)
+        assert sto_validate(rt, 0, len(data)) == 0
+
+    @pytest.mark.parametrize("data", [b"", b"\x00", b"\xE1"], ids=["empty", "00", "E1"])
+    def test_without_fix_it_is_too_small(self, rt, data):
+        rt.amendments.discard("fix20261005")
+        rt._write_memory(0, data)
+        assert sto_validate(rt, 0, len(data)) == hookapi.TOO_SMALL
 
 
 class TestStoValidateSTIs:
@@ -879,7 +902,8 @@ class TestStoValidateComposed:
         rt._write_memory(0, data)
         assert sto_validate(rt, 0, len(data)) == 1
 
-    def test_empty_is_too_small(self, rt):
+    def test_empty_is_too_small_without_fix20261005(self, rt):
+        rt.amendments.discard("fix20261005")
         assert sto_validate(rt, 0, 0) == hookapi.TOO_SMALL
 
 

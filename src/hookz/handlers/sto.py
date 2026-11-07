@@ -235,8 +235,15 @@ def sto_validate(rt: HookRuntime, read_ptr: int, read_len: int) -> int:
     """Validate that bytes are a well-formed serialized object.
 
     Returns 1 if valid, 0 if not.
+
+    A buffer under two bytes is reported as invalid (0) under fix20261005,
+    and as TOO_SMALL without it
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:74-81).
     """
     if read_len < 2:
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:78
+        if "fix20261005" in rt.amendments:
+            return 0
         return hookapi.TOO_SMALL
 
     data = rt._read_memory(read_ptr, read_len)
