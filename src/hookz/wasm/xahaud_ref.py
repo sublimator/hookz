@@ -126,6 +126,17 @@ CITED_FILES = (
     "src/test/app/SetHook_test.cpp",              # handlers/float.py, host vectors
     "src/xrpld/app/misc/detail/TxQ.cpp",          # runtime.py, ttEMIT_FAILURE pseudo-txn
     "include/xrpl/hook/Macro.h",                  # handlers/core.py, NOT_IN_BOUNDS
+    # handlers/rng.py (featureRNG): the hashing byte layout, the state's
+    # durability and first-draw record, the hook hash, the seeding round, and
+    # the upstream tests the port follows.
+    "include/xrpl/protocol/digest.h",             # sha512Half is big-endian
+    "include/xrpl/beast/hash/hash_append.h",      # integers byte-reversed
+    "include/xrpl/basics/base_uint.h",            # hashes/accounts as raw bytes
+    "src/xrpld/app/tx/detail/ApplyContext.cpp",   # a tec keeps the RNG advance
+    "src/xrpld/ledger/ApplyViewImpl.h",           # only the first draw recorded
+    "src/xrpld/app/tx/detail/SetHook.cpp",        # HookHash = sha512Half(wasm)
+    "src/xrpld/app/tx/detail/Change.cpp",         # ttENTROPY seeds the object
+    "src/test/app/RNG_test.cpp",                  # the ported behaviour tests
 )
 
 
