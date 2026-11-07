@@ -302,7 +302,7 @@ def _check_guard_rules(rep: _Report) -> None:
     from hookz import amendments as amd
     from hookz.wasm.guard import nesting_limit, resolve_rules
 
-    rep.section("Guard rules (xahaud:include/xrpl/hook/Enum.h:451)")
+    rep.section("Guard rules (xahaud:include/xrpl/hook/Enum.h:458)")
     try:
         # Through resolve_rules, not guard_rules_version directly: that is the
         # function every verdict uses, and it warns when it degrades to 0x00.

@@ -2,10 +2,10 @@
   "suite": "hookz.float_sto",
   "purpose": "host-faithful float_sto amount/header goldens (SetHook_test + type>=16 header)",
   "host_cites": {
-    "float_sto": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1146-1284",
-    "float_sto_set": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1287-1350",
-    "wrapper": "xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3568-3663",
-    "sethook_suite": "xahaud:src/test/app/SetHook_test.cpp:6242+"
+    "float_sto": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1199-1284",
+    "float_sto_set": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1340-1350",
+    "wrapper": "xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3673-3663",
+    "sethook_suite": "xahaud:src/test/app/SetHook_test.cpp:7000+"
   },
   "bug_candidates": [
     "todo:xahaud-bug-candidate float_sto_set XRP path drops high 6 bits of drops packing (HookAPI.cpp:1329-1340)",

@@ -539,8 +539,8 @@ class TestMacroDeclaredFunctionsAreNamed:
     """
 
     @pytest.mark.parametrize("line, expected", [
-        (2104, "util_keylet"),
-        (1891, "otxn_field"),
+        (2137, "util_keylet"),
+        (1924, "otxn_field"),
     ])
     def test_the_real_name_is_reported(self, line, expected):
         from hookz.citations import span_for
@@ -556,6 +556,6 @@ class TestMacroDeclaredFunctionsAreNamed:
         from hookz.wasm.xahaud_ref import vendored_root
 
         span = span_for(
-            vendored_root() / "src/xrpld/app/hook/detail/HookAPI.cpp", 511)
+            vendored_root() / "src/xrpld/app/hook/detail/HookAPI.cpp", 550)
 
         assert span.symbol == "HookAPI::emit"

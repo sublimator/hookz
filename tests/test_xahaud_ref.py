@@ -29,13 +29,13 @@ class TestCitations:
 
     def test_the_emit_preflight_citation_is_the_preflight_call(self):
         """emission.py's central claim: emit() preflights."""
-        c = ref.cite("src/xrpld/app/hook/detail/HookAPI.cpp", 794)
+        c = ref.cite("src/xrpld/app/hook/detail/HookAPI.cpp", 833)
         assert "ripple::preflight" in c.snippet()
 
     def test_a_citation_builds_a_permalink_at_the_pin(self):
-        c = ref.cite("src/xrpld/app/hook/detail/HookAPI.cpp", 794)
+        c = ref.cite("src/xrpld/app/hook/detail/HookAPI.cpp", 833)
         assert ref.XAHAUD_COMMIT in c.url
-        assert c.url.endswith("HookAPI.cpp#L794")
+        assert c.url.endswith("HookAPI.cpp#L833")
 
     def test_parsing_finds_citations_in_text(self):
         found = ref.parse_citations(
@@ -195,8 +195,13 @@ class TestAVacuousPinIsReported:
     def test_a_moving_reference_pins_nothing(self, cfg, rev):
         import dataclasses
 
-        if ref.resolve_commit(cfg.xahaud_root, rev) is None:
+        named = ref.resolve_commit(cfg.xahaud_root, rev)
+        if named is None:
             pytest.skip(f"{rev} does not exist in this checkout")
+        if named != ref.checkout_commit(cfg.xahaud_root):
+            # A branch elsewhere in the repo (a detached release worktree next
+            # to a `latest-dev` branch) is a real mismatch, reported as one.
+            pytest.skip(f"{rev} is not where this checkout is")
         problems = ref.check_checkout(dataclasses.replace(cfg, xahaud_commit=rev))
         assert problems and "pins nothing" in problems[0]
 

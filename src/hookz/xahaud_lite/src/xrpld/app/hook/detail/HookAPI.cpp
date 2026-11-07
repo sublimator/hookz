@@ -4,7 +4,10 @@
 #include <xrpld/app/ledger/OpenLedger.h>
 #include <xrpld/app/ledger/TransactionMaster.h>
 #include <xrpld/app/tx/detail/Import.h>
+#include <xrpld/ledger/ApplyViewImpl.h>
 #include <xrpl/protocol/STParsedJSON.h>
+#include <algorithm>
+#include <limits>
 
 namespace hook {
 
@@ -69,7 +72,13 @@ Expected<bool, HookReturnCode>
 HookAPI::sto_validate(Bytes const& data) const
 {
     if (data.size() < 2)
+    {
+        // fix20261005: a buffer this short can never hold a valid STObject,
+        // so report it as invalid (0) as documented, rather than TOO_SMALL
+        if (hookCtx.applyCtx.view().rules().enabled(fix20261005))
+            return false;
         return Unexpected(TOO_SMALL);
+    }
 
     unsigned char* start = const_cast<unsigned char*>(data.data());
     unsigned char* upto = start;
@@ -100,6 +109,14 @@ HookAPI::sto_subfield(Bytes const& data, uint32_t field_id) const
 {
     if (data.size() < 2)
         return Unexpected(TOO_SMALL);
+
+    if (hookCtx.applyCtx.view().rules().enabled(fix20260929))
+    {
+        // validate the data
+        auto const valid = sto_validate(data);
+        if (!valid || !valid.value())
+            return Unexpected(PARSE_ERROR);
+    }
 
     unsigned char* start = const_cast<unsigned char*>(data.data());
     unsigned char* upto = start;
@@ -164,6 +181,18 @@ HookAPI::sto_subarray(Bytes const& data, uint32_t index_id) const
     unsigned char* start = const_cast<unsigned char*>(data.data());
     unsigned char* upto = start;
     unsigned char* end = start + data.size();
+
+    if (hookCtx.applyCtx.view().rules().enabled(fix20260929))
+    {
+        // check if the array has valid trailing data
+        if ((*upto & 0xF0U) == 0xF0U && *(end - 1) != 0xF1U)
+            return Unexpected(PARSE_ERROR);
+
+        // validate the array
+        auto const valid = sto_validate(data);
+        if (!valid || !valid.value())
+            return Unexpected(PARSE_ERROR);
+    }
 
     // unwrap the array if it is wrapped,
     // by removing a byte from the start and end
@@ -259,6 +288,13 @@ HookAPI::sto_emplace(
             return Unexpected(TOO_SMALL);
     }
 
+    if (hookCtx.applyCtx.view().rules().enabled(fix20260929))
+    {
+        auto const source_valid = sto_validate(source_object);
+        if (!source_valid || !source_valid.value())
+            return Unexpected(PARSE_ERROR);
+    }
+
     if (field_object.has_value() &&
         hookCtx.applyCtx.view().rules().enabled(fixHookAPI20251128))
     {
@@ -278,6 +314,9 @@ HookAPI::sto_emplace(
             hookCtx.applyCtx.view().rules(),
             0);
         if (!length)
+            return Unexpected(PARSE_ERROR);
+        if (hookCtx.applyCtx.view().rules().enabled(fix20260929) &&
+            length.value() != field_object->size())
             return Unexpected(PARSE_ERROR);
         if ((type << 16) + field != field_id)
         {
@@ -838,14 +877,22 @@ HookAPI::etxn_fee_base(ripple::Slice const& txBlob) const
         std::unique_ptr<STTx const> stpTrans =
             std::make_unique<STTx const>(std::ref(sitTrans));
 
-        if (!hookCtx.applyCtx.view().rules().enabled(fixHookAPI20251128))
-            return Transactor::calculateBaseFee(
-                       *(applyCtx.app.openLedger().current()), *stpTrans)
-                .drops();
+        // fix20260929: the minimum fee decides whether emit() accepts the
+        // txn, which is consensus-visible. Compute it against the view being
+        // applied, not the node-local open ledger (whose hook definitions can
+        // differ between nodes).
+        std::shared_ptr<ReadView const> hold;
+        ReadView const* feeView = &applyCtx.view();
+        if (!applyCtx.view().rules().enabled(fix20260929))
+        {
+            hold = applyCtx.app.openLedger().current();
+            feeView = hold.get();
+        }
 
-        return invoke_calculateBaseFee(
-                   *(applyCtx.app.openLedger().current()), *stpTrans)
-            .drops();
+        if (!hookCtx.applyCtx.view().rules().enabled(fixHookAPI20251128))
+            return Transactor::calculateBaseFee(*feeView, *stpTrans).drops();
+
+        return invoke_calculateBaseFee(*feeView, *stpTrans).drops();
     }
     catch (std::exception const& e)
     {
@@ -991,15 +1038,21 @@ HookAPI::float_set(int32_t exponent, int64_t mantissa) const
     auto normalized = hook_float::normalize_xfl(mantissa, exponent);
 
     // the above function will underflow into a canonical 0
-    // but this api must report that underflow
+    // but this api must report that underflow.
+    // The range check is on the exponent *after* the mantissa is normalized
+    // to 16 digits. fix20261005: report overflow / underflow as
+    // EXPONENT_OVERSIZED / EXPONENT_UNDERSIZED; before the fix both were
+    // reported as INVALID_FLOAT.
+    bool const fixExpCodes =
+        hookCtx.applyCtx.view().rules().enabled(fix20261005);
     if (!normalized)
     {
         if (normalized.error() == XFL_OVERFLOW)
-            return Unexpected(INVALID_FLOAT);
+            return Unexpected(fixExpCodes ? EXPONENT_OVERSIZED : INVALID_FLOAT);
         return Unexpected(normalized.error());
     }
     if (normalized.value() == 0)
-        return Unexpected(INVALID_FLOAT);
+        return Unexpected(fixExpCodes ? EXPONENT_UNDERSIZED : INVALID_FLOAT);
 
     return normalized;
 }
@@ -1531,6 +1584,18 @@ HookAPI::otxn_field(uint32_t field_id) const
     if (fieldType == sfInvalid)
         return Unexpected(INVALID_FIELD);
 
+    // fix20261005: on an emit failure callback the field is read from the
+    // original emitted transaction, so check presence there rather than on
+    // the ttEMIT_FAILURE pseudo (which carries sfLedgerSequence and
+    // sfTransactionHash the emitted txn lacks, and lacks most of its fields).
+    if (hookCtx.emitFailure &&
+        hookCtx.applyCtx.view().rules().enabled(fix20261005))
+    {
+        if (!hookCtx.emitFailure->isFieldPresent(fieldType))
+            return Unexpected(DOESNT_EXIST);
+        return &hookCtx.emitFailure->getField(fieldType);
+    }
+
     if (!hookCtx.applyCtx.tx.isFieldPresent(fieldType))
         return Unexpected(DOESNT_EXIST);
 
@@ -1845,6 +1910,147 @@ HookAPI::ledger_nonce() const
     return hash;
 }
 
+// featureRNG
+//
+// The ledger's RNG state lives in the Random object. The ttENTROPY
+// transactions applied at the start of the ledger seed it from validator
+// reveals; after that every draw from any Hook replaces it with
+// H(step, state). So the state iterates between API calls, between Hook
+// executions and between transactions, including transactions that end in a
+// tec: ApplyContext::discard keeps the advance, so a rollback cannot preserve
+// an RNG state for whatever executes next.
+//
+// No Hook can read the state, so none can work out what a later draw will
+// return, even one that ran earlier in the same transaction: slot_set and
+// ledger_keylet refuse the Random object, slot_set refuses ttENTROPY
+// transactions, the object is left out of provisional metadata (meta_slot),
+// and its state and commitment fields are never written to any metadata.
+//
+// Each draw returns H(output, state, txid, hook account, hook hash, chain
+// position, strong, callback, wasm param). Those extra inputs keep outputs
+// distinct for different executions even if they somehow saw the same state.
+//
+// The state the transaction's first draw saw is written to the transaction's
+// final metadata (sfRandomData), never its provisional metadata.
+Expected<uint256, HookReturnCode>
+HookAPI::rng_next() const
+{
+    static constexpr std::uint32_t rngOutputTag = 0x524E474F;  // 'RNGO'
+    static constexpr std::uint32_t rngStepTag = 0x524E4749;    // 'RNGI'
+
+    auto& applyCtx = hookCtx.applyCtx;
+    auto& view = applyCtx.view();
+
+    if (!view.rules().enabled(featureRNG))
+        return Unexpected(TOO_LITTLE_ENTROPY);
+
+    if (hookCtx.rng_draws >= hook_api::max_rng_draws)
+        return Unexpected(TOO_MANY_NONCES);
+
+    auto sle = view.peek(keylet::random());
+    if (!sle)
+        return Unexpected(TOO_LITTLE_ENTROPY);
+
+    // A closed ledger may only draw on its own seed. Open ledger application
+    // is a preview, so it may run on the last closed ledger's state; the
+    // final result is decided when the ledger closes.
+    auto const seq = view.seq();
+    auto const seededFor = sle->getFieldU32(sfLedgerSequence);
+    if (seededFor != seq && !(view.open() && seededFor + 1 == seq))
+        return Unexpected(TOO_LITTLE_ENTROPY);
+
+    // At least 80% of the UNLReport must have contributed (at least one
+    // validator if there is no UNLReport). Both fields are 16 bits on the
+    // ledger; they are widened here so the scaled comparison cannot overflow.
+    std::uint32_t const count = sle->getFieldU16(sfEntropyCount);
+    std::uint32_t const denominator = sle->getFieldU16(sfEntropyDenominator);
+    if (count == 0 || count * 5 < denominator * 4)
+        return Unexpected(TOO_LITTLE_ENTROPY);
+
+    uint256 const state = sle->getFieldH256(sfRandomData);
+
+    if (auto* avi = dynamic_cast<ApplyViewImpl*>(&view))
+        avi->setRandomData(state);
+
+    auto const& hr = hookCtx.result;
+    uint256 const out = ripple::sha512Half(
+        rngOutputTag,
+        state,
+        applyCtx.tx.getTransactionID(),
+        hr.account,
+        hr.hookHash,
+        static_cast<std::uint8_t>(hr.hookChainPosition),
+        static_cast<std::uint8_t>(hr.isStrong ? 1 : 0),
+        static_cast<std::uint8_t>(hr.isCallback ? 1 : 0),
+        hr.wasmParam);
+
+    sle->setFieldH256(sfRandomData, ripple::sha512Half(rngStepTag, state));
+    view.update(sle);
+
+    ++hookCtx.rng_draws;
+    return out;
+}
+
+Expected<uint64_t, HookReturnCode>
+HookAPI::dice(uint32_t sides) const
+{
+    if (sides == 0)
+        return Unexpected(INVALID_ARGUMENT);
+
+    auto block = rng_next();
+    if (!block)
+        return Unexpected(block.error());
+
+    // Rejection sampling over big-endian 64-bit words, so every side is
+    // exactly equally likely. A word is rejected with probability below
+    // 2^-32, so the bound on blocks is never reached in practice; it only
+    // keeps the loop finite.
+    std::uint64_t const max = std::numeric_limits<std::uint64_t>::max();
+    std::uint64_t const excess = (max % sides + 1) % sides;  // 2^64 mod sides
+    std::uint64_t word = 0;
+    uint256 b = *block;
+    for (int i = 0; i < 16; ++i)
+    {
+        for (std::size_t w = 0; w < 4; ++w)
+        {
+            word = 0;
+            for (std::size_t k = 0; k < 8; ++k)
+                word = (word << 8) | b.data()[w * 8 + k];
+            if (word <= max - excess)
+                return word % sides;
+        }
+        b = ripple::sha512Half(b);
+    }
+    return word % sides;
+}
+
+Expected<Bytes, HookReturnCode>
+HookAPI::util_random(uint32_t len) const
+{
+    if (len == 0)
+        return Unexpected(TOO_SMALL);
+
+    if (len > 512)
+        return Unexpected(TOO_BIG);
+
+    auto block = rng_next();
+    if (!block)
+        return Unexpected(block.error());
+
+    Bytes out;
+    out.reserve(len);
+    uint256 b = *block;
+    while (true)
+    {
+        auto const n = std::min<std::size_t>(32, len - out.size());
+        out.insert(out.end(), b.data(), b.data() + n);
+        if (out.size() >= len)
+            break;
+        b = ripple::sha512Half(b);
+    }
+    return out;
+}
+
 Expected<Keylet, HookReturnCode>
 HookAPI::ledger_keylet(Keylet const& klLo, Keylet const& klHi) const
 {
@@ -1854,6 +2060,10 @@ HookAPI::ledger_keylet(Keylet const& klLo, Keylet const& klHi) const
 
     std::optional<ripple::uint256> found =
         hookCtx.applyCtx.view().succ(klLo.key, klHi.key.next());
+
+    // featureRNG: the RNG object is invisible to Hooks, even by key.
+    if (found && *found == keylet::random().key)
+        found = hookCtx.applyCtx.view().succ(*found, klHi.key.next());
 
     if (!found)
         return Unexpected(DOESNT_EXIST);
@@ -2099,6 +2309,12 @@ HookAPI::slot_set(Bytes const& data, uint32_t slot_no) const
         if (kl->key == beast::zero)
             return Unexpected(DOESNT_EXIST);
 
+        // featureRNG: the RNG state must never be readable by a Hook, or an
+        // earlier Hook could compute what later draws will return. Matched on
+        // the key because a Hook-supplied keylet type can be ltANY.
+        if (kl->key == keylet::random().key)
+            return Unexpected(DOESNT_EXIST);
+
         auto const sle = hookCtx.applyCtx.view().read(*kl);
         if (!sle)
             return Unexpected(DOESNT_EXIST);
@@ -2107,6 +2323,9 @@ HookAPI::slot_set(Bytes const& data, uint32_t slot_no) const
     }
     else if (data.size() == 32)
     {
+        if (hookCtx.applyCtx.view().rules().enabled(fix20261005))
+            return Unexpected(INVALID_ARGUMENT);
+
         uint256 hash = uint256::fromVoid(data.data());
 
         ripple::error_code_i ec{ripple::error_code_i::rpcUNKNOWN};
@@ -2118,6 +2337,11 @@ HookAPI::slot_set(Bytes const& data, uint32_t slot_no) const
                 std::shared_ptr<ripple::TxMeta>>>(&hTx))
             slot_value = p->first->getSTransaction();
         else
+            return Unexpected(DOESNT_EXIST);
+
+        // featureRNG: validator reveals are never readable by Hooks.
+        if (*slot_value &&
+            (*slot_value)->getFieldU16(sfTransactionType) == ttENTROPY)
             return Unexpected(DOESNT_EXIST);
     }
     else
@@ -2743,8 +2967,7 @@ HookAPI::set_state_cache(
     if (modified && stateMap.modified_entry_count >= max_state_modifications)
         return Unexpected(TOO_MANY_STATE_MODIFICATIONS);
 
-    bool const createNamespace = view.rules().enabled(fixXahauV1) &&
-        !view.exists(keylet::hookStateDir(acc, ns));
+    bool const createNamespace = !view.exists(keylet::hookStateDir(acc, ns));
 
     if (stateMap.find(acc) == stateMap.end())
     {
@@ -2776,11 +2999,19 @@ HookAPI::set_state_cache(
         if (availableForReserves < hookStateScale && modified)
             return Unexpected(RESERVE_INSUFFICIENT);
 
+        // Prior to fix20261005 the first-account branch charged write
+        // resources (a state modification, a reserve slot and, if needed, a
+        // namespace slot) even when the entry was only being read into the
+        // cache (modified == false). Every other branch only charges for
+        // writes. With the fix, reads into the cache are free; a later write
+        // of the same key is charged by the existing-key branch below.
+        bool const chargeWrite = modified || !view.rules().enabled(fix20261005);
+
         int64_t namespaceCount = accSLE->isFieldPresent(sfHookNamespaces)
             ? accSLE->getFieldV256(sfHookNamespaces).size()
             : 0;
 
-        if (createNamespace)
+        if (createNamespace && chargeWrite)
         {
             // overflow should never ever happen but check anyway
             if (namespaceCount + 1 < namespaceCount)
@@ -2790,15 +3021,20 @@ HookAPI::set_state_cache(
                 return Unexpected(TOO_MANY_NAMESPACES);
         }
 
-        stateMap.modified_entry_count++;
+        if (chargeWrite)
+        {
+            stateMap.modified_entry_count++;
 
-        // sanity check
-        if (view.rules().enabled(featureExtendedHookState) &&
-            availableForReserves < hookStateScale)
-            return Unexpected(INTERNAL_ERROR);
+            // sanity check
+            if (view.rules().enabled(featureExtendedHookState) &&
+                availableForReserves < hookStateScale)
+                return Unexpected(INTERNAL_ERROR);
+
+            availableForReserves -= hookStateScale;
+        }
 
         stateMap[acc] = {
-            availableForReserves - hookStateScale,
+            availableForReserves,
             namespaceCount,
             hookStateScale,
             {{ns, {{key, {modified, data}}}}}};
@@ -3049,6 +3285,7 @@ HookAPI::get_stobject_length(
         type == STI_PATHSET && rules.enabled(featureHookAPISerializedType240))
     {
         length = 0;
+        bool terminated = false;
         while (upto + length < end)
         {
             // iterate Path step
@@ -3066,6 +3303,9 @@ HookAPI::get_stobject_length(
                 if (flag & 0x20)  // issuer
                     length += 20;
 
+                if (rules.enabled(fix20260929) && upto + length >= end)
+                    return Unexpected(pe_unexpected_end);
+
                 int next_flag = *(upto + length);
                 if (next_flag == 0x00 || next_flag == 0xff)
                     // end of Path step
@@ -3077,43 +3317,68 @@ HookAPI::get_stobject_length(
             if (lastflag == 0xff)
                 continue;  // continue byte
             else if (lastflag == 0x00)
+            {
+                terminated = true;
                 break;  // end byte
+            }
             else
                 return Unexpected(pe_unexpected_end);
         }
         if (upto >= end)
             return Unexpected(pe_unexpected_end);
+        if (rules.enabled(fix20260929) && !terminated)
+            return Unexpected(pe_unexpected_end);
     }
     else if (type == STI_ISSUE)
     {
+        bool const fix = rules.enabled(fix20260929);
         auto zero20 = std::array<char, 20>{0};
         // if first 20 byte is all zeros return 20
         // else return 40
+        if (fix && end - upto < 20)
+            return Unexpected(pe_unexpected_end);
         if (memcmp(upto, zero20.data(), 20) == 0)
             length = 20;
+        // MPT is not supported yet
+        // else if (
+        //     fix && end - upto >= 40 &&
+        //     memcmp(upto + 20, noAccount().data(), 20) == 0)
+        //     length = 44;  // MPT: Issuer + noAccount + Sequence
         else
             length = 40;
     }
     else if (type == STI_XCHAIN_BRIDGE)
     {
+        bool const fix = rules.enabled(fix20260929);
         auto zero20 = std::array<char, 20>{0};
-        // Lock Chain
-        length = 1;    // Door Account1 prefix length
-        length += 20;  // Door Account1 length
-        // Door Issue1
-        if (memcmp(upto + length, zero20.data(), 20) == 0)
-            length += 20;  // only Currency
-        else
-            length += 40;  // Currency and Issue
+        length = 0;
+        for (int i = 0; i < 2; ++i)  // Locking Chain, Issuing Chain
+        {
+            // Door Account
+            if (!fix)
+                length += 21;
+            else if (end - upto <= length)
+                return Unexpected(pe_unexpected_end);
+            else if (upto[length] == 0)
+                length += 1;  // default (empty) account
+            else if (upto[length] == 20)
+                length += 21;
+            else
+                return Unexpected(pe_unexpected_end);
 
-        // Issuing Chain
-        length += 1;   // Door Account2 prefix length
-        length += 20;  // Door Account2 length
-        // Door Issue2
-        if (memcmp(upto + length, zero20.data(), 20) == 0)
-            length += 20;  // only Currency
-        else
-            length += 40;  // Currency and Issue
+            // Door Issue
+            if (fix && end - upto < length + 20)
+                return Unexpected(pe_unexpected_end);
+            if (memcmp(upto + length, zero20.data(), 20) == 0)
+                length += 20;  // only Currency
+            // MPT is not supported yet
+            // else if (
+            //     fix && end - upto >= length + 40 &&
+            //     memcmp(upto + length + 20, noAccount().data(), 20) == 0)
+            //     length += 44;  // MPT: Issuer + noAccount + Sequence
+            else
+                length += 40;  // Currency and Issuer
+        }
     }
 
     if (length > -1)
@@ -3130,6 +3395,10 @@ HookAPI::get_stobject_length(
             length,
             payload_start,
             payload_length);
+
+        if (rules.enabled(fix20260929) && length > end - upto)
+            return Unexpected(pe_unexpected_end);
+
         return length + (upto - start);
     }
 

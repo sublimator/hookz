@@ -5,15 +5,15 @@ parse the actual data. Overrides (via rt._slot_overrides) take priority for
 test-specific control.
 
 Host sources:
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2043-2054  (slot)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2081-2143  (slot_set)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2159-2219  (slot_subarray)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2220-2282  (slot_subfield)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2375  (slot_float)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2376-2404  (meta_slot)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2253-2054  (slot)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2291-2143  (slot_set)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2383-2219  (slot_subarray)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2444-2282  (slot_subfield)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2540-2375  (slot_float)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2600-2404  (meta_slot)
 
 # slot_float is STAmount-typed on host (downcast), NOT float_sto_set.
-# xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2367
+# xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2540-2367
 # Native: normalize_xfl(drops, -6). IOU: make_float(iou). Else NOT_AN_AMOUNT.
 
 Override keys:
@@ -101,7 +101,7 @@ def _field_value_bytes(data: bytes, type_code: int, field_code: int,
     exactly one exception — the write macro strips a leading length byte for
     accounts and nothing else:
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1908
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1941
             Serializer s;
             field->add(s);
             WRITE_WASM_MEMORY_OR_RETURN_AS_INT64(...,
@@ -143,9 +143,9 @@ def _walk_array_elements(data: bytes):
     An element is yielded as the object's *contents* — the fields inside it,
     with its own name header and closing marker removed. That is the level
     xahaud exposes: `slot_subarray` sets the slot entry to
-    `parent_obj[array_id]` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2202),
+    `parent_obj[array_id]` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2426),
     an `STObject&`, and `slot_subfield` then asks that object for its own
-    fields (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2251). So a Remit's
+    fields (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2475). So a Remit's
     sfAmounts element answers to `sfAmount`, not to `AmountEntry`.
     """
     start = 0
@@ -185,7 +185,7 @@ def slot_subfield(rt: HookRuntime, parent: int, field_id: int, new_slot: int) ->
 
     `new_slot == 0` means "allocate a free slot", the same convention every
     slot-emplacing call uses (`if (new_slot == 0) ... get_free_slot()`,
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2253).
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2477).
 
     Override: set rt._slot_overrides["slot_subfield:{parent}:{field_id}"]
     to force a specific return value.
@@ -341,7 +341,7 @@ def slot(rt: HookRuntime, write_ptr: int, write_len: int, slot_no: int) -> int:
 def _native_stamount_to_xfl(amt8: bytes) -> int:
     """STAmount native path → XFL.
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2331-2344
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2555-2344
       drops = st_amt.xrp().drops(); exp = -6;
       return normalize_xfl(drops, exp)  (sign from amount)
     """
@@ -349,14 +349,14 @@ def _native_stamount_to_xfl(amt8: bytes) -> int:
 
     raw = int.from_bytes(amt8, "big")
     # XRPL native amount: bit 63 clear, bit 62 set ⇒ positive, low 62 bits = drops.
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1226-1249 (float_sto XRP pack)
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1279-1249 (float_sto XRP pack)
     positive = bool((raw >> 62) & 1)
     drops = raw & ((1 << 62) - 1)
     man = int(drops) if positive else -int(drops)
     out = _normalize_xfl(man, -6)
     if out is None:
         # Host maps non-undersized errors via Unexpected; undersized → 0
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2338-2342
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2562-2342
         return hookapi.XFL_OVERFLOW
     return out
 
@@ -364,9 +364,9 @@ def _native_stamount_to_xfl(amt8: bytes) -> int:
 def _iou_stamount8_to_xfl(amt8: bytes) -> int:
     """STAmount IOU 8-byte head → XFL via make_float(IOUAmount).
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2346-2356
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2570-2356
     xahaud:src/xrpld/app/hook/HookAPI.h:121-142  (make_float(IOUAmount&))
-    Packing: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1250-1272
+    Packing: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1303-1272
     """
     from hookz.handlers.float import _make_float_parts
 
@@ -387,7 +387,7 @@ def _iou_stamount8_to_xfl(amt8: bytes) -> int:
         return 0
     ret = _make_float_parts(man, exp, is_negative)
     if ret < 0:
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2350-2354
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2574-2354
         if ret == hookapi.EXPONENT_UNDERSIZED:
             return 0
         return ret
@@ -398,13 +398,13 @@ def _stamount_payload_to_xfl(data: bytes) -> int:
     """Interpret slot value bytes as the STAmount field payload.
 
     Host never re-parses via float_sto_set; it downcasts the live STAmount
-    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328). After
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2550-2328). After
     slot_subfield(sfBalance), the slot holds that field's *value* bytes:
       native: 8-byte XRP amount
       issued: 48-byte amount+currency+issuer (8-byte head is the float packing)
 
     Non-amount payloads → NOT_AN_AMOUNT
-    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2364-2366).
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2588-2366).
     """
     if len(data) < 8:
         return hookapi.NOT_AN_AMOUNT
@@ -427,8 +427,8 @@ def _stamount_payload_to_xfl(data: bytes) -> int:
 def slot_float(rt: HookRuntime, slot_no: int) -> int:
     """Read XFL from a slot that holds an STAmount field.
 
-    Host body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2316-2367
-    Wrapper:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2089-2098
+    Host body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2540-2367
+    Wrapper:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2122-2098
 
     Native: ``normalize_xfl(drops, -6)`` — so 1_000_000 drops → XFL 1.0.
     IOU:    ``make_float(iou)`` from the amount head.
@@ -436,24 +436,24 @@ def slot_float(rt: HookRuntime, slot_no: int) -> int:
     """
     data = _get_slot_data(rt, slot_no)
     if data is None:
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2318-2319
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2542-2319
         return hookapi.DOESNT_EXIST
     if not data:
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2321-2322
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2545-2322
         return hookapi.INTERNAL_ERROR
 
     # The host downcasts the retained STBase entry; byte width is not a type
     # test. In particular, UInt64 and native STAmount payloads are both eight
     # bytes. Untyped manual overrides keep the historical byte fallback.
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2363-2366
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2550-2328
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2587-2366
     stype = _get_slot_stype(rt, slot_no)
     if stype is not None and stype != _STI_AMOUNT:
         return hookapi.NOT_AN_AMOUNT
 
     out = _stamount_payload_to_xfl(data)
     # Host treats EXPONENT_UNDERSIZED as successful zero:
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2359-2361
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2583-2361
     if out == hookapi.EXPONENT_UNDERSIZED:
         return 0
     return out
@@ -548,7 +548,7 @@ def meta_slot(rt: HookRuntime, slot_no: int) -> int:
     The refusals come in the host's order — no metadata first, before any
     slot question is asked:
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2602
             if (!hookCtx.result.provisionalMeta)
                 return Unexpected(PREREQUISITE_NOT_MET);
 
@@ -556,7 +556,7 @@ def meta_slot(rt: HookRuntime, slot_no: int) -> int:
     execution, which runs before the transaction applies: there is no
     metadata yet. Metadata exists only for the executions the ledger runs
     after application — callbacks and weak TSH
-    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2355-2365). Here that
+    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2485-2365). Here that
     means `rt._callback_meta`, which `run_callback` sets to the serialized
     provisional TxMeta for the duration of the delivery.
     """

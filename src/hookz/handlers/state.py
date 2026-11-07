@@ -1,9 +1,9 @@
 """State key-value store — state, state_set, state_foreign, state_foreign_set.
 
 Host sources:
-  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1257+   (state / state_set wrappers)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1871-1902 (state_foreign)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1903-2042 (state_foreign_set)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1277+   (state / state_set wrappers)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2081-1902 (state_foreign)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2113-2042 (state_foreign_set)
 
 # todo:xahaud-bug-candidate
 # None claimed yet. Foreign grant/namespace matrix is incompletely modelled —
@@ -63,10 +63,10 @@ def _state_set_error(rt: HookRuntime, read_ptr: int, read_len: int,
 
     One implementation for both, because the host has one: `state_set` *is* a
     call to the `state_foreign_set` wrapper with four zeros
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1257). The host refuses
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1277). The host refuses
     malformed arguments before any question of whether the write itself would
     succeed, in that wrapper's order
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1293-1322):
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1313-1322):
 
     1. the value buffer's bounds — skipped for the zero/zero spelling, which
        is a *bounds-check exemption* and not, by itself, what makes a call a
@@ -111,10 +111,10 @@ def _is_delete(read_len: int) -> bool:
 
     The host's test is the *blob*, not the pointer: `state_foreign_set` slices
     `[memory + read_ptr, memory + read_ptr + read_len)`
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1358) and `setHookState`
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1374) and `setHookState`
     deletes when that slice is empty — "if the blob is nil then delete the
     entry if it exists"
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:903). So any zero length is a
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:904). So any zero length is a
     delete, however the caller spelled the pointer. The zero/zero form is only
     the one spelling that also skips the value buffer's bounds check (…:1293);
     reading it as the definition made `state_set(ptr, 0, key)` store an empty
@@ -204,12 +204,12 @@ def state_foreign_set(
     1. the omitted-namespace local form raises rather than answering, below;
     2. grants. The host checks them and can answer NOT_AUTHORIZED, then
        PREVIOUS_FAILURE_PREVENTS_RETRY on a later attempt
-       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1919). Here every
+       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2129). Here every
        admitted foreign write succeeds, so those codes are reachable only by
        fault injection, not by configuring a ledger;
     3. the value cap in `_state_set_error` is 256, which is the host's
        `256 * HookStateScale` at the default scale of one
-       (xahaud:include/xrpl/hook/Enum.h:79). A scaled account is not modelled.
+       (xahaud:include/xrpl/hook/Enum.h:80). A scaled account is not modelled.
     """
     err = _state_set_error(rt, read_ptr, read_len, kread_ptr, kread_len,
                            ns_ptr, ns_len, aread_ptr, aread_len)
@@ -220,8 +220,8 @@ def state_foreign_set(
         # Admission has already established this is the local form (an omitted
         # namespace with any account is INVALID_ARGUMENT). The host substitutes
         # the hook's own namespace and account and performs an ordinary local
-        # modification (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1337,
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1909) — so it lands in
+        # modification (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1357,
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2119) — so it lands in
         # the same store `state()` reads. This wrote a zero namespace into
         # `_foreign_state_db` instead, which succeeds and then reads back as
         # DOESNT_EXIST: a silent wrong answer, which is the one thing a

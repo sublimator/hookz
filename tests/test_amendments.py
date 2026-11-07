@@ -74,7 +74,7 @@ class TestNaming:
         cross-check that agrees with the implementation by construction checks
         nothing. Invocations start the line; `#if !defined(XRPL_FEATURE)` and
         its `#error` mention the name without being one, which is why a bare
-        substring count says 108 for 104 amendments.
+        substring count says 112 for 108 amendments.
         """
         from hookz.wasm.xahaud_ref import vendored_root
 
@@ -84,7 +84,7 @@ class TestNaming:
             1 for line in text.splitlines()
             if line.startswith(("XRPL_FEATURE", "XRPL_FIX"))
         )
-        assert declared == 104, "the vendored macro changed; re-check the index"
+        assert declared == 108, "the vendored macro changed; re-check the index"
         assert len(amd.symbol_index()) == declared
 
     def test_no_feature_is_named_like_a_fix(self):

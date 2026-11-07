@@ -172,14 +172,14 @@ class TestOtxnSlot:
     def test_slot_zero_allocates(self, rt):
         """Slot 0 means "pick a free one", so the answer is never 0.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1573.
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1638.
         """
         first = otxn_slot(rt, 0)
         assert first > 0
         assert otxn_slot(rt, 0) not in (0, first), "must not hand out the same slot twice"
 
     def test_a_slot_above_the_maximum_is_invalid(self, rt):
-        """xahaud:include/xrpl/hook/Enum.h:398 — max_slots is 255."""
+        """xahaud:include/xrpl/hook/Enum.h:402 — max_slots is 255."""
         assert otxn_slot(rt, 256) == hookapi.INVALID_ARGUMENT
 
     def test_the_slot_holds_the_transaction(self, rt):
@@ -418,7 +418,7 @@ class TestArbitraryFields:
         assert otxn_field(rt, 0, 0, hookapi.sfFlags) == 0x00020000
 
     def test_null_ptr_with_a_write_len_is_invalid(self, rt):
-        """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1891 — asking to both
+        """xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1924 — asking to both
         return an int64 and write to memory is rejected, not silently one of
         them."""
         rt.otxn_fields[hookapi.sfFlags] = (0x00020000).to_bytes(4, "big")
@@ -446,10 +446,10 @@ class TestAFailureCallbackSeesAlmostNothing:
 
     The host checks presence against the transaction being applied and only
     then reads the value out of the saved emission
-    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1534), and on a failure the
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1599), and on a failure the
     applied transaction is the pseudo-transaction — whose whole format is
     sfLedgerSequence and sfTransactionHash
-    (xahaud:include/xrpl/protocol/detail/transactions.macro:598).
+    (xahaud:include/xrpl/protocol/detail/transactions.macro:621).
 
     Modelling this is not pedantry. A `cbak` that opens by reading
     `sfDestination` to find whose record to restore takes its early exit on
@@ -518,9 +518,9 @@ class TestCtxZeroDoesNotMeanItWorked:
     """The bit a callback receives says *applied*, not *succeeded*.
 
     `applied = isTecClaim(result)`
-    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158) and
+    (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2273) and
     `isTecClaim(x) { return ((x) >= tecCLAIM); }`
-    (xahaud:include/xrpl/protocol/TER.h:688), so a Remit that dies `tecNO_LINE`
+    (xahaud:include/xrpl/protocol/TER.h:692), so a Remit that dies `tecNO_LINE`
     and a Remit that succeeds arrive identically. A hook branching on
     `ctx == 0` to mean success is wrong about the realistic failures, and a
     test written against `0` and `1` cannot say which case it meant.

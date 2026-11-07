@@ -569,7 +569,7 @@ class XahaudRepo:
 
         lines = [
             '"""Auto-generated hook API constants from xahaud source.',
-            f'Source: {self.root}',
+            f'Source: {self._source_id()} (hook/sfcodes.h, hook/tts.h, hook/error.h, hook/hookapi.h)',
             '"""',
             '',
         ]

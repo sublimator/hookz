@@ -93,9 +93,9 @@ OTHER SUBMODULE PINS AT THIS REVISION
     llvm-project                 4ca7eaabf2b3d617f9bb9490ac07ed4055fe80f9
     wasi-sdk                     628938fa7156e3c709cb7f8fce5c01976b7d3ed4
 
-The `clang/includes` pin is the same xahaud commit hookz ports its guard
-checker from — see `xahaud_ref.XAHAUD_COMMIT`. That alignment is a coincidence
-of timing, not a guarantee.
+The `clang/includes` pin was the xahaud commit hookz ported its guard checker
+from until the 2026.10.13 re-pin (`xahaud_ref.XAHAUD_COMMIT` is now
+d20e8ffb56). That alignment was a coincidence of timing, never a guarantee.
 """
 
 from __future__ import annotations

@@ -49,8 +49,8 @@ class TestSlotFloat:
     def test_uint64_subfield_is_not_misclassified_as_native_amount(self, rt):
         """The host downcasts STBase; UInt64 and native amounts are both 8B.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2328
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2363-2366
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2550-2328
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2587-2366
         """
         uint64_value = 0x4000000000000001
         # type=3 (UInt64), field=1 (sfIndexNext)
@@ -64,7 +64,7 @@ class TestSlotFloat:
     def test_amount_subfield_retains_amount_type(self, rt):
         """An equally wide type=6 field still takes the STAmount path.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2326-2337
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2550-2337
         """
         drops = 1_000_000
         # type=6 (Amount), field=1 (sfAmount)
@@ -269,7 +269,7 @@ class TestMetaSlot:
     def test_no_metadata_is_prerequisite_not_met(self, rt):
         """The strong-execution answer: the hook runs before the transaction
         applies, so there is no metadata yet — whatever slot is asked for
-        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378)."""
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2602)."""
         assert meta_slot(rt, 0) == hookapi.PREREQUISITE_NOT_MET
         assert meta_slot(rt, 5) == hookapi.PREREQUISITE_NOT_MET
 

@@ -1,7 +1,7 @@
 """Transaction flags (tf*/asf*) and ledger-entry flags (lsf*) from xahaud.
 
 Auto-generated from include/xrpl/protocol/TxFlags.h, include/xrpl/protocol/LedgerFormats.h.
-Source: xahaud @ bb244ef77
+Source: xahaud @ d20e8ffb56
 Regenerate: python scripts/gen-constants.py <xahaud-root>
 
 Every constant carries its origin in the repo's citation

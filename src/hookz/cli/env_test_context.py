@@ -73,6 +73,13 @@ _FAMILIES: tuple[tuple[tuple[str, ...], str, str], ...] = (
     (("trace*",), "diagnostics only",
      "no ledger arrangement; see the output with "
      'TESTENV_LOGGING="HooksTrace=trace"'),
+    # Before `util_*`, which would otherwise claim util_random as pure: both
+    # draw from the ledger's consensus entropy (featureRNG), and return
+    # TOO_LITTLE_ENTROPY unless a ttENTROPY round seeded the current ledger
+    # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1937).
+    (("dice", "util_random"), "on-chain randomness",
+     "needs featureRNG and entropy seeded for the ledger the hook runs in; "
+     "without it every draw returns TOO_LITTLE_ENTROPY"),
     (("float_*", "util_*", "sto_*", "ledger_*", "fee_base"), "computation",
      "pure or near-pure; no ledger arrangement needed to reach them"),
     (("_g",), "guard",

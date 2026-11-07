@@ -106,17 +106,18 @@ TxQ::FeeMetrics::update(
     TxQ::Setup const& setup)
 {
     std::vector<FeeLevel64> feeLevels;
-    auto const txBegin = view.txs.begin();
-    auto const txEnd = view.txs.end();
-    auto const size = std::distance(txBegin, txEnd);
-    feeLevels.reserve(size);
-    std::for_each(txBegin, txEnd, [&](auto const& tx) {
+    for (auto const& tx : view.txs)
+    {
+        // featureRNG: every proposing validator puts a zero-fee ttENTROPY
+        // into every ledger. These are consensus plumbing, not demand for
+        // ledger space, so they must not raise the expected transaction count
+        // or drag down the median fee level used for escalation.
+        if (tx.first->getTxnType() == ttENTROPY)
+            continue;
         feeLevels.push_back(getFeeLevelPaid(view, *tx.first));
-    });
+    }
     std::sort(feeLevels.begin(), feeLevels.end());
-    XRPL_ASSERT(
-        size == feeLevels.size(),
-        "ripple::TxQ::FeeMetrics::update : fee levels size");
+    std::size_t const size = feeLevels.size();
 
     JLOG((timeLeap ? j_.warn() : j_.debug()))
         << "Ledger " << view.info().seq << " has " << size << " transactions. "
@@ -1658,11 +1659,9 @@ TxQ::accept(Application& app, OpenView& view)
                             [seq, txnHash, emitDetails](auto& obj) {
                                 obj[sfLedgerSequence] = seq;
                                 obj[sfTransactionHash] = txnHash;
-                                obj.emplace_back(emitDetails);
-                                /*std::unique_ptr<STBase> ed =
-                                    std::make_unique<STBase>(emitDetails);
-                                ed->setFName(sfEmitDetails);
-                                obj.set(std::move(ed));*/
+                                // replace the template slot rather than
+                                // appending a duplicate (bytes unchanged)
+                                obj.set(STObject(emitDetails));
                             });
 
                         uint256 txID = efTx.getTransactionID();
@@ -1953,13 +1952,23 @@ TxQ::tryDirectApply(
     const bool isFirstImport = !sleAccount &&
         view.rules().enabled(featureImport) && tx->getTxnType() == ttIMPORT;
 
+    // A manifest txn is pinned to sfSequence 0 (Transactor::checkSeqProxy), so
+    // it can never match the account sequence. Direct-apply it like a first
+    // Import: letting it fall through to the queue would reject it outright on
+    // sequence rather than hold it. Manifests are therefore exempt from fee
+    // escalation, since requiredFeeLevel is not consulted for them.
+    const bool isManifest = view.rules().enabled(featureOnChainManifests) &&
+        tx->getTxnType() == ttMANIFEST_SET;
+
+    const bool bypassQueue = isFirstImport || isManifest;
+
     // Don't attempt to direct apply if the account is not in the ledger.
     if (!sleAccount && !isFirstImport)
         return {};
 
     std::optional<SeqProxy> txSeqProx;
 
-    if (!isFirstImport)
+    if (!bypassQueue)
     {
         SeqProxy const acctSeqProx =
             SeqProxy::sequence((*sleAccount)[sfSequence]);
@@ -1972,7 +1981,7 @@ TxQ::tryDirectApply(
     }
 
     FeeLevel64 const requiredFeeLevel =
-        isFirstImport ? FeeLevel64{0} : [this, &view, flags]() {
+        bypassQueue ? FeeLevel64{0} : [this, &view, flags]() {
             std::lock_guard lock(mutex_);
             return getRequiredFeeLevel(
                 view, flags, feeMetrics_.getSnapshot(), lock);

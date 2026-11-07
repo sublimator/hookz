@@ -70,9 +70,10 @@ IGNORE_WCE = "wce-overage"
 IGNORE_GUARD_CALLS = "guard-calls"
 IGNORABLE = frozenset({IGNORE_DEPTH, IGNORE_WCE, IGNORE_GUARD_CALLS})
 
-# void_t in the API whitelist — encodes "no result", not a value type (Enum.h:420)
+# void_t in the API whitelist — encodes "no result", not a value type. Only the
+# env-tests patch's coverage import uses it; upstream maps by size (Enum.h:413)
 VOID_TYPE = 0x00
-# Value types xahaud accepts in a function type (Guard.h:1333, :1405)
+# Value types xahaud accepts in a function type (Guard.h:1337, :1405)
 VALID_VALUE_TYPES = frozenset(
     {ValType.I32, ValType.I64, ValType.F32, ValType.F64}
 )
@@ -100,7 +101,7 @@ NUMOP_FIRST = 0x45
 NUMOP_LAST = 0xC4
 
 GUARD_RULE_FIX_20250131 = 0x01
-# fixGuardDepth32 (xahaud PR #653, Enum.h:447) raises the nesting limit 16 -> 32.
+# fixGuardDepth32 (xahaud PR #653, Enum.h:454) raises the nesting limit 16 -> 32.
 # Shipped in dev and release, but VoteBehavior::DefaultNo — so it is off
 # unless the network has voted it in.
 GUARD_RULE_DEPTH_32 = 0x02
@@ -111,7 +112,7 @@ def resolve_rules(rules_version: int | None) -> int:
 
     Same convention, for the same reason, as `whitelist._resolve`. xahaud
     derives this per-ledger from the amendments in force
-    (xahaud:include/xrpl/hook/Enum.h:451); a constant baked in here is a claim
+    (xahaud:include/xrpl/hook/Enum.h:458); a constant baked in here is a claim
     about a network that may have moved. An explicit int still wins, so a
     caller can ask what a hook would do under a rules version the network is
     not running — but no CLI command offers that, because a speculative
@@ -751,7 +752,7 @@ def _validate_types(
 ) -> None:
     """Check the type section against the hook API signatures.
 
-    Mirrors Guard.h:1250-1455. Every type entry
+    Mirrors Guard.h:1254-1455. Every type entry
     must belong to something: an import whose API signature it matches, or the
     hook/cbak entry point. A type entry used by nothing at all is rejected, as
     are mismatched parameter counts, parameter types, result counts and result

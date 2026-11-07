@@ -10,10 +10,10 @@ class TestEmissionsFollowTheHooksOutcome:
 
     xahaud holds emitted transactions on the hook result and applies them only
     when it succeeded — `finalizeHookResult(hookResult, ctx_,
-    isTesSuccess(result))` (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2026)
+    isTesSuccess(result))` (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2101)
     drains the queue under `if (doEmit)`. The field itself is commented "etx
     stored here until accept/rollback"
-    (xahaud:src/xrpld/app/hook/applyHook.h:149).
+    (xahaud:src/xrpld/app/hook/applyHook.h:157).
 
     Reporting them regardless lets a test assert that a payout happened on a
     run where the hook refused — the payout is the observable most worth

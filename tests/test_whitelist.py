@@ -136,7 +136,7 @@ class TestAmendmentFiltering:
 
     def test_the_default_is_the_network_not_every_amendment(self):
         """xahaud gates each entry on `rules.enabled(AMENDMENT)`
-        (xahaud:include/xrpl/hook/Enum.h:425), so its whitelist is whatever the
+        (xahaud:include/xrpl/hook/Enum.h:436), so its whitelist is whatever the
         ledger has — not everything hook_api.macro names.
 
         `prepare` is gated on featureHooksUpdate2, which mainnet vetoes. A
@@ -171,31 +171,30 @@ class TestAmendmentFiltering:
         assert derive_amendments(functions) == {f.amendment for f in functions if f.amendment}
 
 
-class TestNormalisationSafety:
-    """`_normalise` substitutes type names across the whole file.
+class TestParameterForms:
+    """Since the 2026.10 release hook_api.macro names its parameters, and
+    xahaud reads the tuple as a C parameter list
+    (xahaud:include/xrpl/hook/Enum.h:438). Both spellings must parse, and no
+    textual substitution happens any more, so a name that merely contains a
+    type name is just a name."""
 
-    No current API or amendment embeds a type name, so nothing is corrupted
-    today — but a future one would come back mangled, and a mangled name is a
-    whitelist entry that no longer matches xahaud's. That must fail loudly
-    rather than silently produce the wrong whitelist.
-    """
-
-    def test_name_embedding_a_type_name_is_rejected(self, tmp_path):
-        macro = tmp_path / "evil.macro"
+    def test_named_and_bare_parameters_parse_alike(self, tmp_path):
+        macro = tmp_path / "forms.macro"
         macro.write_text(
-            "HOOK_API_DEFINITION(int64_t, float_int32_t_hack, (uint32_t), uint256{})"
+            "HOOK_API_DEFINITION(int64_t, named, (uint32_t write_ptr, int64_t v), uint256{})\n"
+            "HOOK_API_DEFINITION(int64_t, bare, (uint32_t, int64_t), uint256{})\n"
         )
-        with pytest.raises(ValueError, match="contains the type name"):
-            parse_hook_api_macro(macro)
+        named, bare = parse_hook_api_macro(macro)
+        assert named.signature == bare.signature == (0x7E, 0x7F, 0x7E)
 
-    def test_amendment_embedding_a_type_name_is_rejected(self, tmp_path):
-        """Substitution is by substring, so "Uint32_t" carries "int32_t" inside it."""
-        macro = tmp_path / "evil2.macro"
+    def test_a_name_containing_a_type_name_survives(self, tmp_path):
+        macro = tmp_path / "names.macro"
         macro.write_text(
-            "HOOK_API_DEFINITION(int64_t, thing, (uint32_t), featureUint32_tThing)"
+            "HOOK_API_DEFINITION(int64_t, float_int32_t_hack, (uint32_t), featureUint32_tThing)"
         )
-        with pytest.raises(ValueError, match="contains the type name"):
-            parse_hook_api_macro(macro)
+        (fn,) = parse_hook_api_macro(macro)
+        assert fn.name == "float_int32_t_hack"
+        assert fn.amendment == "featureUint32_tThing"
 
     def test_ordinary_amendment_name_survives(self, tmp_path):
         macro = tmp_path / "ok.macro"
@@ -204,29 +203,46 @@ class TestNormalisationSafety:
         )
         assert parse_hook_api_macro(macro)[0].amendment == "featureHooksUpdate9"
 
-    def test_real_macro_is_free_of_the_hazard(self, functions):
-        """The guard above is latent, not papering over a live corruption."""
-        for f in functions:
-            for type_name in WASM_TYPE_CODE:
-                assert type_name not in f.name
-                assert type_name not in f.amendment
+    def test_a_pointer_parameter_is_refused(self, tmp_path):
+        """wasm has no pointers; xahaud's sizeof mapping would call one i64.
+        Nothing upstream declares one, so it is refused rather than guessed."""
+        macro = tmp_path / "ptr.macro"
+        macro.write_text("HOOK_API_DEFINITION(int64_t, thing, (uint32_t* p), uint256{})")
+        with pytest.raises(ValueError, match="unsupported hook API parameter"):
+            parse_hook_api_macro(macro)
+
+    def test_an_unterminated_invocation_is_an_error(self, tmp_path):
+        macro = tmp_path / "cut.macro"
+        macro.write_text("HOOK_API_DEFINITION(int64_t, thing, (uint32_t), uint256{}")
+        with pytest.raises(ValueError, match="unterminated"):
+            parse_hook_api_macro(macro)
+
+    def test_featurerng_apis_match_enum_h(self, functions):
+        """dice and util_random, gated on featureRNG, with the signatures a
+        getImportWhitelist() dump of the pinned Enum.h prints."""
+        sigs = {f.name: (f.signature, f.amendment) for f in functions}
+        assert sigs["dice"] == ((0x7E, 0x7F), "featureRNG")
+        assert sigs["util_random"] == ((0x7E, 0x7F, 0x7F), "featureRNG")
 
     def test_whitelist_matches_xahaud_entry_count(self):
         """xahaud's getImportWhitelist() has exactly these entries.
 
         Hardcoded, not derived from the same parse this module performs —
-        comparing a parse against itself cannot detect a dropped entry. 76 is
-        the count printed by a getImportWhitelist() dump built from xahaud's
-        own Enum.h: 75 hook APIs plus __on_source_line.
+        comparing a parse against itself cannot detect a dropped entry. 77 is
+        the count printed by a getImportWhitelist() dump built from the pinned
+        Enum.h and hook_api.macro (GUARD_CHECKER_BUILD, every rule enabled); it
+        was 75 before featureRNG added dice and util_random. The coverage
+        build adds __on_source_line, which comes from the env-tests patch, not
+        upstream.
 
         Every amendment is passed explicitly because that dump is built with
         every rule enabled. Against a real ledger the count is whatever that
-        ledger has enabled (xahaud:include/xrpl/hook/Enum.h:425) — 74 on
+        ledger has enabled (xahaud:include/xrpl/hook/Enum.h:436) — 74 on
         mainnet today, which vetoes the amendment gating `prepare`.
         """
         every = get_default_amendments()
-        assert len(get_import_signatures(every)) == 75
-        assert len(get_import_signatures(every, coverage=True)) == 76
+        assert len(get_import_signatures(every)) == 77
+        assert len(get_import_signatures(every, coverage=True)) == 78
 
     def test_dropped_entries_are_detected(self, tmp_path, monkeypatch):
         """A macro construct tree-sitter cannot parse must not fail silently.

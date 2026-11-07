@@ -84,7 +84,7 @@ Other things checked per-instruction:
 ### rulesVersion is a fact about the network
 
 Both of those bits are amendments, and xahaud recomputes the mask per-ledger
-from the ones in force (`xahaud:include/xrpl/hook/Enum.h:451`). hookz derives
+from the ones in force (`xahaud:include/xrpl/hook/Enum.h:458`). hookz derives
 it the same way, from the manifest `hookz.amendments` reads:
 
 | bit | amendment | vote default | mainnet | effect |

@@ -11,12 +11,12 @@ if TYPE_CHECKING:
 
 from hookz import hookapi
 
-# xahaud:include/xrpl/hook/Enum.h:398
+# xahaud:include/xrpl/hook/Enum.h:402
 MAX_SLOTS = 255
 
 #: The entire field set of the `ttEMIT_FAILURE` pseudo-transaction.
 #:
-#: xahaud:include/xrpl/protocol/detail/transactions.macro:598
+#: xahaud:include/xrpl/protocol/detail/transactions.macro:621
 #:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, ({
 #:         {sfLedgerSequence, soeREQUIRED},
 #:         {sfTransactionHash, soeREQUIRED},
@@ -31,9 +31,9 @@ EMIT_FAILURE_FIELDS = frozenset({
 #: This is **not** the same as "it worked". The ledger calls the callback when
 #: `applied` is true, and
 #:
-#:     xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158
+#:     xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2273
 #:         applied = isTecClaim(result);
-#:     xahaud:include/xrpl/protocol/TER.h:688
+#:     xahaud:include/xrpl/protocol/TER.h:692
 #:         inline bool isTecClaim(TER x) { return ((x) >= tecCLAIM); }
 #:
 #: so *every* `tec` counts — `tecNO_LINE` on a Remit to a staker with no
@@ -46,9 +46,9 @@ CALLBACK_APPLIED = 0
 #: `ttEMIT_FAILURE` pseudo-transaction instead. Only `EMIT_FAILURE_FIELDS` are
 #: readable in this mode.
 #:
-#: xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1584
-#:     ctx_.tx.getTxnType() == ttEMIT_FAILURE ? 1UL : 0UL
-#: xahaud:include/xrpl/protocol/detail/transactions.macro:598
+#: xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1646
+#:     isEmitFailure ? 1UL : 0UL
+#: xahaud:include/xrpl/protocol/detail/transactions.macro:621
 #:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, …)
 CALLBACK_NOT_APPLIED = 1
 
@@ -89,7 +89,7 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
     presence against the transaction being applied and only then reads the
     value out of the saved emission:
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1534
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1599
             if (!hookCtx.applyCtx.tx.isFieldPresent(fieldType))
                 return Unexpected(DOESNT_EXIST);
             auto const& field = hookCtx.emitFailure
@@ -97,8 +97,8 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
 
     On a failure the applied transaction is the `ttEMIT_FAILURE`
     pseudo-transaction, which has two fields and neither is `sfDestination`.
-    `emitFailure` is populated only when `isCallback && wasmParam & 1`
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1076), so the asymmetry is
+    `emitFailure` is populated only when `isCallback && (wasmParam & 1)`
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049), so the asymmetry is
     exact: on success the transaction *is* the original emit and everything is
     there; on failure only the ledger sequence and the transaction hash are.
 
@@ -226,7 +226,7 @@ def otxn_id(rt: HookRuntime, write_ptr: int, write_len: int, flags: int) -> int:
     `sfTransactionHash`, and that is served unless `flags` asks for the
     pseudo-transaction's own ID:
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612
             (hookCtx.emitFailure && !flags
                  ? hookCtx.applyCtx.tx.getFieldH256(sfTransactionHash)
                  : hookCtx.applyCtx.tx.getTransactionID());
@@ -281,9 +281,9 @@ def serialized_otxn(rt: HookRuntime) -> bytes:
 def otxn_slot(rt: HookRuntime, slot_no: int) -> int:
     """Emplace the originating transaction into a slot.
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1566. The transaction always
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1631. The transaction always
     exists, so the only two failures are a slot number above `max_slots`
-    (xahaud:include/xrpl/hook/Enum.h:398) and having no free slot to allocate
+    (xahaud:include/xrpl/hook/Enum.h:402) and having no free slot to allocate
     when asked for one. Slot 0 means "pick one".
 
     The slot is populated, not merely reserved: a hook slots the transaction in

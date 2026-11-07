@@ -1,8 +1,8 @@
 """Schema + fixtures for float_sto / float_sto_set host vectors.
 
-Primary goldens: xahaud:src/test/app/SetHook_test.cpp:6242+ (test_float_sto).
-Host body:       xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1146-1350
-Wrapper:         xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3568-3663
+Primary goldens: xahaud:src/test/app/SetHook_test.cpp:7000+ (test_float_sto).
+Host body:       xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1199-1350
+Wrapper:         xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3673-3663
 
 Vectors that need a live host dump can be refreshed from
 ``ripple.app.HookzFloatStoVectors`` (xahaud worktree) once that suite lands;
@@ -32,8 +32,8 @@ class FloatStoCase(BaseModel):
     # optional expected amount-bytes hex (8 bytes) for non-error successes
     expect_amount_hex: str | None = None
     host_cite: str = (
-        "xahaud:src/test/app/SetHook_test.cpp:6242+ / "
-        "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1146-1284"
+        "xahaud:src/test/app/SetHook_test.cpp:7000+ / "
+        "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1199-1284"
     )
 
 
@@ -46,8 +46,8 @@ class FloatStoSetCase(BaseModel):
     data_hex: str
     expect_xfl: int
     host_cite: str = (
-        "xahaud:src/test/app/SetHook_test.cpp:6242+ / "
-        "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1287-1350"
+        "xahaud:src/test/app/SetHook_test.cpp:7000+ / "
+        "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1340-1350"
     )
 
 

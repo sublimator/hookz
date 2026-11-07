@@ -722,8 +722,11 @@ class TestTheFieldTableMatchesThePin:
             "these are in sfields.macro at the pin; hookz would call an emit "
             f"carrying one of them illegal: {missing}")
 
+    # EntropyCount was on this list until the 2026.10.13 re-pin: FeatureRNG
+    # (#869) put an sfEntropyCount into upstream sfields.macro, so it is now a
+    # field the network has. The other three are still feature-branch only.
     @pytest.mark.parametrize("name", [
-        "ExportedTxn", "EntropyCount", "EntropyDigest", "HookExportCount",
+        "ExportedTxn", "EntropyDigest", "HookExportCount",
     ])
     def test_feature_branch_fields_are_not_known(self, name):
         """The false-accept direction, and the tell that the table came from

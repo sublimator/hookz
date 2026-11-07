@@ -801,7 +801,10 @@ class TestTheWhitelistIsScopedToTheTestNotToMainnet:
         test_env = set(get_import_signatures(
             amendments=derive_amendments(load_from_config())))
 
-        assert test_env - mainnet == {"prepare"}, sorted(test_env - mainnet)
+        # prepare: featureHooksUpdate2, vetoed. dice/util_random: featureRNG,
+        # which had majority but was not yet enabled at the 2026-11-07 capture.
+        assert test_env - mainnet == {"dice", "prepare", "util_random"}, \
+            sorted(test_env - mainnet)
 
     def test_a_gated_import_is_not_called_a_refusal(self):
         from hookz.cli.env_test_context import _surface_section

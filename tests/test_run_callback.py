@@ -376,7 +376,7 @@ class TestFieldProjections:
     """Every field answer is its `STBase::add` serialization — VL prefixes
     kept (except accounts), object/array values contents-only — and the
     direct and slotted views agree byte for byte
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1908)."""
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1941)."""
 
     def test_vl_array_and_object_values_match_the_host(self, wasm):
         rt = HookRuntime()

@@ -20,70 +20,70 @@ class TestALineThatSaysNothingResolvesUpward:
     three that are true and unreadable on their own."""
 
     def test_a_closing_brace_resolves_to_what_it_closes(self, hookapi):
-        assert hookapi.read_text().splitlines()[2201].strip() == "}"
+        assert hookapi.read_text().splitlines()[2425].strip() == "}"
 
-        span = span_for(hookapi, 2202)
+        span = span_for(hookapi, 2426)
 
-        assert span.start < 2202, "it expanded upward"
+        assert span.start < 2426, "it expanded upward"
         assert span.node_type == "if_statement"
 
     def test_a_bare_try_resolves_to_the_whole_handler(self, hookapi):
-        span = span_for(hookapi, 511)
+        span = span_for(hookapi, 550)
         body = render(span)
 
         assert span.node_type == "try_statement"
         assert "EMISSION_FAILURE" in body, "the catch is the point of citing it"
 
     def test_the_cited_line_is_marked(self, hookapi):
-        assert "→   511" in render(span_for(hookapi, 511))
+        assert "→   550" in render(span_for(hookapi, 550))
 
 
 class TestItNamesTheSymbol:
     """A construct type says what the code is; the symbol says what it is for."""
 
     def test_a_line_inside_a_method(self, hookapi):
-        assert span_for(hookapi, 511).symbol == "HookAPI::emit"
+        assert span_for(hookapi, 550).symbol == "HookAPI::emit"
 
     def test_a_different_method_in_the_same_file(self, hookapi):
-        assert span_for(hookapi, 2202).symbol == "HookAPI::slot_subarray"
+        assert span_for(hookapi, 2426).symbol == "HookAPI::slot_subarray"
 
     def test_the_symbol_appears_in_the_rendering(self, hookapi):
-        assert "in HookAPI::emit" in render(span_for(hookapi, 511))
+        assert "in HookAPI::emit" in render(span_for(hookapi, 550))
 
 
 class TestCitationsSharingAConstructMerge:
     def test_six_citations_in_one_function_become_one_block(self, hookapi):
-        spans = [span_for(hookapi, n) for n in (505, 508, 511, 553, 562, 571)]
+        spans = [span_for(hookapi, n) for n in (544, 547, 550, 592, 601, 610)]
 
         (merged,) = merge(spans)
 
-        assert merged.lines == [505, 508, 511, 553, 562, 571]
+        assert merged.lines == [544, 547, 550, 592, 601, 610]
         assert merged.symbol == "HookAPI::emit"
 
     def test_every_cited_line_is_still_marked(self, hookapi):
         """Two lines inside the same try/catch, so one block carries both."""
-        (merged,) = merge([span_for(hookapi, n) for n in (511, 519)])
+        (merged,) = merge([span_for(hookapi, n) for n in (550, 558)])
         body = render(merged, max_lines=20)
 
-        assert "→   511" in body
-        assert "→   519" in body
+        assert "→   550" in body
+        assert "→   558" in body
 
     def test_adjacent_statements_do_not_merge(self, hookapi):
         """Two separate `return`s are two constructs, and collapsing them
         would show code that sits between them as if it were cited."""
-        merged = merge([span_for(hookapi, 505), span_for(hookapi, 508)])
+        merged = merge([span_for(hookapi, 544), span_for(hookapi, 547)])
 
         assert len(merged) == 2
         assert all(s.node_type == "return_statement" for s in merged)
 
     def test_unrelated_citations_stay_apart(self, hookapi):
-        merged = merge([span_for(hookapi, 511), span_for(hookapi, 2202)])
+        merged = merge([span_for(hookapi, 550), span_for(hookapi, 2426)])
 
         assert len(merged) == 2
 
     def test_merging_is_order_independent(self, hookapi):
-        forward = merge([span_for(hookapi, 505), span_for(hookapi, 553)])
-        backward = merge([span_for(hookapi, 553), span_for(hookapi, 505)])
+        forward = merge([span_for(hookapi, 544), span_for(hookapi, 592)])
+        backward = merge([span_for(hookapi, 592), span_for(hookapi, 544)])
 
         assert [(s.start, s.end, s.lines) for s in forward] == \
                [(s.start, s.end, s.lines) for s in backward]
@@ -94,13 +94,13 @@ class TestLongConstructsAreAbridged:
     stop reading citations."""
 
     def test_it_elides_the_middle(self, hookapi):
-        body = render(span_for(hookapi, 511), max_lines=8)
+        body = render(span_for(hookapi, 550), max_lines=8)
 
         assert "⋯" in body
         assert len(body.splitlines()) < 30
 
     def test_a_short_construct_is_shown_whole(self, hookapi):
-        span = span_for(hookapi, 2202)
+        span = span_for(hookapi, 2426)
         body = render(span, max_lines=40)
 
         assert "⋯" not in body
@@ -121,7 +121,7 @@ class TestItDegradesRatherThanGuesses:
         assert "not vendored" in cite("src/nope/missing.cpp", 1).context()
 
     def test_context_beats_snippet_for_a_brace(self):
-        c = cite(HOOKAPI, 2202)
+        c = cite(HOOKAPI, 2426)
 
         assert c.snippet().strip() == "}"
         assert "if (new_slot != parent_slot)" in c.context()

@@ -4,17 +4,25 @@ Provides the allowed import functions, and their signatures, for a given set
 of amendments. Used by the guard checker to validate a hook's imports the way
 xahaud does: by name *and* by type.
 
-This is a port of `getImportWhitelist()` (Enum.h:410). The output is expected
-to be byte-identical to that function's, all 76 entries — see `xahaud_ref` for
-the pinned revision and how to dump the C++ side and diff it.
+This is a port of `getImportWhitelist()` (xahaud:include/xrpl/hook/Enum.h:427).
+Its output is expected to be identical to that function's: 77 entries at the
+pinned release with every amendment enabled (75 before featureRNG added `dice`
+and `util_random`) — see `xahaud_ref` for the pinned revision and how to dump
+the C++ side and diff it.
 
-hook_api.macro is a list of macro invocations, not a translation unit, so it
-is normalised into valid C before parsing (see `_normalise`) and then parsed
-with tree-sitter rather than pattern-matched.
+hook_api.macro is a list of macro invocations, not a translation unit. Each
+invocation is split into its four arguments the way the C preprocessor splits
+them (commas at parenthesis depth zero), and the declaration they spell,
+`RETURN_TYPE NAME PARAMS_TUPLE;`, is parsed with tree-sitter. That is the
+reading xahaud itself relies on: since the 2026.10 release it consumes the
+tuple as a parameter list, `(RETURN_TYPE(*) PARAMS_TUPLE) nullptr`
+(xahaud:include/xrpl/hook/Enum.h:438), so parameters may be written with names
+(`uint32_t read_ptr`) or bare (`uint32_t`), and both parse.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -26,9 +34,10 @@ C_LANGUAGE = Language(tsc.language())
 
 MACRO_NAME = "HOOK_API_DEFINITION"
 
-# xahaud rewrites the C type names to wasm value-type codes before including
-# hook_api.macro (Enum.h:417-420). void_t is not a value type
-# — it encodes "no return value", i.e. a result count of 0.
+# xahaud maps each C type to a wasm value type by size: 8 bytes is i64 (0x7E),
+# anything else i32 (0x7F) (xahaud:include/xrpl/hook/Enum.h:413). void_t is not
+# a value type — it encodes "no return value", i.e. a result count of 0, and
+# appears only in the coverage import the env-tests patch adds.
 WASM_TYPE_CODE = {
     "int32_t": 0x7F,
     "uint32_t": 0x7F,
@@ -50,20 +59,15 @@ class WhitelistError(ValueError):
     than the hook being checked.
     """
 
-# Coverage callback, mirroring Enum.h:433 in getImportWhitelist():
+# Coverage callback, from the external-env-tests patch's getImportWhitelist():
 #   void __on_source_line(uint32_t line, uint32_t col)
+# Upstream xahaud has no such entry; only instrumented builds import it.
 COVERAGE_IMPORT = "__on_source_line"
 COVERAGE_SIGNATURE = (VOID, 0x7F, 0x7F)
 
-# The `_t` suffix makes tree-sitter read `(uint32_t, uint32_t)` as a cast
-# rather than a parenthesised expression, so each type name is swapped for a
-# plain integer first. Distinct sentinels per name keep the mapping lossless —
-# int32_t and uint32_t share a wasm code but not a C spelling.
-_SENTINELS = {name: str(900_000 + i) for i, name in enumerate(WASM_TYPE_CODE)}
-_SENTINEL_TO_TYPE = {v: k for k, v in _SENTINELS.items()}
-
-# Longest-first: "uint32_t" contains "int32_t" as a substring.
-_SUBSTITUTIONS = sorted(_SENTINELS.items(), key=lambda kv: -len(kv[0]))
+_INVOCATION = re.compile(r"\b" + MACRO_NAME + r"\s*\(")
+_IDENTIFIER = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+_NO_AMENDMENT = "uint256{}"   # xahaud:include/xrpl/hook/Enum.h:436
 
 
 @dataclass(frozen=True)
@@ -88,83 +92,115 @@ class HookApiFunction:
         return 0 if WASM_TYPE_CODE[self.return_type] == VOID else 1
 
 
-def _normalise(text: str) -> str:
-    """Turn the macro file into a parseable translation unit.
-
-    Three rewrites, each mirroring what the C preprocessor would do for
-    xahaud's own consumer in Enum.h:
-      - `uint256{}` (the "no amendment" sentinel) is C++ brace-init; make it 0
-        (Enum.h:425 tests `AMENDMENT == uint256{}`)
-      - type names become integers, so they cannot be read as cast expressions
-      - each invocation becomes its own statement, then all of it becomes a
-        function body so the invocations sit where expressions are legal
-    """
-    text = text.replace("uint256{}", "0")
-    for name, sentinel in _SUBSTITUTIONS:
-        text = text.replace(name, sentinel)
-    text = text.replace(MACRO_NAME, ";" + MACRO_NAME)
-    return "void _hookz_macro_tu(void) {" + text + ";}"
-
-
-def _iter_macro_calls(node):
-    """Yield every HOOK_API_DEFINITION call_expression under `node`."""
-    if node.type == "call_expression":
-        fn = node.child_by_field_name("function")
-        if fn is not None and fn.text == MACRO_NAME.encode():
-            yield node
-    for child in node.children:
-        yield from _iter_macro_calls(child)
+def _strip_comments(text: str) -> str:
+    """Replace each comment with a space, as translation phase 3 does before
+    macros are expanded. The macro file has no string or character literals, so
+    a `//` or `/*` can only open a comment."""
+    out, i, n = [], 0, len(text)
+    while i < n:
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            i = n if j < 0 else j
+            out.append(" ")
+        elif text.startswith("/*", i):
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            out.append(" ")
+        else:
+            out.append(text[i])
+            i += 1
+    return "".join(out)
 
 
-def _type_name(node) -> str:
-    name = _SENTINEL_TO_TYPE.get(node.text.decode())
-    if name is None:
-        raise ValueError(f"unrecognised hook API type: {node.text.decode()!r}")
-    return name
+def _iter_macro_calls(text: str):
+    """Yield the argument list of every HOOK_API_DEFINITION invocation in
+    comment-free `text`, split as the preprocessor splits macro arguments: at
+    commas outside any parentheses."""
+    for m in _INVOCATION.finditer(text):
+        depth, args, current, i = 0, [], [], m.end()
+        while True:
+            if i >= len(text):
+                raise WhitelistError(
+                    f"unterminated {MACRO_NAME}( at offset {m.start()}")
+            ch = text[i]
+            if ch == "(":
+                depth += 1
+            elif ch == ")":
+                if depth == 0:
+                    args.append("".join(current))
+                    break
+                depth -= 1
+            elif ch == "," and depth == 0:
+                args.append("".join(current))
+                current = []
+                i += 1
+                continue
+            current.append(ch)
+            i += 1
+        yield [a.strip() for a in args]
+
+
+def _type_name(text: str) -> str:
+    if text not in WASM_TYPE_CODE:
+        raise ValueError(f"unrecognised hook API type: {text!r}")
+    return text
+
+
+def _parse_declaration(return_type: str, name: str, params: str):
+    """`RETURN_TYPE NAME PARAMS;` as C, via tree-sitter: (return, param types)."""
+    source = f"{return_type} {name}{params};"
+    root = Parser(C_LANGUAGE).parse(source.encode()).root_node
+    decls = [c for c in root.named_children if c.type != "comment"]
+    declarator = decls[0].child_by_field_name("declarator") if len(decls) == 1 else None
+    if (root.has_error or declarator is None
+            or declarator.type != "function_declarator"
+            or declarator.child_by_field_name("declarator").text.decode() != name):
+        raise ValueError(f"{MACRO_NAME} does not spell a declaration: {source!r}")
+    param_types = []
+    for p in declarator.child_by_field_name("parameters").named_children:
+        if p.type == "comment":
+            continue
+        inner = p.child_by_field_name("declarator")
+        if p.type != "parameter_declaration" or (
+                inner is not None and inner.type != "identifier"):
+            raise ValueError(f"unsupported hook API parameter {p.text.decode()!r} in {source!r}")
+        if any(c.type in ("type_qualifier", "storage_class_specifier") for c in p.children):
+            raise ValueError(f"unsupported hook API parameter {p.text.decode()!r} in {source!r}")
+        param_types.append(_type_name(p.child_by_field_name("type").text.decode()))
+    return _type_name(decls[0].child_by_field_name("type").text.decode()), tuple(param_types)
 
 
 def parse_hook_api_macro(path: Path | str) -> list[HookApiFunction]:
     """Parse hook_api.macro and return all function definitions."""
-    text = Path(path).read_text()
-    source = _normalise(text).encode()
-    tree = Parser(C_LANGUAGE).parse(source)
+    text = _strip_comments(Path(path).read_text())
 
     results = []
-    for call in _iter_macro_calls(tree.root_node):
-        args = [c for c in call.child_by_field_name("arguments").children if c.is_named]
+    for args in _iter_macro_calls(text):
         if len(args) != 4:
             raise ValueError(
                 f"{MACRO_NAME} takes 4 arguments, parsed {len(args)}: "
-                f"{call.text.decode()[:80]!r}"
+                f"{', '.join(args)[:80]!r}"
             )
-        return_node, name_node, params_node, amendment_node = args
-
-        # params_node is `(a, b, c)` — a parenthesised comma expression, or a
-        # single parenthesised identifier when the API takes one argument.
-        params = tuple(
-            _type_name(n)
-            for n in _iter_leaf_operands(params_node)
-        )
-
-        name = name_node.text.decode()
-        amendment = amendment_node.text.decode()
-        # _normalise substitutes type names everywhere, not only in type
-        # position. No API or amendment is named that way today, but one that
-        # embedded "int32_t" would come back silently mangled — and a mangled
-        # name means a whitelist that does not match xahaud's. Fail loudly.
-        _reject_mangled(name, "function name")
-        _reject_mangled(amendment, "amendment")
+        return_text, name, params, amendment = args
+        if not _IDENTIFIER.fullmatch(name):
+            raise ValueError(f"hook API name {name!r} is not an identifier")
+        if not (params.startswith("(") and params.endswith(")")):
+            raise ValueError(f"{name}: parameter tuple {params!r} is not parenthesised")
+        if amendment != _NO_AMENDMENT and not _IDENTIFIER.fullmatch(amendment):
+            raise ValueError(f"{name}: amendment {amendment!r} is not an identifier")
+        return_type, param_types = _parse_declaration(return_text, name, params)
         results.append(HookApiFunction(
             name=name,
-            return_type=_type_name(return_node),
-            param_types=params,
-            amendment="" if amendment == "0" else amendment,
+            return_type=return_type,
+            param_types=param_types,
+            amendment="" if amendment == _NO_AMENDMENT else amendment,
         ))
 
-    # A macro construct tree-sitter cannot parse would drop entries silently,
-    # and a whitelist short an API makes hookz reject imports xahaud allows.
-    # The file's own invocation count is the check.
-    expected = text.count(MACRO_NAME + "(")
+    # A construct the splitter cannot see would drop entries silently, and a
+    # whitelist short an API makes hookz reject imports xahaud allows. The
+    # file's own invocation count, taken independently of the traversal, is
+    # the check.
+    expected = len(_INVOCATION.findall(text))
     if len(results) != expected:
         raise WhitelistError(
             f"{path}: parsed {len(results)} definitions but the file contains "
@@ -172,30 +208,6 @@ def parse_hook_api_macro(path: Path | str) -> list[HookApiFunction]:
             "incomplete"
         )
     return results
-
-
-def _reject_mangled(token: str, what: str) -> None:
-    for sentinel, type_name in _SENTINEL_TO_TYPE.items():
-        if sentinel in token:
-            raise ValueError(
-                f"hook API {what} {token!r} contains the type name "
-                f"{type_name!r}; normalisation would corrupt it"
-            )
-
-
-def _iter_leaf_operands(node):
-    """Flatten a parenthesised comma expression into its operand nodes.
-
-    An empty parameter list `()` is not a legal C expression, so tree-sitter
-    fills it with a zero-width MISSING identifier. Those are dropped: a hook
-    API taking no arguments (etxn_burden, fee_base, ...) has no operands.
-    """
-    if node.type in ("parenthesized_expression", "comma_expression"):
-        for child in node.children:
-            if child.is_named:
-                yield from _iter_leaf_operands(child)
-    elif not node.is_missing and node.text:
-        yield node
 
 
 def derive_amendments(functions: list[HookApiFunction]) -> set[str]:

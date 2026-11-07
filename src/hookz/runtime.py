@@ -280,13 +280,13 @@ def provisional_meta(transaction_result: str | int) -> bytes:
     `sfTransactionIndex`, `sfTransactionResult`, and the affected-nodes array
     (empty here, as befits metadata that is provisional):
 
-        xahaud:src/libxrpl/protocol/TxMeta.cpp:232
+        xahaud:src/libxrpl/protocol/TxMeta.cpp:238
             STObject metaData(sfTransactionMetaData);
             metaData.setFieldU8(sfTransactionResult, mResult);
             metaData.setFieldU32(sfTransactionIndex, mIndex);
             metaData.emplace_back(mNodes);
 
-    built for the delivery at xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2357
+    built for the delivery at xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2487
     (`TxMeta meta = ctx_.generateProvisionalMeta(); meta.setResult(result, 0)`).
 
     Public so a test that shapes a delivery by hand (no `run_callback`)
@@ -477,7 +477,7 @@ class HookRuntime:
         # Serialized provisional TxMeta served by `meta_slot`, or None for
         # PREREQUISITE_NOT_MET — the answer a strong execution gets, since it
         # runs before the transaction applies and no metadata exists yet
-        # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2378). Set by
+        # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2602). Set by
         # `run_callback` for the duration of the delivery.
         self._callback_meta: bytes | None = None
         self.ledger_seq_val: int = 100
@@ -490,7 +490,7 @@ class HookRuntime:
         # `_emitted_mark` is that run's pending slice: kept on accept,
         # withdrawn into `attempted_emissions` otherwise, mirroring how the
         # ledger applies a hook's queue only on success
-        # (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2026).
+        # (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2101).
         self.emitted_txns: list[bytes] = []
         # The *last* run's emissions when that run did not accept — per-run,
         # reset on every run. See the note in `run`.
@@ -662,8 +662,8 @@ class HookRuntime:
         """Scope a `cbak` invocation, deriving what the ledger would expose.
 
         `emit_failure` is not something a caller should be trusted to set. The
-        chain derives it — `isCallback && wasmParam & 1`
-        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1076) — and the failure
+        chain derives it — `isCallback && (wasmParam & 1)`
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049) — and the failure
         mode of getting it wrong is silent and one-directional: forget it, and
         the harness serves fields the ledger would refuse, so a dead restore
         path looks alive. Deriving it from `ctx` here means a test cannot be
@@ -677,9 +677,9 @@ class HookRuntime:
 
         **`ctx == 0` does not mean the emission succeeded.** The ledger calls
         back whenever `applied` is true, and `applied = isTecClaim(result)`
-        (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2158) with
+        (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2273) with
         `isTecClaim(x) { return ((x) >= tecCLAIM); }`
-        (xahaud:include/xrpl/protocol/TER.h:688) — so every `tec` arrives here
+        (xahaud:include/xrpl/protocol/TER.h:692) — so every `tec` arrives here
         as 0, indistinguishable from success. A hook branching on `ctx == 0` to
         mean "it worked" is wrong about `tecNO_LINE` and `tecUNFUNDED_PAYMENT`,
         which are the realistic ways an emitted payout dies. Use
@@ -704,7 +704,7 @@ class HookRuntime:
         The second execution the ledger owes an emitting hook: after the
         emission either applies or expires, `cbak` runs against what actually
         happened (`doHookCallback(proMeta)` under `if (applied && ...)`,
-        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2355-2365 — the pseudo-
+        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2485-2365 — the pseudo-
         transaction's own application for a failure). This method derives
         everything the ledger would expose, runs `run(hook, export="cbak",
         arg=ctx)` inside the `callback(ctx)` scope, and restores the runtime's
@@ -740,7 +740,7 @@ class HookRuntime:
         *Applied* (`ctx & 1 == 0`): the transaction being applied **is** the
         emission, so `otxn_slot` serves `emitted_tx` whole, `otxn_id`
         answers its hash (`getTransactionID()`,
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1547), and direct
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612), and direct
         `otxn_field` reads derive from the emission's own serialized fields
         — upstream all three describe one `applyCtx.tx`, so the blob is the
         authority for both the direct and the slotted view, and a
@@ -752,15 +752,15 @@ class HookRuntime:
         `ttEMIT_FAILURE` pseudo-transaction, carrying the current ledger
         sequence and the failed emission's hash
         (`obj[sfLedgerSequence] = seq; obj[sfTransactionHash] = txnHash`,
-        xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1656) — `sfLedgerSequence`
+        xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1657) — `sfLedgerSequence`
         here is `rt.ledger_seq_val`. Field visibility collapses to exactly
         those two (see `handlers.otxn.EMIT_FAILURE_FIELDS`), `otxn_id` still
         answers the emission's hash (HookAPI.cpp:1547), and `otxn_slot`
         serves the emitted-transaction *ledger entry* — the original wrapped
         in `sfEmittedTxn`, which is what the entry holds
-        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1521-1541) and what
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1547-1541) and what
         the host slots on failure (`hookCtx.emitFailure ? *(hookCtx.emitFailure)
-        : ...tx`, xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1583). A
+        : ...tx`, xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1648). A
         repair path that navigates to the original must therefore descend
         through `sfEmittedTxn` — exactly as it would on chain.
         """
@@ -839,8 +839,8 @@ class HookRuntime:
                 coverage merge, and the copies of that code drift apart.
             arg: the u32 the export receives. The ledger passes `cbak` a ctx
                 whose low bit means the emitted transaction was *not* applied
-                (`ctx_.tx.getTxnType() == ttEMIT_FAILURE ? 1UL : 0UL`,
-                xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1584) — see
+                (`isEmitFailure ? 1UL : 0UL`,
+                xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1646) — see
                 `callback()` for deriving the field-visibility mask from it,
                 and CALLBACK_APPLIED / CALLBACK_NOT_APPLIED for what the
                 values do and do not mean.
@@ -854,7 +854,7 @@ class HookRuntime:
         the pending queue, `attempted_emissions`, the `etxn_reserve` flag and
         count (once per hook execution on chain), the nonce counter
         (`emit_nonce_counter` lives on the per-execution HookContext,
-        xahaud:src/xrpld/app/hook/applyHook.h:203), and the
+        xahaud:src/xrpld/app/hook/applyHook.h:211), and the
         `emission_rejections` / `emission_undecided` diagnostics.
 
         *Durable* (carried across runs on one runtime, on purpose):
@@ -943,8 +943,8 @@ class HookRuntime:
             # xahaud attaches sfEmitCallback to an emitted transaction
             # exactly when the emitting hook exports cbak, and refuses the
             # emit if the two disagree ("true iff this hook wasm has a cbak
-            # function", xahaud:src/xrpld/app/hook/applyHook.h:166,
-            # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914). The module
+            # function", xahaud:src/xrpld/app/hook/applyHook.h:174,
+            # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:961). The module
             # is the only place that is knowable, so it is derived here on
             # every run — including cbak runs, whose own emits are validated
             # against it.
@@ -974,10 +974,10 @@ class HookRuntime:
 
         # Emitted transactions are held until the hook finishes and applied
         # only if it succeeded: `finalizeHookResult(hookResult, ctx_,
-        # isTesSuccess(result))` (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2026)
+        # isTesSuccess(result))` (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2101)
         # drains the queue under `if (doEmit)`, and the field itself is
         # commented "etx stored here until accept/rollback"
-        # (xahaud:src/xrpld/app/hook/applyHook.h:149).
+        # (xahaud:src/xrpld/app/hook/applyHook.h:157).
         #
         # So a hook that rolls back emits nothing. This run's queue is the
         # slice past `_emitted_mark`: on accept it stays in the runtime's

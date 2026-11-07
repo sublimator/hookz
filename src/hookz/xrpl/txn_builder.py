@@ -47,7 +47,7 @@ def serialize_field(field_id: int, payload: bytes) -> bytes:
     """One field: header, a length prefix if the type takes one, then payload.
 
     `field_id` is the hook-API sfCode — `(type_code << 16) | field_code`, the
-    same encoding `sto.py` decodes (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1721
+    same encoding `sto.py` decodes (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1754
     reads them the same way).
     """
     from xrpl.core.binarycodec.binary_wrappers.binary_serializer import (

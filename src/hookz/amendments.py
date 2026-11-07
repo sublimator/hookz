@@ -190,8 +190,8 @@ def enabled_on(network: str = DEFAULT_NETWORK) -> set[str]:
 
 
 # The amendments each guard-rule bit is gated on, in the order
-# getGuardRulesVersion tests them (xahaud:include/xrpl/hook/Enum.h:451).
-# Bit values are GuardRulesVersion (xahaud:include/xrpl/hook/Enum.h:445).
+# getGuardRulesVersion tests them (xahaud:include/xrpl/hook/Enum.h:458).
+# Bit values are GuardRulesVersion (xahaud:include/xrpl/hook/Enum.h:452).
 GUARD_RULE_AMENDMENTS: tuple[tuple[str, int], ...] = (
     ("fix20250131", 0x01),      # bans memory.copy / memory.fill
     ("fixGuardDepth32", 0x02),  # nesting limit 16 -> 32
@@ -202,7 +202,7 @@ def guard_rules_version(network: str = DEFAULT_NETWORK) -> int:
     """The guard `rulesVersion` a network is actually running.
 
     xahaud computes this per-ledger from the amendments in force
-    (xahaud:include/xrpl/hook/Enum.h:451), so the rules a hook is checked
+    (xahaud:include/xrpl/hook/Enum.h:458), so the rules a hook is checked
     against are a fact about the network, not a constant. hookz used to
     hardcode the bits: `validate_guards` defaulted to fix20250131 set,
     `nesting_limit` to nothing set, and `analyze_wce` took no rules at all —

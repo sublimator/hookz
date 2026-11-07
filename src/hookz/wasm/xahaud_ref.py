@@ -13,12 +13,14 @@ answers that question against whatever checkout hookz is configured to use;
 PIN
 ---
 Repo    https://github.com/Xahau/xahaud
-Ref     origin/dev @ bb244ef7729503a0317bcff0f8fdaa93ca5cb7d2  (2026-06-21)
-Browse  https://github.com/Xahau/xahaud/blob/bb244ef7729503a0317bcff0f8fdaa93ca5cb7d2/include/xrpl/hook/Guard.h
+Ref     2026.10.13-release+4119 @ d20e8ffb561034101d24668adbe9a513f639cb37  (2026-10-13)
+Browse  https://github.com/Xahau/xahaud/blob/d20e8ffb561034101d24668adbe9a513f639cb37/include/xrpl/hook/Guard.h
+Before  2026.6.21-release+3350 @ bb244ef7729503a0317bcff0f8fdaa93ca5cb7d2  (2026-06-21)
 
-Pinned to upstream `dev` deliberately. Do NOT re-pin to a local worktree or a
-feature branch: those carry unmerged patches, and porting against one bakes
-non-network behaviour into hookz. This pin was set after discovering the
+Pinned to an upstream release tag, a commit on `dev` (and `release`).
+Do NOT re-pin to a local worktree or a feature branch: those carry unmerged
+patches, and porting against one bakes non-network behaviour into hookz.
+The rule was set after discovering the
 `xahaud-wasm-coverage` worktree was simultaneously *behind* dev (missing
 fixGuardDepth32, xahaud PR #653) and *ahead* of it (a local coverage patch
 relaxing the function-type result_count rule).
@@ -29,7 +31,7 @@ refer to THESE files at THIS commit. If you re-pin, the line numbers move.
 KNOWN DELIBERATE DIVERGENCES
 ----------------------------
 1. Coverage builds. Upstream requires every function type to declare exactly
-   one result (Guard.h:1440ish). hookz permits the void `__on_source_line`
+   one result (Guard.h:1444ish). hookz permits the void `__on_source_line`
    import, but only when a caller passes `get_import_signatures(coverage=True)`
    — i.e. for instrumented binaries, which are never deployed. Production
    builds get upstream's rule because no real hook API returns void.
@@ -70,9 +72,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 XAHAUD_REPO = "https://github.com/Xahau/xahaud"
-XAHAUD_REF = "dev"  # identical to `release` at this commit
-XAHAUD_COMMIT = "bb244ef7729503a0317bcff0f8fdaa93ca5cb7d2"
-XAHAUD_COMMIT_DATE = "2026-06-21"
+XAHAUD_REF = "2026.10.13-release+4119"  # release tag; the commit is on dev and is `release`
+XAHAUD_COMMIT = "d20e8ffb561034101d24668adbe9a513f639cb37"
+XAHAUD_COMMIT_DATE = "2026-10-13"
 
 # The vendored tree under src/hookz/xahaud_lite/ IS the reference copy: every
 # file there was taken verbatim from XAHAUD_COMMIT at the same relative path.
@@ -148,7 +150,7 @@ def sha256(path: Path) -> str:
 #
 # A claim about upstream is written in one form, everywhere:
 #
-#     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:794
+#     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:833
 #
 # Repo-relative path, a line, and a scheme prefix that makes it greppable. It
 # reads as a citation to a human, resolves to a permalink at XAHAUD_COMMIT for

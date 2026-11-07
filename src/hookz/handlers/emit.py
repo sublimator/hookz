@@ -1,12 +1,12 @@
 """Transaction emission — emit, etxn_reserve, etxn_details, etxn_fee_base, etxn_nonce.
 
 Host sources:
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:382-497   (prepare)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498-812   (emit — ~315 lines of rules)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:827-858   (etxn_fee_base)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:859-932   (etxn_details)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:933-949   (etxn_reserve)
-  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2662+   (emit wrapper / bounds)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:421-497   (prepare)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:537-812   (emit — ~315 lines of rules)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:866-858   (etxn_fee_base)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:906-932   (etxn_details)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:980-949   (etxn_reserve)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2724+   (emit wrapper / bounds)
 
 # todo:xahaud-bug-candidate
 # None claimed yet. Emit reject-rule fidelity (fee, burden, generation, callback
@@ -46,8 +46,8 @@ def etxn_details(rt: HookRuntime, write_ptr: int, write_len: int) -> int:
     116 bytes, or 138 when the emitting hook exports `cbak` — xahaud appends
     sfEmitCallback iff `hookCtx.result.hasCallback`, which is
     "true iff this hook wasm has a cbak function"
-    (xahaud:src/xrpld/app/hook/applyHook.h:166,
-     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:914).
+    (xahaud:src/xrpld/app/hook/applyHook.h:174,
+     xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:961).
 
     Always writing the short form made every hook with a callback fail its own
     length check, so hooks had to be tested against a hand-written replacement
@@ -154,9 +154,9 @@ def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
     `HookAPI::emit`:
 
     1. transaction-buffer bounds, output-buffer bounds, output width
-       (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2662-2669);
+       (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2724-2669);
     2. reservation, then the reserved count
-       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:504-508);
+       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:543-508);
     3. the emission rules.
 
     Observable when failures overlap: an unreserved emit with a short
@@ -182,7 +182,7 @@ def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
         return hookapi.TOO_MANY_EMITTED_TXN, None
 
     txn_bytes = rt._read_memory(txn_ptr, txn_len)
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498 applies fourteen rules
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:537 applies fourteen rules
     # and a preflight before it accepts an emitted transaction. Skipping them
     # made every emit succeed here regardless of its contents — a hook whose
     # template has a wrong offset passed the suite and is refused on chain.

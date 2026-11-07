@@ -9,11 +9,11 @@ negative number and a hook that does not check it carries on regardless.
 The codes are real, though, and worth choosing accurately. `state_set` can
 come back `RESERVE_INSUFFICIENT` — xahaud routes both a write and a delete
 through the same reserve accounting
-(xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1902-1916,
-xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2733-2777) — or
+(xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2112-1916,
+xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2957-2777) — or
 `TOO_MANY_STATE_MODIFICATIONS` once a hook has changed more entries than its
 budget allows. `emit` returns `PREREQUISITE_NOT_MET` without an
-`etxn_reserve` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:505),
+`etxn_reserve` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:544),
 `TOO_MANY_EMITTED_TXN` once the reserved count is used up (…:508), and
 `EMISSION_FAILURE` when the blob fails a rule or the transactor's preflight
 (…:511).

@@ -1,7 +1,7 @@
 """Validate an emitted transaction the way xahaud does before accepting it.
 
 `emit()` on chain is not a store. `HookAPI::emit`
-(xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:498) parses the blob, applies
+(xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:537) parses the blob, applies
 fourteen rules to it, and then runs the transactor's own `preflight`. Any of
 those failing returns EMISSION_FAILURE, and the hook sees `emit() < 0` — which
 is a branch real hooks take and roll back on.
@@ -19,7 +19,7 @@ The fourteen emission rules are implemented here. They are generic — they
 depend on the transaction's common fields, not on what kind of transaction it
 is — so they port faithfully.
 
-`ripple::preflight` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:794) does not
+`ripple::preflight` (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:833) does not
 port: it dispatches into per-transaction-type transactor code, which is most of
 rippled. `TYPE_VALIDATORS` below covers the types hooks in practice emit, and
 `PREFLIGHT_UNPORTED` records the rest as a known gap in the same spirit as the
@@ -53,7 +53,7 @@ def emitted_txn_id(txn: bytes) -> bytes:
 _EMIT_GENERATION_MAX = 10
 
 # sfEmitDetails is required to be present *and valid*: all five of these must
-# be there. xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:632
+# be there. xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:671
 _EMIT_DETAIL_FIELDS = ("EmitGeneration", "EmitBurden", "EmitParentTxnID",
                        "EmitNonce", "EmitHookHash")
 
@@ -73,21 +73,21 @@ MAX_SIGNERS_EXPANDED = 32
 # The rule numbering is xahaud's, kept so a reader can put the two side by side.
 # Each entry is (rule label, citation) — see `wasm/xahaud_ref.check_citations`.
 RULES = {
-    "parse": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:511",
-    "pseudo": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:524",
-    "0-account": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:553",
-    "1-sequence": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:562",
-    "2-signingpubkey": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:571",
-    "2a-signers": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:595",
-    "2b-ticket": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:603",
-    "2c-accounttxnid": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:611",
-    "3-emitdetails": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:619",
-    "8-generation": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:643",
-    "4-txnsignature": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:714",
-    "5-lastledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:722",
-    "6-firstledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:748",
-    "7-fee": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:758",
-    "preflight": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:794",
+    "parse": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:550",
+    "pseudo": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:563",
+    "0-account": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:592",
+    "1-sequence": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:601",
+    "2-signingpubkey": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:610",
+    "2a-signers": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:634",
+    "2b-ticket": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:642",
+    "2c-accounttxnid": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:650",
+    "3-emitdetails": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:658",
+    "8-generation": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:682",
+    "4-txnsignature": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:753",
+    "5-lastledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:761",
+    "6-firstledgerseq": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:787",
+    "7-fee": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:797",
+    "preflight": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:833",
 }
 
 # KNOWN GAPS — hookz ACCEPTS what xahaud REJECTS
@@ -99,10 +99,10 @@ KNOWN_GAPS = (
     # the parent's, parent txn id against the originating transaction, nonce
     # against those etxn_nonce actually issued, hook hash against the emitting
     # hook. All of it needs execution context this function is not given.
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:660
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:699
     "EmitDetails values (burden, parent txn, nonce, hook hash) are not bound "
     "to the emitting context — only their presence is checked",
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:531
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:570
     "canEmit / the hook's own allow-list of emittable transaction types is "
     "not consulted",
     # handlers/emit.py passes min_fee=None because the mock's etxn_fee_base is
@@ -346,7 +346,7 @@ def check_emission(txn: bytes, *, hook_account: bytes | None = None,
         elif has_callback is False and callback is not None:
             check.refuse("3-emitdetails",
                          "sfEmitCallback is present though the hook exports no cbak")
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:698 — whose callback
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:737 — whose callback
         if (callback is not None and hook_account is not None
                 and not _same_account(callback, hook_account)):
             check.refuse("3-emitdetails",

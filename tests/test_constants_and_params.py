@@ -31,7 +31,7 @@ def _constant_assignments(path: Path) -> list[str]:
 
 class TestTerConstants:
     def test_the_cited_values(self):
-        # xahaud:include/xrpl/protocol/TER.h:253,280,284,304,308
+        # xahaud:include/xrpl/protocol/TER.h:257,280,284,304,308
         assert ter.tesSUCCESS == 0
         assert ter.tecCLAIM == 100
         assert ter.tecUNFUNDED_PAYMENT == 104
