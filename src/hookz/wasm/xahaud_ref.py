@@ -137,6 +137,7 @@ CITED_FILES = (
     "src/xrpld/app/tx/detail/SetHook.cpp",        # HookHash = sha512Half(wasm)
     "src/xrpld/app/tx/detail/Change.cpp",         # ttENTROPY seeds the object
     "src/test/app/RNG_test.cpp",                  # the ported behaviour tests
+    "src/test/app/HookAPI_test.cpp",              # host vectors the handler tests port
     "src/libxrpl/protocol/Indexes.cpp",           # ledger.py, keylet::random / manifest
     "include/xrpl/protocol/detail/ledger_entries.macro",  # ledger.py, ltRANDOM / ltMANIFEST
 )
