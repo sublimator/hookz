@@ -98,6 +98,11 @@ RUN if [ "$TARGETARCH" = "arm64" ]; then ARCH=arm64; SUM=$NODE_SHA256_ARM64; \
     && tar xzf /tmp/node.tgz -C /opt && rm /tmp/node.tgz \
     && ln -s /opt/node-v${NODE_VERSION}-linux-${ARCH} /opt/node
 ENV PATH="/opt/node/bin:${PATH}"
+# hookz pins an exact hooks-compiler version, so the cached copy is the one it
+# asks for. Without this, npx revalidates against the registry on every run;
+# under --network none each compile then waits ~70s before using the cache.
+# A cache miss (another HOME, another version) still fetches.
+ENV npm_config_prefer_offline=true
 # Fetch the pinned hooks-compiler into npm's cache now, at the version the
 # installed hookz pins, so a run needs no network for it.
 RUN /root/.local/share/uv/tools/hookz/bin/python -c \

@@ -35,7 +35,10 @@ xahaud's CMake invocation recognizes `HOOKZ_HOOKS_COMPILER=1`, passes
 target. This prevents an existing locally generated header from satisfying an
 `OUTPUT`-cached build after the compiler mode changes. Forward the variable
 into Docker explicitly. The image carries Node and has the pinned
-hooks-compiler in npm's cache, so the mode needs no network there.
+hooks-compiler in npm's cache at `/root/.npm`, and sets
+`npm_config_prefer_offline=true` so npx uses that copy without asking the
+registry first. The mode needs no network there. Running as another user or
+with another `HOME` misses that cache and fetches it.
 
 The old switch, `HOOKZ_BUILDBOX`, fails at configure with a pointer to the
 new one. hook-buildbox.xrpl.org was retired in October 2026, and hookz refuses
