@@ -1034,7 +1034,7 @@ class TestTheVerdictNamesItsRules:
 
         out = run(artifact)
 
-        assert "rules: 0x01 (nesting limit 16)" in out.output
+        assert "rules: 0x03 (nesting limit 32)" in out.output
 
     def test_the_network_rules_are_what_reach_the_checker(
         self, artifact, monkeypatch
@@ -1084,7 +1084,7 @@ class TestTheVerdictNamesItsRules:
         out = run(artifact)
 
         assert "assumed" not in out.output
-        assert "nesting limit 16" in out.output
+        assert "nesting limit 32" in out.output
 
     def test_waivers_reach_the_checker_too(self, artifact, monkeypatch):
         from hookz.wasm.guard import IGNORE_DEPTH

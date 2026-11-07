@@ -410,23 +410,23 @@ class TestBuildAndWceAgree:
         )
 
         assert r.exit_code == 0, r.output
-        assert "rules: 0x01 (nesting limit 16)" in r.output
+        assert "rules: 0x03 (nesting limit 32)" in r.output
 
     def test_guard_check_names_its_rules_on_both_verdicts(self, tmp_path):
         """A depth rejection is exactly when which limit applied is the
         question, so the failing path must say it too."""
         deep = tmp_path / "deep.wasm"
-        deep.write_bytes(_nested_blocks_wasm(24))
+        deep.write_bytes(_nested_blocks_wasm(40))
         shallow = tmp_path / "ok.wasm"
         shallow.write_bytes(_nested_blocks_wasm(2))
 
         failed = self._run(["guard-check", str(deep)])
         assert failed.exit_code == 1
         assert "FAILED" in failed.output
-        assert "nesting limit 16" in failed.output
+        assert "nesting limit 32" in failed.output
 
         passed = self._run(["guard-check", str(shallow)])
-        assert "nesting limit 16" in passed.output
+        assert "nesting limit 32" in passed.output
 
 
 class TestTheRulesFollowTheNetwork:
@@ -441,37 +441,40 @@ class TestTheRulesFollowTheNetwork:
     GUARD_RULE_FIX_20250131`.
     """
 
+    # Mainnet voted fixGuardDepth32 in before the 2026-11-07 manifest, so
+    # today's rules are 0x03 and the move these tests make is back to the
+    # network as it was: without it, 0x01 and a limit of 16.
     @staticmethod
-    def _with_depth32(monkeypatch):
-        """Pretend mainnet voted fixGuardDepth32 in."""
+    def _without_depth32(monkeypatch):
+        """Pretend mainnet did not have fixGuardDepth32 (before 2026-11)."""
         import hookz.amendments as amd
 
         real = amd.enabled_on
         monkeypatch.setattr(
             amd, "enabled_on",
-            lambda *a, **k: set(real(*a, **k)) | {"fixGuardDepth32"})
+            lambda *a, **k: set(real(*a, **k)) - {"fixGuardDepth32"})
 
     @pytest.mark.parametrize("extra", TestBuildAndWceAgree.COMPILING)
     def test_a_build_verdict_moves_when_the_network_moves(
         self, tmp_path, monkeypatch, extra
     ):
-        self._with_depth32(monkeypatch)
+        self._without_depth32(monkeypatch)
 
         r = TestBuildAndWceAgree._run(
             ["build", str(SOURCE), "-o", str(tmp_path / "h.wasm"), *extra]
         )
 
         assert r.exit_code == 0, r.output
-        assert "rules: 0x03 (nesting limit 32)" in r.output
+        assert "rules: 0x01 (nesting limit 16)" in r.output
 
     def test_guard_check_moves_too(self, tmp_path, monkeypatch):
-        self._with_depth32(monkeypatch)
+        self._without_depth32(monkeypatch)
         art = tmp_path / "h.wasm"
         art.write_bytes(_nested_blocks_wasm(2))
 
         r = TestBuildAndWceAgree._run(["guard-check", str(art)])
 
-        assert "rules: 0x03 (nesting limit 32)" in r.output
+        assert "rules: 0x01 (nesting limit 16)" in r.output
 
     def test_wce_moves_too(self, tmp_path, monkeypatch):
         """The one verdict command this class had never covered.
@@ -489,40 +492,40 @@ class TestTheRulesFollowTheNetwork:
         a copy avoiding all three passes them. This closes it behaviourally
         instead, where the shape of the format string does not matter.
         """
-        self._with_depth32(monkeypatch)
+        self._without_depth32(monkeypatch)
         art = tmp_path / "h.wasm"
         art.write_bytes(_nested_blocks_wasm(2))
 
         r = TestBuildAndWceAgree._run(["wce", str(art)])
 
-        assert "rules: 0x03 (nesting limit 32)" in r.output, r.output
+        assert "rules: 0x01 (nesting limit 16)" in r.output, r.output
 
-    def test_a_hook_too_deep_today_would_pass_under_the_new_rules(
+    def test_a_hook_that_passes_today_was_refused_under_the_old_rules(
         self, tmp_path, monkeypatch
     ):
         """The behaviour behind the number, not just the printed line — and
-        the reason removing --depth32 lost nothing: when the vote lands this
-        happens on its own."""
+        the reason removing --depth32 lost nothing: when the vote landed this
+        happened on its own."""
         art = tmp_path / "deep.wasm"
         art.write_bytes(_nested_blocks_wasm(24))
 
+        today = TestBuildAndWceAgree._run(["guard-check", str(art)])
+        assert today.exit_code == 0, today.output
+        assert "PASSED" in today.output
+
+        self._without_depth32(monkeypatch)
         before = TestBuildAndWceAgree._run(["guard-check", str(art)])
         assert before.exit_code == 1
         assert "Maximum allowable depth" in before.output
-
-        self._with_depth32(monkeypatch)
-        after = TestBuildAndWceAgree._run(["guard-check", str(art)])
-        assert after.exit_code == 0, after.output
-        assert "PASSED" in after.output
 
     def test_the_printed_limit_is_the_one_that_was_applied(self, monkeypatch):
         """`nesting limit 16` hardcoded in the message would satisfy every
         assertion above that runs on today's manifest."""
         from hookz.cli.main import _nesting_limit, _rules
 
-        assert _nesting_limit(_rules()) == 16
-        self._with_depth32(monkeypatch)
         assert _nesting_limit(_rules()) == 32
+        self._without_depth32(monkeypatch)
+        assert _nesting_limit(_rules()) == 16
 
 
 class TestTheDisclosureHasOneSource:
@@ -623,7 +626,7 @@ class TestTheDisclosureHasOneSource:
         numbers, so bind those rather than the string.
 
         Asserted twice, the second time off the constant. On today's manifest
-        this reads `0x01 == 0x01`, which a hardcoded literal satisfies just as
+        this reads `0x03 == 0x03`, which a hardcoded literal satisfies just as
         well as a derivation — the same vacuity `TestTheRulesFollowTheNetwork`
         exists to rule out, reintroduced here because one assertion looked
         obviously sufficient.
@@ -634,10 +637,10 @@ class TestTheDisclosureHasOneSource:
         assert reported["rulesVersion"] == f"0x{_rules():02X}"
         assert reported["nesting limit"] == str(_nesting_limit(_rules()))
 
-        TestTheRulesFollowTheNetwork._with_depth32(monkeypatch)
+        TestTheRulesFollowTheNetwork._without_depth32(monkeypatch)
         moved = dict(self._doctor_rows())
-        assert moved["rulesVersion"] == "0x03"
-        assert moved["nesting limit"] == "32"
+        assert moved["rulesVersion"] == "0x01"
+        assert moved["nesting limit"] == "16"
 
     def test_a_corrupt_manifest_is_a_row_not_a_traceback(self, monkeypatch):
         """The regression this class's own change caused.

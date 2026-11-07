@@ -44,6 +44,10 @@ def debug_balance_gate_wasm() -> bytes:
 # Decode
 # ---------------------------------------------------------------------------
 
+
+# Rules without fixGuardDepth32: the 16-level nesting limit.
+from hookz.wasm.guard import GUARD_RULE_FIX_20250131 as PRE_DEPTH32  # noqa: E402
+
 class TestDecodeModule:
     def test_too_short(self):
         with pytest.raises(DecodeError, match="too short"):
@@ -628,34 +632,41 @@ def _nested_blocks_wasm(depth: int, padding: int = 0) -> bytes:
 
 
 class TestNestingLimit:
+    """The 16-level limit, under rules without fixGuardDepth32.
+
+    These ran against the network's rules until mainnet enabled
+    fixGuardDepth32 (2026-11 manifest), which raised its limit to 32; they
+    pin PRE_DEPTH32 so the 16-level mechanics stay covered. The network's
+    own limit is TestNestingLimitUnderTheNetworksRules below.
+    """
     def test_compute_wce_reports_depth_16_as_within_limit(self):
         from hookz.wasm.guard import analyze_wce
-        result = analyze_wce(_nested_blocks_wasm(16))
+        result = analyze_wce(_nested_blocks_wasm(16), rules_version=PRE_DEPTH32)
         assert result.nesting_exceeded is False
 
     def test_compute_wce_flags_depth_17(self):
         from hookz.wasm.guard import analyze_wce
-        result = analyze_wce(_nested_blocks_wasm(17))
+        result = analyze_wce(_nested_blocks_wasm(17), rules_version=PRE_DEPTH32)
         assert result.nesting_exceeded is True
 
     def test_validate_guards_accepts_depth_16(self):
-        result = validate_guards(_nested_blocks_wasm(16), import_whitelist={"_g"})
+        result = validate_guards(_nested_blocks_wasm(16), import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
         assert result.hook_wce > 0
 
     def test_validate_guards_rejects_depth_17(self):
         with pytest.raises(GuardError, match="Maximum allowable depth of blocks"):
-            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"})
+            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
 
     def test_rejection_message_matches_xahaud_wording(self):
         """`hookz guard-check` output should read like the SetHook log line."""
         with pytest.raises(GuardError) as exc:
-            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"})
+            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
         assert "16 levels" in str(exc.value)
         assert "Flatten your loops and conditions" in str(exc.value)
 
     def test_nesting_error_carries_code_section_location(self):
         with pytest.raises(GuardError) as exc:
-            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"})
+            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
         assert exc.value.codesec == 0
         assert exc.value.offset > 0
 
@@ -668,7 +679,7 @@ class TestNestingLimit:
         """
         wasm = _nested_blocks_wasm(17, padding=70_000)
         with pytest.raises(GuardError) as exc:
-            validate_guards(wasm, import_whitelist={"_g"})
+            validate_guards(wasm, import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
         assert "Maximum allowable depth of blocks" in str(exc.value)
         assert "exceeds limit" not in str(exc.value)
 
@@ -676,18 +687,18 @@ class TestNestingLimit:
         """Control for the precedence test — same padding, legal depth."""
         wasm = _nested_blocks_wasm(1, padding=70_000)
         with pytest.raises(GuardError, match="exceeds limit"):
-            validate_guards(wasm, import_whitelist={"_g"})
+            validate_guards(wasm, import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
 
     def test_analyze_wce_reports_without_raising(self):
         from hookz.wasm.guard import analyze_wce
-        result = analyze_wce(_nested_blocks_wasm(17))  # must not raise
+        result = analyze_wce(_nested_blocks_wasm(17), rules_version=PRE_DEPTH32)  # must not raise
         assert result.nesting_exceeded is True
         assert any("REJECT" in e for e in result.errors)
 
     def test_analyze_wce_flags_understated_total(self):
         """The reported WCE is a floor — the message must say so."""
         from hookz.wasm.guard import analyze_wce
-        result = analyze_wce(_nested_blocks_wasm(17))
+        result = analyze_wce(_nested_blocks_wasm(17), rules_version=PRE_DEPTH32)
         assert any("understated" in e for e in result.errors)
 
     def test_over_depth_subtree_contributes_zero(self):
@@ -699,8 +710,8 @@ class TestNestingLimit:
         as a budget figure.
         """
         from hookz.wasm.guard import analyze_wce
-        wce_30 = analyze_wce(_nested_blocks_wasm(30)).hook_wce
-        wce_60 = analyze_wce(_nested_blocks_wasm(60)).hook_wce
+        wce_30 = analyze_wce(_nested_blocks_wasm(30), rules_version=PRE_DEPTH32).hook_wce
+        wce_60 = analyze_wce(_nested_blocks_wasm(60), rules_version=PRE_DEPTH32).hook_wce
         assert wce_30 == wce_60
         assert wce_30 < 2 * 30 + 1
 
@@ -717,11 +728,11 @@ class TestNestingLimit:
         entirely. Depth here far exceeds Python's default recursion limit.
         """
         with pytest.raises(GuardError, match="Maximum allowable depth of blocks"):
-            validate_guards(_nested_blocks_wasm(5000), import_whitelist={"_g"})
+            validate_guards(_nested_blocks_wasm(5000), import_whitelist={"_g"}, rules_version=PRE_DEPTH32)
 
     def test_pathological_depth_survives_best_effort_analysis(self):
         from hookz.wasm.guard import analyze_wce
-        result = analyze_wce(_nested_blocks_wasm(5000))  # must not raise
+        result = analyze_wce(_nested_blocks_wasm(5000), rules_version=PRE_DEPTH32)  # must not raise
         assert result.nesting_exceeded is True
 
 
@@ -765,6 +776,19 @@ def _import_sig_wasm(
         + _section(0x07, bytes([0x01, 0x04, *b"hook", 0x00, 0x01]))
         + _section(0x0A, bytes([0x01]) + write_unsigned(len(body)) + body)
     )
+
+
+class TestNestingLimitUnderTheNetworksRules:
+    """Mainnet has fixGuardDepth32 since the 2026-11 manifest, so the default
+    limit is 32 (xahaud:include/xrpl/hook/Guard.h:797)."""
+
+    def test_depth_32_passes(self):
+        result = validate_guards(_nested_blocks_wasm(32), import_whitelist={"_g"})
+        assert result.hook_wce > 0
+
+    def test_depth_33_is_refused(self):
+        with pytest.raises(GuardError, match="Maximum allowable depth of blocks"):
+            validate_guards(_nested_blocks_wasm(33), import_whitelist={"_g"})
 
 
 class TestImportSignatures:
@@ -1004,7 +1028,8 @@ class TestWaiverKeys:
     def test_limit_breach_carries_its_waiver_key(self):
         from hookz.wasm.guard import IGNORE_DEPTH
         with pytest.raises(GuardError) as exc:
-            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"})
+            validate_guards(_nested_blocks_wasm(17), import_whitelist={"_g"},
+                            rules_version=PRE_DEPTH32)
         assert exc.value.key == IGNORE_DEPTH
 
     def test_structural_failure_has_no_waiver_key(self):

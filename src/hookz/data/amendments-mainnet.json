@@ -3,17 +3,6 @@
     "amendments": [
       {
         "count": null,
-        "enabled": false,
-        "hash": "726F944886BCDF7433203787E93DD9AA87FAB74DFE3AF4785BA03BEFC97ADA1F",
-        "majority": null,
-        "name": "AMMClawback",
-        "supported": true,
-        "threshold": null,
-        "validations": null,
-        "vetoed": true
-      },
-      {
-        "count": null,
         "enabled": true,
         "hash": "42F8B586B357ABBAAAA1C733C3E7D3B75761395340D0CDF600179E8737E22478",
         "majority": null,
@@ -165,6 +154,17 @@
         "threshold": null,
         "validations": null,
         "vetoed": "Obsolete"
+      },
+      {
+        "count": null,
+        "enabled": false,
+        "hash": "B8DE07B4A417D9AE2F6DD903B9F8ED785C8C63A7311E8B7504DD6158E7336377",
+        "majority": 847106720,
+        "name": "EscrowDestinationCancel",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": true
       },
       {
         "count": null,
@@ -356,6 +356,28 @@
       {
         "count": null,
         "enabled": true,
+        "hash": "6902B1DEAFD9C05D0E897EBEF5A5F7C563D1F9681EA957C4C6B0874C8E009E1A",
+        "majority": null,
+        "name": "fix20260929",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": null
+      },
+      {
+        "count": null,
+        "enabled": true,
+        "hash": "2339E37C9DCD516CABC37FE91C4BBBFBA3EA152FD45331C3C18F183129AEF65F",
+        "majority": null,
+        "name": "fix20261005",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": null
+      },
+      {
+        "count": null,
+        "enabled": true,
         "hash": "EDB4EE4C524E16BDD91D9A529332DED08DCAAA51CC6DC897ACFA1A0ED131C5B6",
         "majority": null,
         "name": "fix240819",
@@ -454,14 +476,14 @@
       },
       {
         "count": null,
-        "enabled": false,
+        "enabled": true,
         "hash": "CF08E97862F50AAD9EF92DE2BCD32A4A951800125F7D51D2188D3BF03D72DF0C",
         "majority": null,
         "name": "fixGuardDepth32",
         "supported": true,
         "threshold": null,
         "validations": null,
-        "vetoed": true
+        "vetoed": null
       },
       {
         "count": null,
@@ -520,14 +542,14 @@
       },
       {
         "count": null,
-        "enabled": false,
+        "enabled": true,
         "hash": "F709B3C87FD60822407FCC0217BF965F4B490141427777C4605A84A73DF15D51",
         "majority": null,
         "name": "fixIOULockedBalanceInvariant",
         "supported": true,
         "threshold": null,
         "validations": null,
-        "vetoed": true
+        "vetoed": null
       },
       {
         "count": null,
@@ -884,9 +906,9 @@
       {
         "count": null,
         "enabled": false,
-        "hash": "2DC64F1D6FFA1C8ACC79D04AD099154AA6C2665A7AD002C00ED36A8C90ABF1E7",
+        "hash": "D8FF47221FD426458D7EAE70FA439F4D5E59ECAB7292FC14931FBD8C34904602",
         "majority": null,
-        "name": "HookOnV2",
+        "name": "HookOnV2_1",
         "supported": true,
         "threshold": null,
         "validations": null,
@@ -1038,6 +1060,17 @@
       {
         "count": null,
         "enabled": false,
+        "hash": "68348F3451254D4AB206603B962241ADCFC1B22E945B59B5474F5DFBE3A5DE7C",
+        "majority": 847106720,
+        "name": "OnChainManifests",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": true
+      },
+      {
+        "count": null,
+        "enabled": false,
         "hash": "08DE7D96082187F6E6578530258C77FAABABE4C20474BDB82F04B021F1A68647",
         "majority": null,
         "name": "PayChan",
@@ -1067,6 +1100,17 @@
         "threshold": null,
         "validations": null,
         "vetoed": null
+      },
+      {
+        "count": null,
+        "enabled": false,
+        "hash": "B2A89FF11F11AC4DBBA803492F47BBBAA5144CF3270FA030E0489814BB1AC86B",
+        "majority": 847106720,
+        "name": "PWALoader",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": true
       },
       {
         "count": null,
@@ -1100,6 +1144,17 @@
         "threshold": null,
         "validations": null,
         "vetoed": null
+      },
+      {
+        "count": null,
+        "enabled": false,
+        "hash": "A482912CE1E7026F8BC5F63F5A2394768455B71CD8117104F4BFE3A7EAE1AA45",
+        "majority": 847167431,
+        "name": "RNG",
+        "supported": true,
+        "threshold": null,
+        "validations": null,
+        "vetoed": true
       },
       {
         "count": null,
@@ -1202,10 +1257,10 @@
       }
     ],
     "backend_nodes": [
-      "n9KrcVmzjG9Gv4kwT35yz91Mn172LTMvdYQJhwVQKhDtVqHHYuJA"
+      "n9JYxms4BTRi8v2YmsUH4fiV4Zco9CqWcmdY1ddY3BBEocLcEkMD"
     ],
     "builds": [
-      "2026.6.21-release+3350"
+      "2026.10.13-release+4119"
     ],
     "enabled": [
       "BalanceRewards",
@@ -1251,6 +1306,8 @@
       "fix1623",
       "fix1781",
       "fix20250131",
+      "fix20260929",
+      "fix20261005",
       "fix240819",
       "fix240911",
       "fixAmendmentMajorityCalc",
@@ -1259,8 +1316,10 @@
       "fixDisallowIncomingV1",
       "fixFillOrKill",
       "fixFloatDivide",
+      "fixGuardDepth32",
       "fixHookAPI20251128",
       "fixHookMap",
+      "fixIOULockedBalanceInvariant",
       "fixImportIssuer",
       "fixInnerObjTemplate",
       "fixInvalidTxFlags",
@@ -1283,10 +1342,11 @@
       "fixXahauV3"
     ],
     "enabled_unstable": [],
-    "ledger_seq": 24642924,
+    "ledger_seq": 27090239,
+    "majority_unstable": [],
     "network_id": 21337,
     "nodeview_varied": [],
-    "queried_at": "2026-07-28T03:01:03+00:00",
+    "queried_at": "2026-11-07T05:08:27+00:00",
     "samples": 1,
     "url": "https://xahau.network"
   }

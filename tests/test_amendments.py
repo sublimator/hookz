@@ -138,7 +138,8 @@ class TestTheDefaultSet:
     @pytest.mark.parametrize("name", [
         "featureHookAPISerializedType240",  # vetoed on mainnet
         "featureHooksUpdate2",              # vetoed on mainnet
-        "fixGuardDepth32",                  # vetoed — the nesting limit is 16
+        # fixGuardDepth32 was here until the 2026-11-07 manifest: mainnet
+        # enabled it, and test_the_guard_depth_limit_follows_from_that moved.
     ])
     def test_amendments_mainnet_lacks_are_not_enabled(self, name):
         """Enabling one of these tests a network nobody is running."""
@@ -147,7 +148,7 @@ class TestTheDefaultSet:
         assert name not in HookRuntime().amendments
 
     def test_the_guard_depth_limit_follows_from_that(self):
-        """fixGuardDepth32 is vetoed, so the nesting limit is 16, not 32.
+        """fixGuardDepth32 is enabled (2026-11 manifest), so the limit is 32.
 
         This used to assert `nesting_limit() == 16` and call that a
         consequence. It was not one: the 16 came from a `rules_version=0`
@@ -161,16 +162,15 @@ class TestTheDefaultSet:
             MAX_NESTING, MAX_NESTING_DEPTH32, nesting_limit,
         )
 
-        assert "fixGuardDepth32" not in amd.enabled_on("mainnet")
-        assert nesting_limit() == MAX_NESTING == 16
+        assert "fixGuardDepth32" in amd.enabled_on("mainnet")
+        assert nesting_limit() == MAX_NESTING_DEPTH32 == 32
 
-        # and it is a consequence: same code, a network that has it
-        assert nesting_limit(amd.GUARD_RULE_AMENDMENTS[1][1]) == \
-            MAX_NESTING_DEPTH32 == 32
+        # and it is a consequence: same code, a network without it
+        assert nesting_limit(0) == MAX_NESTING == 16
 
     def test_the_rules_version_is_derived_from_the_manifest(self):
         """Not a constant. xahaud recomputes it per-ledger from the amendments
-        in force (xahaud:include/xrpl/hook/Enum.h:451)."""
+        in force (xahaud:include/xrpl/hook/Enum.h:458)."""
         import hookz.amendments as amd
         from hookz.wasm.guard import (
             GUARD_RULE_DEPTH_32, GUARD_RULE_FIX_20250131,
