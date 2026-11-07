@@ -28,7 +28,6 @@ from hookz.hooks_compiler import (
     headers_digest,
     include_dirs,
     safe_filename,
-    sibling_headers,
 )
 
 WASM = b"\x00asm\x01\x00\x00\x00reference"
@@ -56,7 +55,13 @@ class FakeCompiler:
         sent = {}
         if "build" in argv:
             src = Path(argv[argv.index("build") + 1])
-            sent = {"name": src.name, "text": src.read_text()}
+            sent = {"name": src.name, "text": src.read_text(), "staged": {}}
+            if "-I" in argv:
+                root = Path(argv[argv.index("-I") + 1])
+                sent["staged"] = {
+                    p.relative_to(root).as_posix(): p.read_text()
+                    for p in sorted(root.rglob("*")) if p.is_file()
+                }
         self.calls.append(SimpleNamespace(argv=argv, kwargs=kwargs, **sent))
         stdout = ""
         if "-o" in argv and self.returncode == 0:
@@ -117,37 +122,74 @@ class TestCompileSource:
         compile_source("int x;", filename=given, npx="npx", run=fake)
         assert fake.calls[0].name == sent
 
-    def test_include_dirs_are_passed_in_order(self, tmp_path):
-        first, second = tmp_path / "a", tmp_path / "b"
-        first.mkdir(), second.mkdir()
+    @staticmethod
+    def _tree(root, files):
+        for rel, text in files.items():
+            path = root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        return root
+
+    def test_every_root_is_staged_into_one_tree(self, tmp_path):
+        """hooks-compiler compiles against one tree keyed by relative path;
+        nested headers beside the source keep their place in it."""
+        src = self._tree(tmp_path / "src", {"s.h": "s", "sub/n.h": "n"})
+        a = self._tree(tmp_path / "a", {"x.h": "x"})
+        b = self._tree(tmp_path / "b", {"deep/y.h": "y"})
         fake = FakeCompiler()
-        compile_source("int x;", include_dirs=[first, second], npx="npx",
-                       run=fake)
-
-        argv = fake.calls[0].argv
-        dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "-I"]
-        assert dirs == [str(first), str(second)]
-
-    def test_a_missing_include_directory_is_not_passed(self, tmp_path):
-        fake = FakeCompiler()
-        compile_source("int x;", include_dirs=[tmp_path / "nope"], npx="npx",
-                       run=fake)
-
-        assert "-I" not in fake.calls[0].argv
-
-    def test_sibling_files_go_beside_the_entry(self, tmp_path):
-        """hooks-compiler keys positional files by basename, before any -I,
-        which is clang's own-directory-first lookup."""
-        helper = tmp_path / "encode_macros.h"
-        helper.write_text("#define X 1\n")
-        fake = FakeCompiler()
-        compile_source("int x;", filename="treasury.c", extra_files=[helper],
+        compile_source("int x;", include_dirs=[a, b], source_dir=src,
                        npx="npx", run=fake)
 
         argv = fake.calls[0].argv
-        entry = argv.index("build") + 1
-        assert argv[entry + 1] == str(helper)
-        assert argv.index(str(helper)) < argv.index("-o")
+        assert argv.count("-I") == 1
+        assert fake.calls[0].staged == {
+            "s.h": "s", "sub/n.h": "n", "x.h": "x", "deep/y.h": "y"}
+
+    @pytest.mark.parametrize("first, second", [("src", "a"), ("a", "b")])
+    def test_a_name_two_roots_supply_differently_is_refused(
+        self, tmp_path, first, second
+    ):
+        """codex's include probe: a sibling against an -I, and -I A against
+        -I B whose own header includes its neighbour. clang and the merged
+        tree can pick different files, so neither is guessed."""
+        roots = {name: self._tree(tmp_path / name, {"choice.h": name})
+                 for name in ("src", "a", "b")}
+        fake = FakeCompiler()
+
+        with pytest.raises(HooksCompilerError, match="choice.h") as e:
+            compile_source(
+                "int x;",
+                source_dir=roots[first] if first == "src" else None,
+                include_dirs=[roots[n] for n in (first, second) if n != "src"],
+                npx="npx", run=fake)
+
+        assert str(roots[first] / "choice.h") in str(e.value)
+        assert str(roots[second] / "choice.h") in str(e.value)
+        assert fake.calls == []
+
+    def test_identical_copies_are_not_a_conflict(self, tmp_path):
+        """The e2e layout: the hook's directory is also on the -I path."""
+        misc = self._tree(tmp_path / "misc", {"encode_macros.h": "m"})
+        fake = FakeCompiler()
+        compile_source("int x;", source_dir=misc, include_dirs=[misc],
+                       npx="npx", run=fake)
+
+        assert fake.calls[0].staged == {"encode_macros.h": "m"}
+
+    def test_only_headers_outside_hidden_directories_are_staged(self, tmp_path):
+        root = self._tree(tmp_path / "a", {
+            "x.h": "x", "hook.c": "c", "hook.wasm": "w", ".git/y.h": "y"})
+        fake = FakeCompiler()
+        compile_source("int x;", include_dirs=[root], npx="npx", run=fake)
+
+        assert fake.calls[0].staged == {"x.h": "x"}
+
+    def test_no_headers_means_no_include_flag(self, tmp_path):
+        fake = FakeCompiler()
+        compile_source("int x;", include_dirs=[tmp_path / "nope"],
+                       source_dir=tmp_path, npx="npx", run=fake)
+
+        assert "-I" not in fake.calls[0].argv
 
     def test_include_dirs_follow_clang_order(self, tmp_path, monkeypatch):
         """extra_cflags -I entries (both spellings, relative to the working
@@ -163,16 +205,6 @@ class TestCompileSource:
             Path("/hdrs"),
         ]
 
-    def test_sibling_headers_are_the_h_files_beside_the_source(self, tmp_path):
-        (tmp_path / "a.h").write_text("")
-        (tmp_path / "b.h").write_text("")
-        (tmp_path / "other.c").write_text("")
-        (tmp_path / "sub").mkdir()
-        (tmp_path / "sub" / "deep.h").write_text("")
-
-        assert [p.name for p in sibling_headers(tmp_path / "hook.c")] == [
-            "a.h", "b.h"]
-
     def test_the_digest_covers_every_include_dir_and_their_order(
         self, tmp_path
     ):
@@ -185,6 +217,10 @@ class TestCompileSource:
 
         assert headers_digest([a, b]) != before
         assert headers_digest([b, a]) != headers_digest([a, b])
+        (a / "notes.txt").write_text("not a header")
+        after = headers_digest([a, b])
+        (a / "notes.txt").write_text("still not one")
+        assert headers_digest([a, b]) == after  # only what is staged counts
 
     def test_no_npx_says_what_to_install(self, monkeypatch):
         monkeypatch.setattr(hooks_compiler.shutil, "which", lambda name: None)
@@ -397,6 +433,39 @@ class TestCli:
         assert out.exit_code == 2, out.output
         assert "retired" in out.output
         assert "--hooks-compiler" in out.output
+
+    def test_a_file_named_stdin_c_keeps_its_directory(
+        self, tmp_path, reference, monkeypatch
+    ):
+        """codex's R3: the name used to decide whether input was piped."""
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda wasm, **kw: SimpleNamespace(waived=False, hook_wce=1),
+        )
+        monkeypatch.setattr("hookz.cli.main._validate_wasm", lambda *a: None)
+        monkeypatch.setattr("hookz.cli.main._report_waived", lambda *a: None)
+        source = tmp_path / "stdin.c"
+        source.write_text("int x;")
+
+        self._run(["build", str(source), "-o", str(tmp_path / "o.wasm"),
+                   "--hooks-compiler"])
+
+        assert reference[0][1]["source_dir"] == tmp_path.resolve()
+
+    def test_piped_input_has_no_directory(self, tmp_path, reference,
+                                          monkeypatch):
+        monkeypatch.setattr(
+            "hookz.wasm.guard.validate_guards",
+            lambda wasm, **kw: SimpleNamespace(waived=False, hook_wce=1),
+        )
+        monkeypatch.setattr("hookz.cli.main._validate_wasm", lambda *a: None)
+        monkeypatch.setattr("hookz.cli.main._report_waived", lambda *a: None)
+
+        CliRunner().invoke(cli, ["build", "-", "-o", str(tmp_path / "o.wasm"),
+                                 "--hooks-compiler"], input="int x;")
+
+        assert reference[0][1]["source_dir"] is None
+        assert reference[0][1]["filename"] == "stdin.c"
 
     @pytest.mark.parametrize("command", ["build", "build-test-hooks"])
     def test_the_retired_env_switch_is_refused(self, tmp_path, command):

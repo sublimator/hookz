@@ -178,9 +178,13 @@ version (`hookz.hooks_compiler.VERSION`), so this mode needs Node >= 20.12. The
 first run downloads the toolchain (about 30 MB) into npm's cache; later builds
 take a few seconds each.
 
-The mode strips hookz audit annotations and gives hooks-compiler what a local
-build would find, in clang's order: the `.h` files beside the source, the
-project's `extra_cflags` `-I` directories, then the hook headers. It records
+The mode strips hookz audit annotations and gives hooks-compiler the headers a
+local build can reach: those under the source's directory, the project's
+`extra_cflags` `-I` directories, and the hook headers. hooks-compiler merges
+them into one tree, where the first file for a name wins. clang searches the
+including file's directory and then each `-I` in turn, so it can pick
+differently. hookz therefore refuses any header name that two of those
+directories supply with different contents, rather than guess. It records
 the source and WASM SHA-256 and independently guard-checks the returned
 bytes. It never falls back to a local
 compiler. `HOOKZ_HOOKS_COMPILER=1` selects it in CMake/CI pipelines.

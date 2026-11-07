@@ -10,11 +10,16 @@ bytes it wrote. It never falls back to the local pipelines in
 ``hookz.wasm.pipeline``: those are hookz's own builds and are not byte-identical
 to this one.
 
-It is given what a local build would find, in clang's order: the C file
-with hookz audit annotations stripped, the ``.h`` files beside it (clang
-searches the including file's directory first), then the project's
-``extra_cflags`` ``-I`` directories, then the hook headers. hooks-compiler
-reads every file under each ``-I`` directory.
+It is given the C file with hookz audit annotations stripped, and the
+headers a local build can reach: those under the source's own directory, the
+project's ``extra_cflags`` ``-I`` directories, and the hook headers.
+
+hooks-compiler does not search directories the way clang does. It merges
+every file it is given into one tree, keyed by relative path, and the first
+file for a name wins. So a name that two of those directories supply with
+different contents could resolve to a different header than clang would pick.
+hookz stages that tree itself and refuses such a name rather than guess.
+Every layout it accepts gives each relative path exactly one meaning.
 """
 
 from __future__ import annotations
@@ -103,30 +108,62 @@ def include_dirs(config) -> list[Path]:
     return dirs
 
 
-def sibling_headers(source: Path) -> list[Path]:
-    """The ``.h`` files beside a hook source, which clang finds first."""
-    return sorted(p for p in Path(source).resolve().parent.glob("*.h")
-                  if p.is_file())
+def _headers_under(root: Path):
+    """``(relative path, file)`` for every ``.h`` under root, skipping hidden
+    directories. Symlinked files count; symlinked directories are not walked."""
+    for path in sorted(root.rglob("*.h")):
+        rel = path.relative_to(root)
+        if any(part.startswith(".") for part in rel.parts[:-1]):
+            continue
+        if path.is_file():
+            yield rel.as_posix(), path
 
 
-def headers_digest(dirs: Sequence[Path]) -> str:
-    """sha256 over every file hooks-compiler reads under its ``-I`` dirs.
+def stage_headers(roots: Sequence[Path], dest: Path) -> int:
+    """Merge the headers under ``roots`` into one tree at ``dest``, the shape
+    hooks-compiler compiles against. Returns how many files were staged.
 
-    It loads each whole tree, keyed by relative path, so any of those files
-    can change the output, and so can their order. Symlinked files count;
-    symlinked directories are not walked, as in hooks-compiler's own walk.
+    A relative path that two roots supply with different bytes is refused:
+    hooks-compiler would take one of them, and clang, which searches the
+    including file's directory and then each ``-I`` in turn, might take the
+    other. Identical copies are not a conflict.
     """
-    h = hashlib.sha256()
-    for index, root in enumerate(Path(d) for d in dirs):
+    seen: dict[str, tuple[Path, bytes]] = {}
+    clashes: list[str] = []
+    for root in (Path(r) for r in roots):
         if not root.is_dir():
             continue
-        h.update(f"dir {index}".encode())
-        for path in sorted(root.rglob("*")):
-            if path.is_file():
-                for part in (path.relative_to(root).as_posix().encode(),
-                             path.read_bytes()):
-                    h.update(len(part).to_bytes(8, "big"))
-                    h.update(part)
+        for key, path in _headers_under(root):
+            data = path.read_bytes()
+            if key in seen:
+                if seen[key][1] != data:
+                    clashes.append(f"  {key}: {seen[key][0]} and {path}")
+                continue
+            seen[key] = (path, data)
+            target = dest / key
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+    if clashes:
+        raise HooksCompilerError(
+            "hooks-compiler merges every include directory into one tree, so "
+            "these names could resolve to a different header than clang "
+            "would pick. Rename one copy or drop one include directory:\n"
+            + "\n".join(clashes)
+        )
+    return len(seen)
+
+
+def headers_digest(roots: Sequence[Path]) -> str:
+    """sha256 over the headers ``stage_headers`` would stage from ``roots``."""
+    h = hashlib.sha256()
+    for index, root in enumerate(Path(r) for r in roots):
+        if not root.is_dir():
+            continue
+        h.update(f"root {index}".encode())
+        for key, path in _headers_under(root):
+            for part in (key.encode(), path.read_bytes()):
+                h.update(len(part).to_bytes(8, "big"))
+                h.update(part)
     return h.hexdigest()
 
 
@@ -185,15 +222,16 @@ def compile_source(
     *,
     filename: str = "hook.c",
     include_dirs: Sequence[Path] = (),
-    extra_files: Sequence[Path] = (),
+    source_dir: Path | None = None,
     npx: str | None = None,
     timeout: float = DEFAULT_TIMEOUT,
     run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
 ) -> HooksCompilerResult:
     """Compile one C hook with the pinned hooks-compiler.
 
-    ``extra_files`` are passed by name beside the entry (sibling headers);
-    ``include_dirs`` become ``-I`` in order. A name found earlier wins.
+    The headers under ``source_dir`` (the hook's own directory, so nested
+    ``sub/x.h`` includes resolve too) and under each of ``include_dirs`` are
+    staged into one tree by ``stage_headers``, which refuses ambiguous names.
     """
     text, source_sha256 = stripped_source(source)
     name = safe_filename(filename)
@@ -203,11 +241,12 @@ def compile_source(
         src.write_text(text, encoding="utf-8")
         out = Path(tmp) / "hook.wasm"
         argv = [_npx(npx), "--yes", SPEC, "build", str(src),
-                *(str(f) for f in extra_files if Path(f).name != name),
                 "-o", str(out), "--json"]
-        for directory in include_dirs:
-            if Path(directory).is_dir():
-                argv += ["-I", str(directory)]
+        roots = [*([source_dir] if source_dir is not None else []),
+                 *include_dirs]
+        staged = Path(tmp) / "include"
+        if stage_headers(roots, staged):
+            argv += ["-I", str(staged)]
         proc = _run(run, argv, timeout, cwd=tmp)
         if proc.returncode != 0:
             raise HooksCompilerError(

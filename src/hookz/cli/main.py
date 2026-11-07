@@ -823,7 +823,10 @@ def build(source, output, coverage, pipeline_name, use_hooks_compiler,
     ignore = _waivers(ignore_depth, ignore_wce_overage, ignore_guard_calls)
     rules = _rules()
 
-    if source == "-":
+    # Said once, here: a real file may be called stdin.c, so the name the
+    # compiler is given cannot be what tells the two apart.
+    from_stdin = source == "-"
+    if from_stdin:
         stdin_data = sys.stdin.buffer.read()
         tmp = tempfile.NamedTemporaryFile(suffix=".c", delete=False)
         tmp.write(stdin_data)
@@ -856,15 +859,14 @@ def build(source, output, coverage, pipeline_name, use_hooks_compiler,
     config = load_config(source_file=source)
 
     if use_hooks_compiler:
-        from hookz.hooks_compiler import include_dirs, sibling_headers
+        from hookz.hooks_compiler import include_dirs
 
         _build_hooks_compiler(
             source, output, stdout_mode, ignore, rules,
             request_filename=request_filename,
             include_dirs=include_dirs(config),
             # stdin was spooled to a temp dir; its neighbours are not the hook's
-            extra_files=() if request_filename == "stdin.c"
-            else sibling_headers(source),
+            source_dir=None if from_stdin else source.resolve().parent,
         )
     elif coverage:
         _build_coverage(source, output, config, stdout_mode, ignore, rules)
@@ -1095,7 +1097,7 @@ def _build_hooks_compiler(
     *,
     request_filename: str | None = None,
     include_dirs=(),
-    extra_files=(),
+    source_dir: Path | None = None,
 ) -> None:
     """Reference-compiler build followed by independent local validation."""
     from hookz.hooks_compiler import HooksCompilerError, compile_source
@@ -1120,7 +1122,7 @@ def _build_hooks_compiler(
             source_text,
             filename=request_filename or source.name,
             include_dirs=include_dirs,
-            extra_files=extra_files,
+            source_dir=source_dir,
         )
     except HooksCompilerError as exc:
         _build_fail(log, output, stdout_mode, f"hooks-compiler FAILED: {exc}")
@@ -1392,7 +1394,7 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_hooks_compiler,
         provenance = f"provided artifact: {input_path}"
     elif use_hooks_compiler:
         from hookz.hooks_compiler import (
-            HooksCompilerError, compile_source, include_dirs, sibling_headers,
+            HooksCompilerError, compile_source, include_dirs,
         )
 
         try:
@@ -1406,7 +1408,7 @@ def wce(input_path, show_source, show_loops, pipeline_name, use_hooks_compiler,
                 source_text,
                 filename=source.name,
                 include_dirs=include_dirs(analysis_config),
-                extra_files=sibling_headers(source),
+                source_dir=source.resolve().parent,
             )
         except HooksCompilerError as exc:
             raise click.ClickException(f"hooks-compiler failed: {exc}") from exc

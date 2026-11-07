@@ -424,7 +424,7 @@ class TestSourceCompilationChoice:
         assert args[0] == c_source.read_text()
         assert kwargs["filename"] == "hook.c"
         assert kwargs["include_dirs"] == [HEADERS]
-        assert kwargs["extra_files"] == []  # no .h beside the hook
+        assert kwargs["source_dir"] == c_source.resolve().parent
 
     def test_hooks_compiler_failure_never_falls_back_to_a_local_compiler(
         self, c_source, monkeypatch
