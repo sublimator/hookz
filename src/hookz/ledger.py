@@ -318,6 +318,17 @@ def negative_unl_keylet() -> bytes:
     return _make_keylet(LT.NEGATIVE_UNL, _index_hash(NS.NEGATIVE_UNL))
 
 
+def manifest_keylet(public_key: bytes) -> bytes:
+    """keylet::manifest(pk) → {ltMANIFEST, indexHash(MANIFEST, pk)}
+
+    xahaud:src/libxrpl/protocol/Indexes.cpp:691 — the key is the 33 raw
+    bytes, unprefixed (a Slice hashes as its bytes).
+    """
+    if len(public_key) != 33:
+        raise ValueError(f"public key must be 33 bytes, got {len(public_key)}")
+    return _make_keylet(LT.MANIFEST, _index_hash(NS.MANIFEST, public_key))
+
+
 def random_keylet() -> bytes:
     """keylet::random() → {ltRANDOM, indexHash(RANDOM)}
 

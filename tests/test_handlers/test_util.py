@@ -214,6 +214,78 @@ class TestUtilKeylet:
             trust_line_keylet(ACCID, b"\x55" * 20, currency)
 
 
+class TestUtilKeyletManifest:
+    """KEYLET_MANIFEST (37): a validator's on-chain manifest, gated on
+    featureOnChainManifests (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2266-2292).
+
+    a,b are the key's (ptr, len); c-f must be zero. The key must be a
+    well-formed public key — 33 bytes led by ED, 02 or 03 — and the keylet is
+    {ltMANIFEST 0x004D, sha512Half(u16 0x004D || key)}
+    (xahaud:src/libxrpl/protocol/Indexes.cpp:691-694). Upstream has no
+    fixed vector for it (HookAPI_test's test_util_keylet is a TODO), so the
+    hash is recomputed here from the definition.
+    """
+
+    ED_KEY = bytes.fromhex("ED") + bytes(range(1, 33))
+    SECP_KEY = bytes.fromhex("02") + b"\x5A" * 32
+
+    @pytest.fixture
+    def on(self, rt):
+        rt.amendments.add("featureOnChainManifests")
+        return rt
+
+    @staticmethod
+    def _expected(pk):
+        import hashlib
+        return b"\x00\x4D" + hashlib.sha512(b"\x00\x4D" + pk).digest()[:32]
+
+    def test_not_on_mainnet(self, rt):
+        assert "featureOnChainManifests" not in rt.amendments
+
+    def test_without_the_amendment_it_is_invalid_argument(self, rt):
+        rt._write_memory(100, self.ED_KEY)
+        assert util_keylet(rt, 0, 34, hookapi.KEYLET_MANIFEST,
+                           100, 33, 0, 0, 0, 0) == hookapi.INVALID_ARGUMENT
+
+    @pytest.mark.parametrize("pk", [ED_KEY, SECP_KEY, b"\x03" + b"\x01" * 32],
+                             ids=["ed25519", "secp256k1-02", "secp256k1-03"])
+    def test_the_keylet(self, on, pk):
+        from hookz.ledger import manifest_keylet
+
+        on._write_memory(100, pk)
+        assert util_keylet(on, 0, 34, hookapi.KEYLET_MANIFEST,
+                           100, 33, 0, 0, 0, 0) == 34
+        assert on._read_memory(0, 34) == self._expected(pk) == manifest_keylet(pk)
+
+    @pytest.mark.parametrize("a,b,c,d,e,f", [
+        (0, 33, 0, 0, 0, 0),
+        (100, 0, 0, 0, 0, 0),
+        (100, 33, 1, 0, 0, 0),
+        (100, 33, 0, 1, 0, 0),
+        (100, 33, 0, 0, 1, 0),
+        (100, 33, 0, 0, 0, 1),
+    ])
+    def test_argument_shape(self, on, a, b, c, d, e, f):
+        on._write_memory(100, self.ED_KEY)
+        assert util_keylet(on, 0, 34, hookapi.KEYLET_MANIFEST,
+                           a, b, c, d, e, f) == hookapi.INVALID_ARGUMENT
+
+    def test_out_of_memory_is_out_of_bounds(self, on):
+        end = on._memory.data_len(on._store)
+        assert util_keylet(on, 0, 34, hookapi.KEYLET_MANIFEST,
+                           end - 10, 33, 0, 0, 0, 0) == hookapi.OUT_OF_BOUNDS
+
+    @pytest.mark.parametrize("pk", [
+        b"\x04" + b"\x01" * 32,   # wrong prefix
+        b"\xED" + b"\x01" * 31,   # 32 bytes
+        b"\xED" + b"\x01" * 33,   # 34 bytes
+    ], ids=["prefix-04", "len-32", "len-34"])
+    def test_not_a_public_key_is_invalid_argument(self, on, pk):
+        on._write_memory(100, pk)
+        assert util_keylet(on, 0, 34, hookapi.KEYLET_MANIFEST,
+                           100, len(pk), 0, 0, 0, 0) == hookapi.INVALID_ARGUMENT
+
+
 # ---------------------------------------------------------------------------
 # hook_account
 # ---------------------------------------------------------------------------

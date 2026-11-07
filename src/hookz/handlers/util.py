@@ -173,6 +173,29 @@ def util_keylet(
     elif kt == hookapi.KEYLET_NEGATIVE_UNL:
         kl = L.negative_unl_keylet()
 
+    # --- Validator public key: MANIFEST, featureOnChainManifests only ---
+    # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2266
+    elif kt == hookapi.KEYLET_MANIFEST:
+        from hookz.handlers.core import _not_in_bounds
+
+        # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2267
+        if "featureOnChainManifests" not in rt.amendments:
+            return hookapi.INVALID_ARGUMENT
+        # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2270-2274
+        if a == 0 or b == 0:
+            return hookapi.INVALID_ARGUMENT
+        if c or d or e or f:
+            return hookapi.INVALID_ARGUMENT
+        # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2278
+        if _not_in_bounds(rt, a, b):
+            return hookapi.OUT_OF_BOUNDS
+        pk = rt._read_memory(a, b)
+        # xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2285 — publicKeyType:
+        # 33 bytes led by ED (ed25519) or 02/03 (secp256k1)
+        if len(pk) != 33 or pk[0] not in (0xED, 0x02, 0x03):
+            return hookapi.INVALID_ARGUMENT
+        kl = L.manifest_keylet(pk)
+
     else:
         return hookapi.INVALID_ARGUMENT
 
