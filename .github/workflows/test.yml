@@ -50,7 +50,11 @@ jobs:
       - name: Run framework tests
         run: uv run pytest tests/ -v --tb=short
 
+      # hook-buildbox.xrpl.org is retired (NXDOMAIN by 2026-11-07): Xahau's tools
+      # compile locally with tequdev/hooks-compiler since hooks-cli 3.0.0 and
+      # xrpl-hooks-ide#358. This check reports but no longer blocks e2e and tipbot.
       - name: Sanity-check canonical buildbox
+        continue-on-error: true
         env:
           HOOKZ_LIVE_BUILDBOX: "1"
         run: uv run pytest tests/test_buildbox_live.py -v --tb=short
