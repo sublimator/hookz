@@ -131,7 +131,7 @@ def test_replay_float_multiply(vectors: HookzFloatVectors):
 def test_replay_float_mulratio(vectors: HookzFloatVectors):
     """Replay the live decimal-ratio oracle, including mantissa carry cases.
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1048
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1101
     xahaud:src/libxrpl/protocol/IOUAmount.cpp:183-315
     """
     for i, case in enumerate(vectors.float_mulratio):

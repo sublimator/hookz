@@ -247,13 +247,13 @@ class TestFloatSet:
 class TestInvalidFloatAdmission:
     """applyHook RETURN_IF_INVALID_FLOAT on multi-operand float hosts.
 
-    Macro: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3480-3392
-    multiply: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3591-3487
-    compare:  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3646-3542
-    sum:      xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3662-3558
+    Macro: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3480-3497
+    multiply: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3591-3592
+    compare:  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3646-3647
+    sum:      xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3662-3663
     negate:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3629
     int:      xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3576
-    divide:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3778-3674
+    divide:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3778-3779
     invert:   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3799
     """
 
@@ -272,14 +272,14 @@ class TestInvalidFloatAdmission:
         )
 
     def test_sum_admits_before_zero_identity(self, rt):
-        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3662-3558
-        # Body zero-id: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1160-1110
+        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3662-3663
+        # Body zero-id: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1160-1163
         assert float_sum(rt, -1, 0) == hookapi.INVALID_FLOAT
         assert float_sum(rt, 0, -1) == hookapi.INVALID_FLOAT
 
     def test_compare_admits_before_mode_checks(self, rt):
-        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3646-3542
-        # Mode body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1120-1071
+        # Wrapper first: xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3646-3647
+        # Mode body: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1120-1124
         assert float_compare(rt, -1, 0, 0) == hookapi.INVALID_FLOAT
         assert float_compare(rt, -1, 0, 0b111) == hookapi.INVALID_FLOAT
 
@@ -302,7 +302,7 @@ class TestFloatOne:
         assert xfl_to_float(float_one(rt)) == pytest.approx(1.0)
 
     def test_divide_by_one_is_identity(self, rt):
-        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2797-2574
+        # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2797-2798
         x = float_set(rt, 0, 42)
         assert float_divide(rt, x, float_one(rt)) == x
 
@@ -710,7 +710,7 @@ class TestFloatStoComposed:
     def test_output_bounds_precede_float_validation(self, rt):
         """The wrapper rejects its output span before inspecting the XFL.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3691-3588
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3691-3693
         """
         assert (
             float_sto(rt, 65_520, 50, 0, 0, 0, 0, -1, 0)
@@ -720,7 +720,7 @@ class TestFloatStoComposed:
     def test_currency_bounds(self, rt):
         """A currency input that crosses linear memory is out of bounds.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3702-3601
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3702-3706
         """
         assert (
             float_sto(
@@ -733,7 +733,7 @@ class TestFloatStoComposed:
     def test_issuer_bounds(self, rt):
         """A 20-byte issuer input must fit in linear memory.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3721-3620
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3721-3725
         """
         rt._write_memory(100, USD_CURRENCY_3)
         assert (
@@ -747,7 +747,7 @@ class TestFloatStoComposed:
     def test_invalid_3char_currency(self, rt):
         """Three-byte shorthand rejects bytes outside the host allowlist.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:597-628
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:597-608
         """
         rt._write_memory(100, b"A\x00Z")
         rt._write_memory(200, ISSUER_20)
@@ -762,7 +762,7 @@ class TestFloatStoComposed:
     def test_argument_checks_precede_invalid_float(self, rt):
         """Currency length admission occurs before invalid-XFL admission.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3702-3598
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3702-3703
         xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3730
         """
         assert (
@@ -842,7 +842,7 @@ class TestFloatStoComposed:
     def test_all_zero_currency_issuer_with_field_code_still_serializes(self, rt):
         """Host treats present issuer+currency as IOU even when both are zeroed.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1232-1184 — optional
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1232-1237 — optional
         issuer presence (not non-zero content) gates the IOU path. Zero buffers
         still produce a 49-byte sfAmount.
         """
@@ -938,14 +938,14 @@ class TestFloatStoSetEdgeCases:
     def test_out_of_bounds(self, rt):
         """An otherwise long-enough input must fit in linear memory.
 
-        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3757-3656
+        xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3757-3761
         """
         assert float_sto_set(rt, 65_532, 8) == hookapi.OUT_OF_BOUNDS
 
     def test_exponent_overflow_propagates_xfl_overflow(self, rt):
         """normalize_xfl overflow is returned directly, not INVALID_FLOAT.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1402-1352
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1402-1405
         xahaud:src/xrpld/app/hook/HookAPI.h:275-276
         """
         encoded = (
@@ -961,7 +961,7 @@ class TestFloatStoSetEdgeCases:
     def test_length_wraps_to_uint8_before_parsing(self, rt):
         """The host's uint8_t parser length makes 256 bytes appear empty.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1342-1322
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1342-1375
         """
         amount = (
             (1 << 63)
@@ -977,7 +977,7 @@ class TestFloatStoSetEdgeCases:
     def test_length_264_wraps_to_bare_amount_width(self, rt):
         """A 264-byte input is parsed with host length 8 and no header strip.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1342-1293
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1342-1346
         """
         amount = (
             (1 << 63)

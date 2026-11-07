@@ -1,11 +1,11 @@
 """Transaction emission — emit, etxn_reserve, etxn_details, etxn_fee_base, etxn_nonce.
 
 Host sources:
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:421-497   (prepare)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:537-812   (emit — ~315 lines of rules)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:866-858   (etxn_fee_base)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:906-932   (etxn_details)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:980-949   (etxn_reserve)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:421-536   (prepare)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:537-851   (emit — ~315 lines of rules)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:866-905   (etxn_fee_base)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:906-979   (etxn_details)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:980-996   (etxn_reserve)
   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2724+   (emit wrapper / bounds)
 
 # todo:xahaud-bug-candidate
@@ -154,9 +154,9 @@ def _emit_preflight(rt: HookRuntime, hash_ptr: int, hash_len: int,
     `HookAPI::emit`:
 
     1. transaction-buffer bounds, output-buffer bounds, output width
-       (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2724-2669);
+       (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:2724-2731);
     2. reservation, then the reserved count
-       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:543-508);
+       (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:543-547);
     3. the emission rules.
 
     Observable when failures overlap: an unreserved emit with a short

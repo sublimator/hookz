@@ -5,11 +5,11 @@ Source suite (xahaud worktree ``hookz-test-vectors``):
 
 Host APIs under test (see emitter ``host_cites`` and file header):
   xahaud:src/xrpld/app/hook/HookAPI.h:39-42,184-289,291-292
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1033-1005 (float_set),
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1033-1058 (float_set),
   1008-1021/2509-2537 (multiply), 1023-1048/2540-2559 (mulratio),
   1060-1099 (compare), 1105-1145 (sum),
   1356-1364 (invert), 1367-1369/2562-2636 (divide)
-  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3480-3392 (invalid-float gate)
+  xahaud:src/xrpld/app/hook/detail/applyHook.cpp:3480-3497 (invalid-float gate)
 
 Wide integers are never bare JSON numbers. Every leaf is::
 
@@ -199,7 +199,7 @@ class FloatMultiplyCase(BaseModel):
 class FloatMulRatioCase(BaseModel):
     """Direct host vector for ``HookAPI::float_mulratio``.
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1048
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1101
     xahaud:src/libxrpl/protocol/IOUAmount.cpp:183-315
     """
 

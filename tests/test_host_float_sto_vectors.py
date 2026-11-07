@@ -91,7 +91,7 @@ def test_float_sto_byte_golden_fixture(rt, case):
     """Replay independent serialized-byte goldens, not a hookz round trip.
 
     xahaud:src/test/app/SetHook_test.cpp:7000+
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1199-1284
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1199-1337
     """
     field_code = int(case["field_code"])
     if field_code not in (0, 0xFFFF_FFFF):
@@ -126,7 +126,7 @@ def test_float_sto_byte_golden_fixture(rt, case):
 def test_field_type_ge16_header_encoding(rt):
     """type>=16, field<16: host packs field in high nibble of first header byte.
 
-    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1263-1214
+    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1263-1267
     """
     # type=16, field=1 → field_code = (16<<16)|1
     field_code = (16 << 16) | 1

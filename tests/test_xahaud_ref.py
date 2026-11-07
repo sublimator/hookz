@@ -214,3 +214,47 @@ class TestAVacuousPinIsReported:
 
         assert ref.check_checkout(
             dataclasses.replace(cfg, xahaud_commit=rev_of())) == []
+
+
+class TestCitationRanges:
+    """`xahaud:path:START-END`. The 2026.10.13 re-pin moved 580 starts and left
+    265 ends at the old pin; the checker read only starts, so it stayed green
+    over ranges that ran backwards (codex review hookz-repin-2026-10-13, R2)."""
+
+    HOOKAPI = "src/xrpld/app/hook/detail/HookAPI.cpp"
+
+    def test_a_range_parses_with_both_ends(self):
+        (c,) = ref.parse_citations(f"see xahaud:{self.HOOKAPI}:544-558 for it")
+        assert (c.line, c.end) == (544, 558)
+        assert str(c) == f"xahaud:{self.HOOKAPI}:544-558"
+
+    def test_an_en_dash_range_parses_too(self):
+        (c,) = ref.parse_citations(f"xahaud:{self.HOOKAPI}:544–558")
+        assert (c.line, c.end) == (544, 558)
+
+    def test_a_single_line_has_no_end(self):
+        (c,) = ref.parse_citations(f"xahaud:{self.HOOKAPI}:544) and more")
+        assert c.end is None
+
+    def test_a_backwards_range_is_reported(self, tmp_path):
+        (tmp_path / "m.py").write_text(f"# xahaud:{self.HOOKAPI}:1033-1005\n")
+        problems = ref.check_citations(tmp_path)
+        assert problems and "ends before it starts" in problems[0]
+
+    def test_a_range_ending_past_the_file_is_reported(self, tmp_path):
+        (tmp_path / "m.py").write_text(f"# xahaud:{self.HOOKAPI}:544-999999\n")
+        problems = ref.check_citations(tmp_path)
+        assert problems and "range end 999999 is outside" in problems[0]
+
+    def test_json_metadata_is_checked(self, tmp_path):
+        (tmp_path / "v.json").write_text(
+            '{"source": "xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1113-1099"}')
+        problems = ref.check_citations(tmp_path)
+        assert problems and "ends before it starts" in problems[0]
+
+    @pytest.mark.parametrize("tree", ["scripts", "tests/fixtures"])
+    def test_the_generators_and_captured_vectors_resolve(self, tree):
+        root = SRC.parent.parent / tree   # SRC is src/hookz
+        if not root.exists():
+            pytest.skip(f"{tree} is not in this install")
+        assert ref.check_citations(root) == []

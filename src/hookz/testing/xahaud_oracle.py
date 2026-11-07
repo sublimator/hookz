@@ -74,7 +74,7 @@ class XahaudOracle:
     ) -> int:
         """Call Xahau's real IOUAmount ratio path through ABI v1.
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1048
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1076-1101
         xahaud:src/libxrpl/protocol/IOUAmount.cpp:183-315
         """
         return int(

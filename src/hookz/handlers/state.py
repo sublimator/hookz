@@ -2,8 +2,8 @@
 
 Host sources:
   xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1277+   (state / state_set wrappers)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2081-1902 (state_foreign)
-  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2113-2042 (state_foreign_set)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2081-2112 (state_foreign)
+  xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:2113-2252 (state_foreign_set)
 
 # todo:xahaud-bug-candidate
 # None claimed yet. Foreign grant/namespace matrix is incompletely modelled —
@@ -66,7 +66,7 @@ def _state_set_error(rt: HookRuntime, read_ptr: int, read_len: int,
     (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1277). The host refuses
     malformed arguments before any question of whether the write itself would
     succeed, in that wrapper's order
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1313-1322):
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1313-1342):
 
     1. the value buffer's bounds — skipped for the zero/zero spelling, which
        is a *bounds-check exemption* and not, by itself, what makes a call a

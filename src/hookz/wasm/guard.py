@@ -73,7 +73,7 @@ IGNORABLE = frozenset({IGNORE_DEPTH, IGNORE_WCE, IGNORE_GUARD_CALLS})
 # void_t in the API whitelist — encodes "no result", not a value type. Only the
 # env-tests patch's coverage import uses it; upstream maps by size (Enum.h:413)
 VOID_TYPE = 0x00
-# Value types xahaud accepts in a function type (Guard.h:1337, :1405)
+# Value types xahaud accepts in a function type (Guard.h:1337, :1409)
 VALID_VALUE_TYPES = frozenset(
     {ValType.I32, ValType.I64, ValType.F32, ValType.F64}
 )
@@ -752,7 +752,7 @@ def _validate_types(
 ) -> None:
     """Check the type section against the hook API signatures.
 
-    Mirrors Guard.h:1254-1455. Every type entry
+    Mirrors Guard.h:1254-1459. Every type entry
     must belong to something: an import whose API signature it matches, or the
     hook/cbak entry point. A type entry used by nothing at all is rejected, as
     are mismatched parameter counts, parameter types, result counts and result

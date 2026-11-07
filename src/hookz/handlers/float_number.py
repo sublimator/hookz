@@ -313,7 +313,7 @@ def mul_ratio(
 
     Host-test note (not a production arithmetic divergence):
       SetHook_test ``ASSERT_EQUAL`` for ``float_mulratio`` is *soft* —
-      xahaud:src/test/app/SetHook_test.cpp:6179-5440 (macro body) accepts
+      xahaud:src/test/app/SetHook_test.cpp:6179-6195 (macro body) accepts
       ``|Δmantissa| ≤ 5_000_000`` after aligning exponents by at most 1.
       Golden XFL integers in that suite are therefore not bit-exact oracles;
       bit-level mismatches of a few ULPs against those constants are expected

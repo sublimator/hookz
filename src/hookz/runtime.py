@@ -901,7 +901,7 @@ class HookRuntime:
         The second execution the ledger owes an emitting hook: after the
         emission either applies or expires, `cbak` runs against what actually
         happened (`doHookCallback(proMeta)` under `if (applied && ...)`,
-        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2485-2365 — the pseudo-
+        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2485-2495 — the pseudo-
         transaction's own application for a failure). This method derives
         everything the ledger would expose, runs `run(hook, export="cbak",
         arg=ctx)` inside the `callback(ctx)` scope, and restores the runtime's

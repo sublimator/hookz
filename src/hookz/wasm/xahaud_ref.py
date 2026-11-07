@@ -176,16 +176,19 @@ def sha256(path: Path) -> str:
 # names no repository and no commit, so it cannot be checked and cannot be
 # followed without knowing this module exists.
 
-CITATION = re.compile(r"xahaud:([A-Za-z0-9_./\-]+):(\d+)")
+# An optional `-END` (or en dash) makes it a range; both ends are checked.
+CITATION = re.compile(r"xahaud:([A-Za-z0-9_./\-]+):(\d+)(?:\s*[-\u2013]\s*(\d+))?")
 
 
 @dataclass(frozen=True)
 class Citation:
     path: str          # repo-relative, e.g. src/xrpld/app/hook/detail/HookAPI.cpp
     line: int
+    end: int | None = None   # last line of a `START-END` range
 
     def __str__(self) -> str:
-        return f"xahaud:{self.path}:{self.line}"
+        tail = f"-{self.end}" if self.end is not None else ""
+        return f"xahaud:{self.path}:{self.line}{tail}"
 
     @property
     def url(self) -> str:
@@ -227,8 +230,9 @@ def cite(path: str, line: int) -> Citation:
 
 
 def parse_citations(text: str) -> list[Citation]:
-    """Every `xahaud:path:line` in a blob of text."""
-    return [Citation(path=m.group(1), line=int(m.group(2)))
+    """Every `xahaud:path:line` (or `:start-end`) in a blob of text."""
+    return [Citation(path=m.group(1), line=int(m.group(2)),
+                     end=int(m.group(3)) if m.group(3) else None)
             for m in CITATION.finditer(text)]
 
 
@@ -458,7 +462,10 @@ def check_citations(root: Path | str,
             upstream = Path(xahaud_root)
 
     problems: list[str] = []
-    for source in sorted(root.rglob("*.py")):
+    # JSON too: generated vectors and captures carry citations in their
+    # metadata, and a re-pin that skips them leaves them describing the old pin.
+    sources = sorted([*root.rglob("*.py"), *root.rglob("*.json")])
+    for source in sources:
         if "xahaud_lite" in source.parts:
             continue
         for cit in parse_citations(source.read_text(errors="replace")):
@@ -473,6 +480,18 @@ def check_citations(root: Path | str,
                 problems.append(
                     f"{where} — line {cit.line} is outside {cit.path} ({total} lines)")
                 continue
+            if cit.end is not None:
+                # A re-pin that moved only the start leaves a range that ends
+                # before it begins, or one that stops partway into the moved
+                # construct. Order and bounds are what can be checked here.
+                if cit.end < cit.line:
+                    problems.append(f"{where} — range ends before it starts")
+                    continue
+                if _line_of(target, cit.end) is None:
+                    total = len(target.read_text(errors="replace").splitlines())
+                    problems.append(
+                        f"{where} — range end {cit.end} is outside {cit.path} ({total} lines)")
+                    continue
             if upstream is None:
                 continue
             theirs_path = upstream / cit.path
