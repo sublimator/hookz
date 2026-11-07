@@ -37,8 +37,8 @@
 
 #define COPY20(src,dst)\
 {\
-    uint32_t* x = (dst);\
-    uint32_t* y = (src);\
+    uint32_t* x = (uint32_t*)(dst);\
+    uint32_t* y = (uint32_t*)(src);\
     *x++ = *y++;\
     *x++ = *y++;\
     *x++ = *y++;\
@@ -48,8 +48,8 @@
 
 #define COPY40(src,dst)\
 {\
-    uint64_t* x = (dst);\
-    uint64_t* y = (src);\
+    uint64_t* x = (uint64_t*)(dst);\
+    uint64_t* y = (uint64_t*)(src);\
     *x++ = *y++;\
     *x++ = *y++;\
     *x++ = *y++;\
@@ -59,8 +59,8 @@
 
 #define COPY32(src,dst)\
 {\
-    uint64_t* x = (dst);\
-    uint64_t* y = (src);\
+    uint64_t* x = (uint64_t*)(dst);\
+    uint64_t* y = (uint64_t*)(src);\
     *x++ = *y++;\
     *x++ = *y++;\
     *x++ = *y++;\

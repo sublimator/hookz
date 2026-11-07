@@ -42,8 +42,8 @@ uint8_t members_bitfield_key[32] = {'S', 'M'};
 uint8_t cleanup_key_lower[32] = {'C'};
 uint8_t cleanup_key_upper[32] = {'C'};
 
-uint64_t* cleanup_lower = cleanup_key_lower + 1;
-uint64_t* cleanup_upper = cleanup_key_upper + 1;
+uint64_t* cleanup_lower = (uint64_t*)(cleanup_key_lower + 1);
+uint64_t* cleanup_upper = (uint64_t*)(cleanup_key_upper + 1);
 
 uint8_t otxn_acc[21] = { 'M' };
 
@@ -330,7 +330,7 @@ int64_t hook(uint32_t r)
         // untouched. Without = {0}, votes[4] (the counter byte) contains
         // stack garbage, producing incorrect vote counts.
         uint32_t votes_raw[2] = {0};
-        uint8_t* votes = votes_raw;
+        uint8_t* votes = (uint8_t*)votes_raw;
         votes_raw[0] = current_ledger; // all values are prefixed with ledger seq for cleanup
         TRACEVAR(current_ledger);
         TRACEVAR(votes_raw[0]);
