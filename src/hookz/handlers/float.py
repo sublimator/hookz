@@ -419,9 +419,11 @@ def float_set(rt: HookRuntime, exp: int, mantissa: int) -> int:
     Body:    xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1033-1005
     Normalize: xahaud:src/xrpld/app/hook/HookAPI.h:184-289
 
-    Not IEEE. Zero mantissa is canonical zero. Underflow and overflow both
-    return INVALID_FLOAT — host maps XFL_OVERFLOW that way for float_set
-    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1050-1002).
+    Not IEEE. Zero mantissa is canonical zero. The range check applies to
+    the exponent after the mantissa is normalized to 16 digits. Under
+    fix20261005 overflow is EXPONENT_OVERSIZED and underflow (normalize_xfl
+    collapsing to canonical 0) is EXPONENT_UNDERSIZED; without it both are
+    INVALID_FLOAT (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1046-1055).
 
     Harness history: a prior Python ``float``/IEEE ``float_to_xfl`` path lost
     1 ULP around 16-digit integers (e.g. ``(2**64-1)//10000``), which made
@@ -429,14 +431,21 @@ def float_set(rt: HookRuntime, exp: int, mantissa: int) -> int:
     they were not. Host ``normalize_xfl`` is integer; this port matches that,
     so those boundaries now round-trip exactly when the mantissa fits.
     """
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1035-989
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1035
     if mantissa == 0:
         return 0
     # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1038
     out = _normalize_xfl(mantissa, exp)
-    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1048-1002
-    if out is None or out == 0:
-        return hookapi.INVALID_FLOAT
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1046 — no runtime means
+    # the current rules, as float_divide reads fixFloatDivide
+    fix_exp_codes = rt is None or "fix20261005" in getattr(rt, "amendments", ())
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1050-1051 (XFL_OVERFLOW
+    # is the only error normalize_xfl can reach from here)
+    if out is None:
+        return hookapi.EXPONENT_OVERSIZED if fix_exp_codes else hookapi.INVALID_FLOAT
+    # xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1054-1055
+    if out == 0:
+        return hookapi.EXPONENT_UNDERSIZED if fix_exp_codes else hookapi.INVALID_FLOAT
     return out
 
 

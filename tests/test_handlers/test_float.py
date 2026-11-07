@@ -195,15 +195,38 @@ class TestFloatSet:
         result = float_set(rt, 0, 1_000_000_000_000_000)
         assert xfl_to_float(result) == pytest.approx(1e15)
 
-    def test_exponent_below_min_is_invalid(self, rt):
-        # xahaud:src/test/app/SetHook_test.cpp:6840
-        # underflow → INVALID_FLOAT: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1054-1002
-        assert float_set(rt, -97, 1) == hookapi.INVALID_FLOAT
+    # The exponent range, either side of fix20261005
+    # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1046-1055). Vectors:
+    # xahaud:src/test/app/HookAPI_test.cpp:1959-1983 (at the release, not
+    # vendored); the pre-fix half is also
+    # xahaud:src/test/app/SetHook_test.cpp:6839-6843, which runs without the fix.
+    # The bound is on the exponent after normalizing to 16 digits, so
+    # float_set(95, 1) is 1e15 at exponent 80 and float_set(96, 1) overflows.
+    _ONE_E15 = 1_000_000_000_000_000
+    _RANGE_EDGES = [
+        # (exp, mantissa, which edge)
+        (-97, 1, "under"),
+        (97, 1, "over"),
+        (96, 1, "over"),
+        (-82, 1, "under"),
+    ]
 
-    def test_exponent_above_max_is_invalid(self, rt):
-        # xahaud:src/test/app/SetHook_test.cpp:6843
-        # overflow → INVALID_FLOAT: xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1050-999
-        assert float_set(rt, 97, 1) == hookapi.INVALID_FLOAT
+    @pytest.mark.parametrize("exp,mantissa,edge", _RANGE_EDGES)
+    def test_out_of_range_with_fix_names_the_edge(self, rt, exp, mantissa, edge):
+        assert "fix20261005" in rt.amendments, "mainnet default carries the fix"
+        expected = (hookapi.EXPONENT_UNDERSIZED if edge == "under"
+                    else hookapi.EXPONENT_OVERSIZED)
+        assert float_set(rt, exp, mantissa) == expected
+
+    @pytest.mark.parametrize("exp,mantissa,edge", _RANGE_EDGES)
+    def test_out_of_range_without_fix_is_invalid_float(self, rt, exp, mantissa, edge):
+        rt.amendments.discard("fix20261005")
+        assert float_set(rt, exp, mantissa) == hookapi.INVALID_FLOAT
+
+    @pytest.mark.parametrize("exp,result_exp", [(81, 66), (95, 80), (-81, -96)])
+    def test_in_range_after_normalizing(self, rt, exp, result_exp):
+        assert float_set(rt, exp, 1) == float_set(rt, result_exp, self._ONE_E15)
+        assert float_mantissa(rt, float_set(rt, exp, 1)) == self._ONE_E15
 
     @pytest.mark.parametrize(
         "exp,mantissa,expected",

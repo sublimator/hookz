@@ -75,8 +75,17 @@ def test_fixture_loads_and_names_suite(vectors: HookzFloatVectors):
 
 
 def test_replay_float_set(vectors: HookzFloatVectors):
+    """The dump predates fix20261005 — its out-of-range cases are INVALID_FLOAT
+    — so it is replayed under the rules it was taken under. With the fix those
+    cases are EXPONENT_OVERSIZED / EXPONENT_UNDERSIZED
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1046-1055)."""
+    from types import SimpleNamespace
+
+    from hookz.amendments import enabled_on
+
+    pre_fix = SimpleNamespace(amendments=enabled_on() - {"fix20261005"})
     for i, case in enumerate(vectors.float_set):
-        got = float_set(None, case.exp.as_int(), case.man.as_int())
+        got = float_set(pre_fix, case.exp.as_int(), case.man.as_int())
         exp = case.result.as_int_or_error()
         if case.result.ok:
             assert got == exp, f"float_set[{i}] exp={case.exp.as_int()} man={case.man.as_int()}"
