@@ -589,15 +589,15 @@ class TestHookBuilder:
         self.compiler = compiler
         self.input_file = input_file
         self.hook_headers: Path | None = None
-        # The cache key names the compiler. hooks-compiler is pinned and
-        # deterministic, so its version is what identifies its output.
-        self.cache_compiler = compiler
+        self._headers_sha256 = ""
         if compiler == "hooks-compiler":
             from hookz.config import load_config
-            from hookz.hooks_compiler import SPEC
+            from hookz.hooks_compiler import headers_digest
 
             self.hook_headers = load_config().hook_headers
-            self.cache_compiler = SPEC
+            # hooks-compiler reads the whole -I tree, so a header edit with
+            # the source unchanged must miss the cache.
+            self._headers_sha256 = headers_digest(self.hook_headers)
 
         stem = input_file.stem
 
@@ -626,6 +626,14 @@ class TestHookBuilder:
             compiler=compiler,
         )
 
+    def _cache_compiler(self, block: HookBlock) -> str:
+        """The compiler part of the cache key: every input but the source."""
+        if self.compiler == "hooks-compiler":
+            from hookz.hooks_compiler import cache_identity
+
+            return cache_identity(block.filename, self._headers_sha256)
+        return self.compiler
+
     def _compile_block(
         self, counter: int, block: HookBlock
     ) -> tuple[int, HookBlock, bytes]:
@@ -638,7 +646,9 @@ class TestHookBuilder:
         # the compiler exposes a provider identity for the cache key.
         if self.cache is not None and not is_quickjs:
             cached = self.cache.get(
-                block.source, coverage=self.coverage, compiler=self.cache_compiler
+                block.source,
+                coverage=self.coverage,
+                compiler=self._cache_compiler(block),
             )
             if cached is not None:
                 logger.info(f"{label}: cached")
@@ -691,7 +701,7 @@ class TestHookBuilder:
                 block.source,
                 bytecode,
                 coverage=self.coverage,
-                compiler=self.cache_compiler,
+                compiler=self._cache_compiler(block),
             )
 
         return (counter, block, bytecode)

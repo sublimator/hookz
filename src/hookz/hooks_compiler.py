@@ -78,6 +78,31 @@ def stripped_source(source: str) -> tuple[str, str]:
     return stripped, hashlib.sha256(stripped.encode("utf-8")).hexdigest()
 
 
+def headers_digest(headers: Path | None) -> str:
+    """sha256 over every file hooks-compiler reads under ``-I``.
+
+    It loads the whole tree, keyed by relative path, so any of those files can
+    change the output. Symlinked files count; symlinked directories are not
+    walked, as in hooks-compiler's own walk.
+    """
+    h = hashlib.sha256()
+    if headers is not None and Path(headers).is_dir():
+        root = Path(headers)
+        for path in sorted(root.rglob("*")):
+            if path.is_file():
+                for part in (path.relative_to(root).as_posix().encode(),
+                             path.read_bytes()):
+                    h.update(len(part).to_bytes(8, "big"))
+                    h.update(part)
+    return h.hexdigest()
+
+
+def cache_identity(filename: str, headers_sha256: str) -> str:
+    """Everything besides the source text that decides the output: the pinned
+    version, the entry name it is compiled under, and the header tree."""
+    return f"{SPEC}|{safe_filename(filename)}|{headers_sha256}"
+
+
 def _npx(npx: str | None) -> str:
     found = npx or shutil.which("npx")
     if not found:

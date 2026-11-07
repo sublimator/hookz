@@ -366,7 +366,7 @@ This compiles your test files (~10s) and runs them against real xahaud. See [exa
 
 ### How it works
 
-You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_HOOKS_COMPILER=1` with `HOOKS_FORCE_RECOMPILE=1` when the generated header must contain reference-compiler artifacts rather than local builds; forcing regeneration keeps an older local artifact from satisfying the build. (xahaud's CMake still has the old `HOOKZ_BUILDBOX` switch, which hookz now refuses; see [docs/external-env-tests.md](docs/external-env-tests.md).) Your tests and hooks stay in your repo — xahaud is just the engine.
+You write C++ test files in your own repo using xahaud's `Env` framework, reference your hook source with `"file:domain/path.c"`, and xahaud's CMake calls `hookz build-test-hooks` to compile them. Set `HOOKZ_HOOKS_COMPILER=1` with `HOOKS_FORCE_RECOMPILE=1` when the generated header must contain reference-compiler artifacts rather than local builds; forcing regeneration keeps an older local artifact from satisfying the build. It needs Node on PATH, which the current Docker image lacks. (xahaud's CMake still has the old `HOOKZ_BUILDBOX` switch, which hookz now refuses; see [docs/external-env-tests.md](docs/external-env-tests.md).) Your tests and hooks stay in your repo — xahaud is just the engine.
 
 Inline `[test.tshook]` / `[test.jshook]` blocks and `.ts` / `.js` file
 references are compiled by `jshookz compile-hook`. Install `jshookz` on PATH,

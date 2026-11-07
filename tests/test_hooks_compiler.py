@@ -199,30 +199,74 @@ class TestBuildTestHooks:
         return HookBlock(map_key=source, source=source, filename="hook.c",
                          line_number=1, is_file_ref=False, **kw)
 
-    def test_the_cache_is_keyed_by_the_pinned_version(self, tmp_path):
+    @pytest.fixture
+    def builder(self, tmp_path, reference, monkeypatch):
+        """A hooks-compiler builder over a real header tree, with a stub
+        compiler whose output depends on that tree, as the real one's does."""
+        headers = tmp_path / "hook"
+        headers.mkdir()
+        (headers / "answer.h").write_text("#define ANSWER 1\n")
+        monkeypatch.setattr(
+            "hookz.config.load_config",
+            lambda **k: SimpleNamespace(hook_headers=headers),
+        )
+        monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: None)
+
+        def compile_source(source, **kwargs):
+            reference.append((source, kwargs))
+            tree = (kwargs["headers"] / "answer.h").read_bytes()
+            return SimpleNamespace(wasm=WASM + tree)
+
+        monkeypatch.setattr(hooks_compiler, "compile_source", compile_source)
         test_file = tmp_path / "Proof_test.cpp"
         test_file.write_text("")
-        builder = HookBuilder(test_file, compiler="hooks-compiler",
-                                  cache_dir=tmp_path / "cache")
+        b = HookBuilder(test_file, compiler="hooks-compiler",
+                        cache_dir=tmp_path / "cache")
+        b.headers = headers
+        return b
 
-        assert builder.cache is not None
-        assert builder.cache_compiler == SPEC
+    def test_a_repeat_build_is_served_from_the_cache(self, builder, reference):
+        builder._compile_block(0, self._block())
+        builder._compile_block(0, self._block())
+
+        assert len(reference) == 1
 
     def test_a_cached_build_under_another_version_is_not_reused(
-        self, tmp_path, reference, monkeypatch
+        self, builder, reference
     ):
-        monkeypatch.setattr("hookz.wasm.guard.validate_guards", lambda wasm: None)
-        test_file = tmp_path / "Proof_test.cpp"
-        test_file.write_text("")
-        builder = HookBuilder(test_file, compiler="hooks-compiler",
-                                  cache_dir=tmp_path / "cache")
         block = self._block()
         builder.cache.put(block.source, b"older", compiler="hooks-compiler@0.1.0")
 
         _, _, wasm = builder._compile_block(0, block)
 
-        assert wasm == WASM
+        assert wasm.startswith(WASM)
         assert len(reference) == 1
+
+    def test_a_header_edit_misses_the_cache(self, builder, reference):
+        """codex's reproducer: the source and version unchanged, ANSWER 1 -> 2
+        in an included header, and the cache still handed back the build
+        made with 1. The header tree is in the key now."""
+        _, _, first = builder._compile_block(0, self._block())
+        (builder.headers / "answer.h").write_text("#define ANSWER 2\n")
+        fresh = HookBuilder(builder.input_file, compiler="hooks-compiler",
+                            cache_dir=builder.cache.cache_dir)
+
+        _, _, second = fresh._compile_block(0, self._block())
+
+        assert len(reference) == 2
+        assert first != second
+
+    def test_the_entry_name_is_in_the_key(self, builder, reference):
+        """hooks-compiler compiles under that name, so __FILE__ and the C/C++
+        choice can depend on it."""
+        builder._compile_block(0, self._block())
+        renamed = HookBlock(map_key="x", source=self._block().source,
+                            filename="other.c", line_number=1,
+                            is_file_ref=False)
+
+        builder._compile_block(1, renamed)
+
+        assert len(reference) == 2
 
     def test_jobs_are_capped_for_memory(self, tmp_path):
         test_file = tmp_path / "Proof_test.cpp"

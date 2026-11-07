@@ -38,7 +38,12 @@ branch renames the switch, set `HOOKZ_HOOKS_COMPILER=1` together with
 `HOOKS_FORCE_RECOMPILE=1`. hookz reads the first from the environment it
 inherits, and the second makes generation always run, so an existing
 locally generated header cannot satisfy an `OUTPUT`-cached build after the
-compiler mode changes. Forward both into Docker explicitly.
+compiler mode changes.
+
+This works where Node >= 20.12 and `npx` are on PATH. The CI image does not
+have them: `ghcr.io/sublimator/hookz-xahaud:2026-11-07-hookz-fdbb355` has no
+`node` or `npx`. Inside Docker this mode needs an image built with Node.
+That rebuild belongs with the CMake rename, on the external-env-tests branch.
 
 ### Swapping hookz inside a frozen image
 
