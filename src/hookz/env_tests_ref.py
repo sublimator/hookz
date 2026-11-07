@@ -20,7 +20,8 @@ patch: its content hash, the files it touches, and what each one is for.
 
 PIN
 ---
-Repo    https://github.com/Xahau/xahaud
+Repo    https://github.com/sublimator/xahaud  (Xahau/xahaud's copy stops at
+        10b901ea0b; the branch is no longer pushed there)
 Branch  external-env-tests @ 89f9db8d8d542db8238fb2091e168f6396aa6a72 (2026-11-07)
         (2026.10.13-release+4119 merged into 10b901ea0b)
 Base    generated as `git diff 2026.10.13-release+4119 external-env-tests`,
@@ -49,7 +50,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-REPO = "https://github.com/Xahau/xahaud"
+REPO = "https://github.com/sublimator/xahaud"
 BRANCH = "external-env-tests"
 BRANCH_COMMIT = "89f9db8d8d542db8238fb2091e168f6396aa6a72"
 BRANCH_COMMIT_DATE = "2026-11-07"

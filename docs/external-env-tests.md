@@ -125,7 +125,8 @@ than emitting a document that looks complete without the harness half.
 
 ## Branch status & vendored patch
 
-The canonical branch is [`external-env-tests` on Xahau/xahaud](https://github.com/Xahau/xahaud/tree/external-env-tests).
+The canonical branch is [`external-env-tests` on sublimator/xahaud](https://github.com/sublimator/xahaud/tree/external-env-tests).
+Xahau/xahaud's copy stops at `10b901ea0b` (2026-07-30) and is no longer pushed.
 The Docker image fetches it from GitHub at image build time, so images are
 only as fresh as the branch. The 2026.10.13-release+4119 tag was merged into
 the branch on 2026-11-07, so it carries that release plus the env-tests

@@ -61,6 +61,7 @@ ARG HOOKZ_REPO=https://github.com/sublimator/hookz.git
 ARG HOOKZ_BRANCH=main
 ARG SCRIPTS_REPO=https://github.com/sublimator/xahaud-scripts.git
 ARG SCRIPTS_BRANCH=main
+ARG XAHAUD_REPO=https://github.com/sublimator/xahaud.git
 ARG XAHAUD_BRANCH=external-env-tests
 ARG WASI_SDK_VERSION=32
 
@@ -89,8 +90,10 @@ RUN ARCH=$([ "$TARGETARCH" = "arm64" ] && echo "arm64" || echo "x86_64") \
     && ln -s /opt/wasi-sdk-${WASI_SDK_VERSION}.0-${ARCH}-linux /opt/wasi-sdk
 ENV WASI_SDK_PATH=/opt/wasi-sdk
 
-# Pull latest xahaud source (base image has a shallow clone that may be stale)
-RUN git fetch origin ${XAHAUD_BRANCH} && git checkout FETCH_HEAD
+# Pull latest xahaud source (base image has a shallow clone that may be stale).
+# From XAHAUD_REPO by URL, not the base's `origin`: a base built before the
+# branch moved to sublimator/xahaud still has Xahau/xahaud as origin.
+RUN git fetch ${XAHAUD_REPO} ${XAHAUD_BRANCH} && git checkout FETCH_HEAD
 
 # ccache setup:
 # - Seed /ccache-primed from previous image (empty on first build)

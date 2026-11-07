@@ -375,7 +375,7 @@ references are compiled by `jshookz compile-hook`. Install `jshookz` on PATH,
 or override the command with `JSHOOKZ_HOOK_COMPILER`. The retired
 `QJS_HOOK_COMPILER` name remains a compatibility fallback.
 
-On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/Xahau/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch). The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
+On the xahaud side this is a small CMake patch (plus optional coverage and logging support), maintained as the [`external-env-tests`](https://github.com/sublimator/xahaud/tree/external-env-tests) branch and vendored here as [`patches/xahaud-external-env-tests.patch`](patches/xahaud-external-env-tests.patch). The Docker image has it baked in, so you only need it for local, non-Docker runs. The core is just:
 
 ```cmake
 # cmake/RippledCore.cmake (condensed — see the patch for the full block)

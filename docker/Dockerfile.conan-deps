@@ -28,7 +28,8 @@ RUN pipx install conan && pipx ensurepath
 ENV PATH="/root/.local/bin:${PATH}"
 RUN conan profile detect
 
-ARG XAHAUD_REPO=https://github.com/Xahau/xahaud.git
+# sublimator: the external-env-tests branch is no longer pushed to Xahau/xahaud
+ARG XAHAUD_REPO=https://github.com/sublimator/xahaud.git
 ARG XAHAUD_BRANCH=external-env-tests
 
 # Clone xahaud (need source for conan export + install)

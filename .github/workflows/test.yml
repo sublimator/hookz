@@ -38,7 +38,10 @@ jobs:
           # depth 3 (not 1): tests/test_xahaud_ref.py resolves HEAD~1 / HEAD~2
           # as deliberate mismatches against the pin. A depth-1 clone has no
           # parents, so those revs "do not name a commit" and the suite fails.
-          git clone --depth 3 -b dev https://github.com/Xahau/xahaud.git /tmp/xahaud
+          # The pinned release tag (xahaud_ref.XAHAUD_REF), not dev: the suite
+          # reads hook_api.macro and the macros from this checkout, and dev's
+          # tip is not what hookz was ported against.
+          git clone --depth 3 -b 2026.10.13-release+4119 https://github.com/Xahau/xahaud.git /tmp/xahaud
           echo "HOOKZ_XAHAUD=/tmp/xahaud" >> $GITHUB_ENV
 
       - name: Install dependencies
