@@ -281,6 +281,30 @@ def _emission_fields(blob: bytes) -> dict[int, bytes]:
     }
 
 
+def _emission_params(fields: dict) -> ParamMap | None:
+    """A parsed emission's sfHookParameters as `otxn_param` serves them.
+
+    None when the emission carries no such array. Otherwise the first entry
+    per name wins, as the host returns the first match
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1674), an entry with no
+    name is skipped as the host skips it, and one with no value is kept as
+    empty — which `otxn_param` answers DOESNT_EXIST, as the host does.
+    """
+    entries = fields.get("HookParameters")
+    if not isinstance(entries, list):
+        return None
+    params = ParamMap()
+    for item in entries:
+        entry = item.get("HookParameter", {}) if isinstance(item, dict) else {}
+        name = entry.get("HookParameterName")
+        if name is None:
+            continue
+        key = bytes.fromhex(name)
+        if key not in params:
+            params[key] = bytes.fromhex(entry.get("HookParameterValue", ""))
+    return params
+
+
 def provisional_meta(transaction_result: str | int) -> bytes:
     """Serialized provisional TxMeta carrying `transaction_result`.
 
@@ -686,7 +710,10 @@ class HookRuntime:
         reads sfDestination to find whose record to restore can. What the
         bit still changes is what is read off the pseudo itself: `otxn_id`
         is its sfTransactionHash, the failed emission's hash
-        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612).
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612), and
+        `otxn_param` finds no HookParameters on it
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669), so every
+        name is DOESNT_EXIST.
 
         **Without fix20261005 there is no failure callback to model.** The
         host dereferences the emitted-transaction entry the pseudo has
@@ -785,6 +812,10 @@ class HookRuntime:
         caller-populated `rt.otxn_fields` entry that disagrees with the
         emission is overridden for the delivery (it is restored after).
         Entries for fields the emission does not carry still serve.
+        `otxn_param` serves the emission's HookParameters when it carries
+        the array (replacing `rt.tx_params` for the delivery, so a trigger's
+        parameters do not leak into its callback), and `rt.tx_params` when
+        it does not.
 
         *Not applied* (`ctx & 1 == 1`): the applied transaction is the
         `ttEMIT_FAILURE` pseudo-transaction, carrying the current ledger
@@ -804,7 +835,9 @@ class HookRuntime:
         `otxn_id` is the pseudo's sfTransactionHash, which is the emission's
         hash (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612). The field
         overlay is the applied mode's, for the same reason: one object
-        describes the transaction.
+        describes the transaction. `otxn_param` is the exception: it reads
+        the pseudo, which has no HookParameters, so every name is
+        DOESNT_EXIST (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669).
 
         The ledger skips the callback outright when the original is not in
         the ledger as the pseudo applies
@@ -831,6 +864,7 @@ class HookRuntime:
                 "override if a guard needs it")
 
         saved_fields = dict(self.otxn_fields)
+        saved_params = self._tx_params
         saved = (self.otxn_blob, self.otxn_type, self.otxn_id_val,
                  self._callback_meta)
         try:
@@ -847,7 +881,6 @@ class HookRuntime:
                     from xrpl.core.binarycodec.definitions import definitions
                     self.otxn_type = definitions.get_transaction_type_code(
                         tx_type)
-            if emitted_tx is not None:
                 # Both modes: applied, the emission is the transaction being
                 # applied; not applied, it is `emitFailure`, which every
                 # field read and the slot answer from under fix20261005.
@@ -858,6 +891,17 @@ class HookRuntime:
                 # still serve.
                 self.otxn_blob = emitted_tx
                 self.otxn_fields.update(_emission_fields(emitted_tx))
+                # otxn_param reads the applied transaction's sfHookParameters
+                # (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669) —
+                # applied, the emission's. The same overlay at field level:
+                # an emission carrying the array is the whole parameter set
+                # (left over trigger params must not leak into its
+                # callback); one without it leaves the caller's in place.
+                # Not applied, the pseudo has none, and otxn_param says
+                # DOESNT_EXIST on the mode alone.
+                params = _emission_params(parsed)
+                if params is not None:
+                    self._tx_params = params
             with self.callback(ctx):
                 return self.run(hook, coverage=coverage,
                                 export="cbak", arg=ctx)
@@ -865,6 +909,7 @@ class HookRuntime:
             (self.otxn_blob, self.otxn_type, self.otxn_id_val,
              self._callback_meta) = saved
             self.otxn_fields = saved_fields
+            self._tx_params = saved_params
 
     def run(self, hook: Hook | bytes, label: str | None = None,
             coverage: bool = False, export: str = "hook",
@@ -914,7 +959,8 @@ class HookRuntime:
         The transaction-context fields (`otxn_fields`, `otxn_blob`,
         `otxn_type`, `otxn_id_val`, `_callback_meta`) are durable
         configuration too — `run` never touches them. `run_callback` sets
-        them for a delivery and restores them on the way out.
+        them for a delivery and restores them on the way out, and swaps
+        `tx_params` the same way when the emission carries HookParameters.
         """
         if isinstance(hook, Hook):
             wasm_bytes = hook.wasm

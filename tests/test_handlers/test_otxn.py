@@ -138,6 +138,18 @@ class TestOtxnParam:
         rt._write_memory(200, b"A" * 33)
         assert otxn_param(rt, 0, 128, 200, 33) == hookapi.TOO_BIG
 
+    def test_a_failure_callback_reads_the_pseudo_which_has_none(self, rt):
+        """xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669 asks the applied
+        transaction — the ttEMIT_FAILURE pseudo, not `emitFailure`. The
+        length checks still come first."""
+        rt.tx_params[b"amount"] = b"\x01"
+        rt._write_memory(200, b"amount")
+        with rt.callback(1):
+            assert otxn_param(rt, 0, 128, 200, 6) == hookapi.DOESNT_EXIST
+            assert otxn_param(rt, 0, 128, 200, 0) == hookapi.TOO_SMALL
+        with rt.callback(0):
+            assert otxn_param(rt, 0, 128, 200, 6) == 1
+
 
 # ---------------------------------------------------------------------------
 # otxn_id

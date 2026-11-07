@@ -208,6 +208,19 @@ int64_t cbak(uint32_t ctx)
         }
     }
 
+    uint8_t pk[3] = {'C', 'M', 'D'};
+    uint8_t pv[16];
+    int64_t prc = otxn_param(SBUF(pv), SBUF(pk));
+    uint8_t prc_buf[8];
+    INT64_TO_BUF(prc_buf, prc);
+    k[0] = 0x15;
+    state_set(SBUF(prc_buf), SBUF(k));
+    if (prc > 0)
+    {
+        k[0] = 0x16;
+        state_set(pv, (uint32_t)prc, SBUF(k));
+    }
+
     return accept(SBUF("probed"), 0);
 }
 """
@@ -232,6 +245,8 @@ K_ARR_SLOT = bytes([0x11]) + b"\x00" * 31
 K_OBJ = bytes([0x12]) + b"\x00" * 31
 K_OBJ_TAG = bytes([0x13]) + b"\x00" * 31
 K_OBJ_DIRECT = bytes([0x14]) + b"\x00" * 31
+K_PARAM_RC = bytes([0x15]) + b"\x00" * 31
+K_PARAM = bytes([0x16]) + b"\x00" * 31
 
 DEST = bytes([0xDD]) + b"\x00" * 19
 ACCT = bytes([0xAA]) + b"\x00" * 19
@@ -509,6 +524,81 @@ class TestNotAppliedWithoutTheFix:
                                  ctx=CALLBACK_APPLIED)
         assert result.accepted
         assert rt.state_db[K_DEST] == DEST
+
+
+def invoke_with_params(*params) -> bytes:
+    """An emitted Invoke carrying HookParameters, as (name, value|None)."""
+    from xrpl.core.binarycodec import encode
+
+    from hookz.account import to_raddr
+
+    entries = []
+    for name, value in params:
+        entry = {"HookParameterName": name.hex()}
+        if value is not None:
+            entry["HookParameterValue"] = value.hex()
+        entries.append({"HookParameter": entry})
+    return bytes.fromhex(encode({
+        "TransactionType": "Invoke",
+        "Account": to_raddr(ACCT),
+        "HookParameters": entries,
+    }))
+
+
+class TestCallbackParameters:
+    """`otxn_param` reads sfHookParameters off the transaction being
+    applied (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669): the
+    emission when applied, the parameterless pseudo when not."""
+
+    def test_an_applied_callback_reads_the_emissions_parameters(self, wasm):
+        """A trigger's leftover tx_params must not answer for the emission."""
+        rt = HookRuntime()
+        rt.tx_params["CMD"] = b"trigger"
+        rt.run_callback(wasm, emitted_tx=invoke_with_params(
+            (b"CMD", b"\x01\x02")))
+        assert rt.state_db[K_PARAM_RC] == i64buf(2)
+        assert rt.state_db[K_PARAM] == b"\x01\x02"
+        assert rt.tx_params["CMD"] == b"trigger", "restored after"
+
+    def test_a_name_the_emission_lacks_does_not_exist(self, wasm):
+        rt = HookRuntime()
+        rt.tx_params["CMD"] = b"trigger"
+        rt.run_callback(wasm, emitted_tx=invoke_with_params(
+            (b"OTHER", b"\x01")))
+        assert rt.state_db[K_PARAM_RC] == i64buf(hookapi.DOESNT_EXIST)
+
+    def test_the_first_match_wins_and_a_valueless_one_does_not_exist(
+            self, wasm):
+        """The host returns at the first name match, value or no value
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1680)."""
+        rt = HookRuntime()
+        rt.run_callback(wasm, emitted_tx=invoke_with_params(
+            (b"CMD", b"\x07"), (b"CMD", b"\x08")))
+        assert rt.state_db[K_PARAM] == b"\x07"
+
+        rt = HookRuntime()
+        rt.run_callback(wasm, emitted_tx=invoke_with_params(
+            (b"CMD", None), (b"CMD", b"\x08")))
+        assert rt.state_db[K_PARAM_RC] == i64buf(hookapi.DOESNT_EXIST)
+
+    def test_an_emission_without_the_array_leaves_the_callers_in_place(
+            self, wasm):
+        """The overlay's convention at field level: what the emission does
+        not carry, the caller's configuration still answers."""
+        rt = HookRuntime()
+        rt.tx_params["CMD"] = b"\x09"
+        rt.run_callback(wasm, emitted_tx=payment_blob())
+        assert rt.state_db[K_PARAM] == b"\x09"
+
+    def test_a_failure_callback_finds_no_parameters(self, wasm):
+        """The pseudo is built with sfLedgerSequence, sfTransactionHash and
+        sfEmitDetails (xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1657), so
+        neither the emission's nor the caller's parameters are there."""
+        rt = HookRuntime()
+        rt.tx_params["CMD"] = b"\x09"
+        rt.run_callback(wasm, emitted_tx=invoke_with_params(
+            (b"CMD", b"\x01")), ctx=CALLBACK_NOT_APPLIED)
+        assert rt.state_db[K_PARAM_RC] == i64buf(hookapi.DOESNT_EXIST)
 
 
 class TestNoMetadata:

@@ -139,12 +139,29 @@ def otxn_param(rt: HookRuntime, write_ptr: int, write_len: int, kread_ptr: int, 
 
     so `rt.tx_params[name] = b""` reads to the hook exactly like an absent
     name — the same answer `hook_param` gives an emptied override.
+
+    Parameters are read off the transaction being applied, never off
+    `emitFailure`:
+
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1669
+            if (!hookCtx.applyCtx.tx.isFieldPresent(sfHookParameters))
+                return Unexpected(DOESNT_EXIST);
+
+    In a failure callback that is the `ttEMIT_FAILURE` pseudo-transaction,
+    built with sfLedgerSequence, sfTransactionHash and sfEmitDetails only
+    (xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1657), so every name is
+    DOESNT_EXIST whatever the emission carried — the one read in that mode
+    that fix20261005 did not move onto the original. In an applied callback
+    the transaction is the emission, and `run_callback` serves its
+    HookParameters.
     """
     key = rt._read_memory(kread_ptr, kread_len)
     if kread_len < 1:
         return hookapi.TOO_SMALL
     if kread_len > 32:
         return hookapi.TOO_BIG
+    if rt.emit_failure:
+        return hookapi.DOESNT_EXIST
     val = rt.tx_params.get(key)
     if not val:
         return hookapi.DOESNT_EXIST
