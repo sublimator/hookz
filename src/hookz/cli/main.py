@@ -235,11 +235,12 @@ def _rules() -> int:
     hookz's own WCE was wrong and hooks the official C++ checker accepted were
     failing ours. It outlived the bug. On `wce` it was disclosed; on `build`
     and `guard-check` it silently turned REJECTED into "PASSED" with exit 0,
-    for a hook SetHook refuses — fixGuardDepth32 is DefaultNo and mainnet has
-    never voted it in.
+    for a hook SetHook refused — fixGuardDepth32 is DefaultNo and mainnet had
+    not voted it in.
 
-    When it is voted in, nothing here changes: the manifest gains the
-    amendment, resolve_rules returns the bit, and nesting_limit reads 32. That
+    When it was voted in (by the 2026-11-07 manifest) nothing here changed: the
+    manifest gained the amendment, resolve_rules returned the bit, and
+    nesting_limit read 32. That
     is the whole point of deriving rather than overriding.
     """
     from hookz.wasm.guard import resolve_rules

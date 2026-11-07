@@ -90,9 +90,10 @@ it the same way, from the manifest `hookz.amendments` reads:
 | bit | amendment | vote default | mainnet | effect |
 |---|---|---|---|---|
 | `0x01` | `fix20250131` | DefaultYes | enabled | bans `memory.copy` / `memory.fill` |
-| `0x02` | `fixGuardDepth32` | DefaultNo | **not enabled** | nesting 16 → 32 |
+| `0x02` | `fixGuardDepth32` | DefaultNo | enabled (by the 2026-11-07 manifest) | nesting 16 → 32 |
 
-So mainnet runs `rulesVersion = 0x01` and the nesting limit is 16. Pass
+So mainnet runs `rulesVersion = 0x03` and the nesting limit is 32 (it was
+`0x01` and 16 until fixGuardDepth32 was voted in). Pass
 `rules_version=None` — the default everywhere — to get that. An explicit int
 asks what a hook would do under rules the network is not running; the library
 allows it, and no CLI command offers it. `--depth32` used to, and it silently

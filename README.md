@@ -149,7 +149,7 @@ hookz build reward.c
   Built reward.c via 'local-structural' pipeline (clang -O3 → binaryen → cleaner)
     3,281 bytes, block depth 6
     Guard check PASSED (hook WCE=8,446 — 12.9% of budget)
-    rules: 0x01 (nesting limit 16)      # which amendments produced that verdict
+    rules: 0x03 (nesting limit 32)      # which amendments produced that verdict
     → reward.wasm (3281 bytes)
 ```
 
@@ -205,7 +205,7 @@ hookz wce govern.wasm
     sha256: 6f1c…                         # the bytes that were weighed
     bytes: 3,171
     provenance: provided artifact: govern.wasm
-    rules: 0x01 (nesting limit 16)        # the amendments mainnet has in force
+    rules: 0x03 (nesting limit 32)        # the amendments mainnet has in force
 
     DEPLOYABILITY: PASSED
 
@@ -214,10 +214,11 @@ hookz wce govern.wasm
 
 The verdict is given under stated rules, because the rules are not a constant:
 xahaud derives `rulesVersion` per-ledger from the amendments in force, and
-hookz derives it from the same manifest. `fixGuardDepth32` is `DefaultNo` and
-mainnet has not voted it in, so the nesting limit is 16. There is no flag to
-assume otherwise: when the vote lands, the manifest carries it and every
-verdict moves at once. `hookz doctor` prints which vote produced which bit.
+hookz derives it from the same manifest. `fixGuardDepth32` is `DefaultNo`;
+mainnet voted it in before the 2026-11-07 manifest read, so the nesting limit
+is now 32 (it was 16). There was never a flag to assume it: when the vote
+landed the manifest carried it and every verdict moved at once. `hookz doctor`
+prints which vote produced which bit.
 See [`src/hookz/wasm/README.md`](src/hookz/wasm/README.md).
 
 Given C instead, it builds first and names the compiler it used: the local
@@ -283,7 +284,7 @@ from validator reveals. hookz emulates the draw deterministically from a state
 the test supplies:
 
 ```python
-rt.amendments.add("featureRNG")     # DefaultNo — not on the mainnet manifest
+rt.amendments.add("featureRNG")     # not enabled at the 2026-11-07 manifest read (majority since 11-05)
 rt.seed_random(b"\x11" * 32)        # this ledger's Random object
 result = rt.run(hook)
 

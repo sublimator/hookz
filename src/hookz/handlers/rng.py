@@ -23,9 +23,10 @@ advance.
 The draw (`_rng_next`), in the host's order:
 
 1. `featureRNG` not enabled -> TOO_LITTLE_ENTROPY
-   (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1944). It is `DefaultNo` and
-   the vendored mainnet manifest does not carry it, so a default runtime
-   answers -46 here; `rt.amendments.add("featureRNG")`.
+   (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1944). The vendored mainnet
+   manifest (read 2026-11-07) lists it with majority but not enabled, so a
+   default runtime answers -46 here until it is re-read after activation;
+   `rt.amendments.add("featureRNG")`.
 2. 256 draws already made by this execution -> TOO_MANY_NONCES
    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1947,
    xahaud:include/xrpl/hook/Enum.h:404). The counter is per execution

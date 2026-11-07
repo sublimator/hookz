@@ -239,8 +239,10 @@ class TestUtilKeyletManifest:
         import hashlib
         return b"\x00\x4D" + hashlib.sha512(b"\x00\x4D" + pk).digest()[:32]
 
-    def test_not_on_mainnet(self, rt):
-        assert "featureOnChainManifests" not in rt.amendments
+    def test_not_enabled_in_the_vendored_manifest(self, rt):
+        # Majority since 2026-11-04 at the 2026-11-07 read; once a re-read
+        # shows it enabled, this test and the default it pins move together.
+        assert "featureOnChainManifests" not in rt.amendments, "manifest changed; revisit"
 
     def test_without_the_amendment_it_is_invalid_argument(self, rt):
         rt._write_memory(100, self.ED_KEY)
