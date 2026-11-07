@@ -14,18 +14,6 @@ from hookz import hookapi
 # xahaud:include/xrpl/hook/Enum.h:402
 MAX_SLOTS = 255
 
-#: The entire field set of the `ttEMIT_FAILURE` pseudo-transaction.
-#:
-#: xahaud:include/xrpl/protocol/detail/transactions.macro:621
-#:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, ({
-#:         {sfLedgerSequence, soeREQUIRED},
-#:         {sfTransactionHash, soeREQUIRED},
-#:     }))
-EMIT_FAILURE_FIELDS = frozenset({
-    hookapi.sfLedgerSequence,
-    hookapi.sfTransactionHash,
-})
-
 #: `cbak(0)` — the emitted transaction reached a ledger.
 #:
 #: This is **not** the same as "it worked". The ledger calls the callback when
@@ -43,13 +31,22 @@ EMIT_FAILURE_FIELDS = frozenset({
 CALLBACK_APPLIED = 0
 
 #: `cbak(1)` — the emission never reached a ledger, so the ledger applies a
-#: `ttEMIT_FAILURE` pseudo-transaction instead. Only `EMIT_FAILURE_FIELDS` are
-#: readable in this mode.
+#: `ttEMIT_FAILURE` pseudo-transaction instead, whose own fields are
+#: sfLedgerSequence and sfTransactionHash.
 #:
 #: xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1646
 #:     isEmitFailure ? 1UL : 0UL
-#: xahaud:include/xrpl/protocol/detail/transactions.macro:621
-#:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, …)
+#: xahaud:include/xrpl/protocol/detail/transactions.macro:622
+#:     TRANSACTION(ttEMIT_FAILURE, 103, EmitFailure, ({
+#:         {sfLedgerSequence, soeREQUIRED},
+#:         {sfTransactionHash, soeREQUIRED},
+#:     }))
+#:
+#: The hook does not read the pseudo's fields, though. Under fix20261005 a
+#: failure callback reads the *original emission* — its fields, its type, its
+#: slot — and the pseudo's two are DOESNT_EXIST. Without the fix this
+#: delivery crashes the node, and `HookRuntime.callback` raises `NodeCrash`
+#: rather than model it.
 CALLBACK_NOT_APPLIED = 1
 
 
@@ -85,31 +82,34 @@ def otxn_field(rt: HookRuntime, write_ptr: int, write_len: int, field_id: int) -
     is reserved for a field the transaction genuinely does not have, since to a
     hook that answer is indistinguishable from "this harness cannot say".
 
-    **Inside a failure callback almost nothing is readable.** The host checks
-    presence against the transaction being applied and only then reads the
-    value out of the saved emission:
+    **In a callback, both modes read the emission.** Applied, the transaction
+    being applied *is* the emission. Not applied, it is the `ttEMIT_FAILURE`
+    pseudo-transaction, and under fix20261005 the host takes presence and
+    value from the original emission instead:
 
-        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1599
-            if (!hookCtx.applyCtx.tx.isFieldPresent(fieldType))
-                return Unexpected(DOESNT_EXIST);
-            auto const& field = hookCtx.emitFailure
-                ? hookCtx.emitFailure->getField(fieldType) : ...
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591
+            if (hookCtx.emitFailure &&
+                hookCtx.applyCtx.view().rules().enabled(fix20261005))
+            {
+                if (!hookCtx.emitFailure->isFieldPresent(fieldType))
+                    return Unexpected(DOESNT_EXIST);
+                return &hookCtx.emitFailure->getField(fieldType);
+            }
 
-    On a failure the applied transaction is the `ttEMIT_FAILURE`
-    pseudo-transaction, which has two fields and neither is `sfDestination`.
-    `emitFailure` is populated only when `isCallback && (wasmParam & 1)`
-    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049), so the asymmetry is
-    exact: on success the transaction *is* the original emit and everything is
-    there; on failure only the ledger sequence and the transaction hash are.
+    `emitFailure` is set only when `isCallback && (wasmParam & 1)`
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049), and is the
+    emitted transaction captured before the pseudo erased its entry
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1057). So a failure
+    callback reads sfDestination and sfAmount — what an undo needs — and the
+    pseudo's sfLedgerSequence and sfTransactionHash are DOESNT_EXIST, because
+    the emission does not carry them. `run_callback` loads the emission into
+    `rt.otxn_fields` in both modes, so nothing here branches on the mode.
 
-    This matters more than it looks. A `cbak` that opens by reading
-    `sfDestination` to find whose record to restore takes its early exit on
-    every failure — the restore is unreachable — and a harness that served the
-    field anyway would show the undo working and hide permanently stuck funds.
+    The pre-fix branch below that one checks presence on the pseudo
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1599) — the "only two
+    fields readable" picture — but no hook ever reached it: the callback
+    crashed the node before running (see `HookRuntime.callback`).
     """
-    if rt.emit_failure and field_id not in EMIT_FAILURE_FIELDS:
-        return hookapi.DOESNT_EXIST
-
     override = rt.otxn_fields.get(field_id)
     if override is not None:
         return _write_or_return_int64(rt, write_ptr, write_len, override)
@@ -289,6 +289,11 @@ def otxn_slot(rt: HookRuntime, slot_no: int) -> int:
     The slot is populated, not merely reserved: a hook slots the transaction in
     order to navigate into it, and `slot_subfield`/`slot_count`/`slot_subarray`
     all read the bytes placed here.
+
+    In a failure callback the slotted object is `*(hookCtx.emitFailure)`
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1649): under fix20261005
+    the original emission itself, not the ledger entry that held it — so
+    `run_callback` puts the emitted blob in `rt.otxn_blob` for both modes.
     """
     from hookz.handlers.slot import _get_slot_data, _set_slot_data, _STI_OBJECT
 

@@ -440,21 +440,18 @@ class TestArbitraryFields:
         assert rt._read_memory(100, 20) == b"\x03" * 20
 
 
-class TestAFailureCallbackSeesAlmostNothing:
-    """`ttEMIT_FAILURE` carries two fields, and a hook reading anything else in
-    a failure callback gets DOESNT_EXIST however present it was on the emission.
+class TestAFailureCallbackReadsTheOriginal:
+    """Under fix20261005 a failure callback reads the original emission.
 
-    The host checks presence against the transaction being applied and only
-    then reads the value out of the saved emission
-    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1599), and on a failure the
-    applied transaction is the pseudo-transaction — whose whole format is
-    sfLedgerSequence and sfTransactionHash
-    (xahaud:include/xrpl/protocol/detail/transactions.macro:621).
-
-    Modelling this is not pedantry. A `cbak` that opens by reading
-    `sfDestination` to find whose record to restore takes its early exit on
-    every failure, so the undo is unreachable — and a harness that served the
-    field anyway would show it working and hide permanently stuck funds.
+    The ledger applies a `ttEMIT_FAILURE` pseudo-transaction, whose own
+    fields are sfLedgerSequence and sfTransactionHash
+    (xahaud:include/xrpl/protocol/detail/transactions.macro:622) — but
+    `otxn_field` takes presence and value from the emitted transaction
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591), so the hook sees
+    the emission's fields and not the pseudo's. A `cbak` that opens by
+    reading `sfDestination` to find whose record to restore takes the
+    restore. `rt.otxn_fields` stands for the emission here, as
+    `run_callback` loads it.
     """
 
     def _rt(self):
@@ -464,15 +461,18 @@ class TestAFailureCallbackSeesAlmostNothing:
         rt = HookRuntime()
         rt.otxn_account = b"\x01" * 20
         rt.otxn_fields[hookapi.sfDestination] = b"\x02" * 20
-        rt.otxn_fields[hookapi.sfLedgerSequence] = (7).to_bytes(4, "big")
         return rt
 
     def _read(self, rt, field_id):
-        from hookz import hookapi
         from hookz.handlers.otxn import otxn_field
 
-        rt._memory_stub = bytearray(64)
         return otxn_field(rt, 0, 0, field_id)
+
+    def test_the_mainnet_default_has_the_fix(self):
+        """The vendored mainnet manifest enables it, so this is the default."""
+        from hookz.runtime import HookRuntime
+
+        assert "fix20261005" in HookRuntime().amendments
 
     def test_a_success_callback_reads_the_original_transaction(self):
         from hookz import hookapi
@@ -481,23 +481,24 @@ class TestAFailureCallbackSeesAlmostNothing:
         with rt.callback(0):
             assert self._read(rt, hookapi.sfDestination) != hookapi.DOESNT_EXIST
 
-    def test_a_failure_callback_cannot_read_the_destination(self):
+    def test_a_failure_callback_reads_the_destination(self):
         from hookz import hookapi
 
         rt = self._rt()
         with rt.callback(1):
-            assert self._read(rt, hookapi.sfDestination) == hookapi.DOESNT_EXIST
+            assert self._read(rt, hookapi.sfDestination) != hookapi.DOESNT_EXIST
 
-    def test_the_two_fields_the_failure_does_carry_are_readable(self):
+    def test_the_pseudo_transactions_own_fields_are_not_served(self):
         from hookz import hookapi
 
         rt = self._rt()
         with rt.callback(1):
-            assert self._read(rt, hookapi.sfLedgerSequence) != hookapi.DOESNT_EXIST
+            assert self._read(rt, hookapi.sfLedgerSequence) == hookapi.DOESNT_EXIST
+            assert self._read(rt, hookapi.sfTransactionHash) == hookapi.DOESNT_EXIST
 
     def test_the_mode_is_derived_from_ctx_not_set_by_hand(self):
-        """Forgetting the flag serves fields the ledger would refuse, so it is
-        derived from the callback argument rather than trusted to a caller."""
+        """The chain derives it from the callback argument, so it is derived
+        here rather than trusted to a caller."""
         rt = self._rt()
 
         with rt.callback(0):
@@ -512,6 +513,70 @@ class TestAFailureCallbackSeesAlmostNothing:
             pass
 
         assert rt.emit_failure is False
+
+    def test_without_the_fix_a_failure_callback_crashes_the_node(self):
+        """Pre-fix the host dereferences the erased ltEMITTED_TXN entry
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1062) before the hook
+        runs, so there is no field read to model — only the crash."""
+        from hookz.runtime import NodeCrash
+
+        rt = self._rt()
+        rt.amendments.discard("fix20261005")
+        with pytest.raises(NodeCrash, match="fix20261005"):
+            with rt.callback(1):
+                pytest.fail("the body must not run")
+        assert rt.emit_failure is False
+        with rt.callback(0):
+            pass
+
+
+class TestOtxnFieldEmitFailureUpstream:
+    """HookAPI_test.cpp test_otxn_field_emit_failure (release d20e8ffb56;
+    that file is not vendored). The pseudo carries sfLedgerSequence and
+    sfTransactionHash; the emitted Payment carries sfAccount and
+    sfDestination.
+
+    Upstream runs both rule sets against a stub HookContext. With the fix:
+    sfAccount and sfDestination come from the emission and sfLedgerSequence
+    is DOESNT_EXIST. Without it the stub shows sfDestination DOESNT_EXIST and
+    sfLedgerSequence throwing — but that branch is reachable only through the
+    stub: on chain `hook::apply` crashes on the erased entry first
+    (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1062), so hookz refuses
+    the delivery instead of serving the stub's answers.
+    """
+
+    ALICE = b"\xA1" * 20
+    BOB = b"\xB0" * 20
+
+    def _emitted(self, rt):
+        from hookz.runtime import _emission_fields
+        from hookz.xrpl.txn_builder import serialize_fields
+
+        blob = serialize_fields({
+            hookapi.sfTransactionType: hookapi.ttPAYMENT.to_bytes(2, "big"),
+            hookapi.sfAccount: self.ALICE,
+            hookapi.sfDestination: self.BOB,
+        })
+        rt.otxn_fields.update(_emission_fields(blob))
+
+    def test_with_the_fix(self, rt):
+        self._emitted(rt)
+        with rt.callback(1):
+            assert otxn_field(rt, 100, 20, hookapi.sfAccount) == 20
+            assert rt._read_memory(100, 20) == self.ALICE
+            assert otxn_field(rt, 100, 20, hookapi.sfDestination) == 20
+            assert rt._read_memory(100, 20) == self.BOB
+            assert otxn_field(rt, 100, 4, hookapi.sfLedgerSequence) \
+                == hookapi.DOESNT_EXIST
+
+    def test_without_the_fix(self, rt):
+        from hookz.runtime import NodeCrash
+
+        self._emitted(rt)
+        rt.amendments.discard("fix20261005")
+        with pytest.raises(NodeCrash):
+            with rt.callback(1):
+                pass
 
 
 class TestCtxZeroDoesNotMeanItWorked:
@@ -544,7 +609,9 @@ class TestCtxZeroDoesNotMeanItWorked:
             assert otxn_field(rt, 0, 0, hookapi.sfDestination) \
                 != hookapi.DOESNT_EXIST
 
-    def test_only_the_unapplied_mode_masks_fields(self):
+    def test_the_unapplied_mode_reads_the_emission_too(self):
+        """The bit says which callback this is; under fix20261005 it does not
+        change which transaction the fields come from."""
         from hookz import hookapi
         from hookz.handlers.otxn import CALLBACK_NOT_APPLIED, otxn_field
         from hookz.runtime import HookRuntime
@@ -554,4 +621,4 @@ class TestCtxZeroDoesNotMeanItWorked:
 
         with rt.callback(CALLBACK_NOT_APPLIED):
             assert otxn_field(rt, 0, 0, hookapi.sfDestination) \
-                == hookapi.DOESNT_EXIST
+                != hookapi.DOESNT_EXIST

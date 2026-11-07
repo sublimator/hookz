@@ -122,6 +122,14 @@ class HookRejected(Exception):
         super().__init__(f"rollback({msg!r}, {code})")
 
 
+class NodeCrash(RuntimeError):
+    """The delivery asked for takes a xahaud node down under these rules.
+
+    Raised instead of running anything: there is no hook-visible outcome to
+    model, and serving one would describe a ledger that cannot exist.
+    """
+
+
 @dataclass
 class HostCall:
     """Record of a single host function call."""
@@ -459,11 +467,11 @@ class HookRuntime:
         # payload bytes. Consulted ahead of the built-ins above, so a
         # transaction can carry whatever field the hook under test reads.
         self.otxn_fields: dict[int, bytes] = {}
-        # True while a *failure* callback is running. The ledger applies a
-        # ttEMIT_FAILURE pseudo-transaction in that case, and field presence is
-        # checked against it rather than against the emission that failed — so
-        # a hook can read only sfLedgerSequence and sfTransactionHash, whatever
-        # the original transaction carried. See `handlers.otxn.otxn_field`.
+        # True while a *failure* callback is running, derived by `callback()`.
+        # The ledger applies a ttEMIT_FAILURE pseudo-transaction in that case;
+        # under fix20261005 field reads, otxn_type and otxn_slot still answer
+        # from the original emission, so `otxn_fields`/`otxn_blob` describe
+        # it in both modes. See `callback()` for what the bit does change.
         self.emit_failure: bool = False
         # The whole originating transaction, serialized. Set it when a hook
         # slots the transaction and navigates into it (otxn_slot), which needs
@@ -663,11 +671,32 @@ class HookRuntime:
 
         `emit_failure` is not something a caller should be trusted to set. The
         chain derives it — `isCallback && (wasmParam & 1)`
-        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049) — and the failure
-        mode of getting it wrong is silent and one-directional: forget it, and
-        the harness serves fields the ledger would refuse, so a dead restore
-        path looks alive. Deriving it from `ctx` here means a test cannot be
-        wrong about it without being wrong about which callback it is driving.
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1049) — so it is
+        derived from `ctx` here, and a test cannot be wrong about it without
+        being wrong about which callback it is driving.
+
+        **A failure callback reads the original emission.** Under
+        fix20261005 (on mainnet) the host's failure view is the emitted
+        transaction itself, captured before the ttEMIT_FAILURE pseudo erased
+        its ledger entry (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2116)
+        and handed to the hook as `emitFailure = emitFailureTxn`
+        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1057). `otxn_field`,
+        `otxn_type` and `otxn_slot` answer from it, exactly as an applied
+        callback's do from the transaction being applied — so a cbak that
+        reads sfDestination to find whose record to restore can. What the
+        bit still changes is what is read off the pseudo itself: `otxn_id`
+        is its sfTransactionHash, the failed emission's hash
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612).
+
+        **Without fix20261005 there is no failure callback to model.** The
+        host dereferences the emitted-transaction entry the pseudo has
+        already erased (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1062)
+        and the node goes down — upstream can only test the fixed behaviour
+        for that reason (xahaud:src/test/app/SetHook_test.cpp:4796). The
+        erase precedes every such callback, so this is every pre-fix
+        delivery, not an edge of one. A `ctx` with the low bit set and an
+        amendment set lacking the fix raises `NodeCrash` rather than serve
+        a view no ledger produced.
 
         Restores on exit, so a runtime reused for a later transaction is not
         left in callback mode.
@@ -686,6 +715,14 @@ class HookRuntime:
         `CALLBACK_APPLIED` / `CALLBACK_NOT_APPLIED` rather than 0 and 1, so a
         test says which of the two it is modelling.
         """
+        if ctx & 1 and "fix20261005" not in self.amendments:
+            raise NodeCrash(
+                "an emit-failure callback without fix20261005 crashes the "
+                "node: the host reads the ltEMITTED_TXN entry the "
+                "ttEMIT_FAILURE pseudo has already erased and dereferences "
+                "null (applyHook.cpp:1062 at the pin), so there is no "
+                "callback for the hook to observe. Add fix20261005 to "
+                "rt.amendments (mainnet has it) to drive one.")
         previous = self.emit_failure
         self.emit_failure = bool(ctx & 1)
         try:
@@ -715,16 +752,17 @@ class HookRuntime:
             hook: the emitting hook — the module's `cbak` export is called.
             emitted_tx: the emitted transaction, serialized — usually an entry
                 of a previous run's `result.emitted_txns`. Its
-                `TransactionType` becomes `otxn_type` (SourceTag is passed
-                through to `otxn_fields`), and the hook can slot it. May be
-                omitted when the callback under test only reads hashes, in
-                which case `tx_hash` is required.
+                `TransactionType` becomes `otxn_type`, its fields are what
+                `otxn_field` serves, and the hook can slot it — in both
+                modes. May be omitted when the callback under test only reads
+                hashes, in which case `tx_hash` is required.
             ctx: what `cbak` receives. `CALLBACK_APPLIED` (0) means the
                 emission reached a ledger — **including as a `tec`**; see
                 `callback()` for why 0 does not mean success. Under
                 `CALLBACK_NOT_APPLIED` (1) the ledger applies a
-                `ttEMIT_FAILURE` pseudo-transaction instead and almost no
-                field of the original is readable.
+                `ttEMIT_FAILURE` pseudo-transaction instead, and the hook
+                still reads the original (fix20261005); without that
+                amendment the delivery raises `NodeCrash`.
             transaction_result: what the provisional metadata says the ledger
                 did — `meta_slot` serves a serialized TxMeta whose
                 `sfTransactionResult` carries it (str or TER int; see
@@ -752,21 +790,30 @@ class HookRuntime:
         `ttEMIT_FAILURE` pseudo-transaction, carrying the current ledger
         sequence and the failed emission's hash
         (`obj[sfLedgerSequence] = seq; obj[sfTransactionHash] = txnHash`,
-        xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1657) — `sfLedgerSequence`
-        here is `rt.ledger_seq_val`. Field visibility collapses to exactly
-        those two (see `handlers.otxn.EMIT_FAILURE_FIELDS`), `otxn_id` still
-        answers the emission's hash (HookAPI.cpp:1547), and `otxn_slot`
-        serves the emitted-transaction *ledger entry* — the original wrapped
-        in `sfEmittedTxn`, which is what the entry holds
-        (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1547-1541) and what
-        the host slots on failure (`hookCtx.emitFailure ? *(hookCtx.emitFailure)
-        : ...tx`, xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1648). A
-        repair path that navigates to the original must therefore descend
-        through `sfEmittedTxn` — exactly as it would on chain.
+        xahaud:src/xrpld/app/misc/detail/TxQ.cpp:1657). Under fix20261005
+        the hook does not see those two: `otxn_field` checks presence and
+        reads the value on the original emission
+        (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591), so the
+        emission's own fields serve and the pseudo's are DOESNT_EXIST;
+        `otxn_slot` slots the original itself, not the ledger entry around
+        it (`hookCtx.emitFailure ? *(hookCtx.emitFailure) : ...tx`,
+        xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1648, where
+        `emitFailure` is the inner sfEmittedTxn object,
+        xahaud:src/xrpld/app/tx/detail/Transactor.cpp:2124); `otxn_type` is
+        the emission's (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1623);
+        `otxn_id` is the pseudo's sfTransactionHash, which is the emission's
+        hash (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1612). The field
+        overlay is the applied mode's, for the same reason: one object
+        describes the transaction.
+
+        The ledger skips the callback outright when the original is not in
+        the ledger as the pseudo applies
+        (xahaud:src/xrpld/app/tx/detail/Transactor.cpp:1554); that delivery
+        has no cbak in it, so there is nothing here to request. Without
+        fix20261005 every failure delivery crashes the node, and this
+        raises `NodeCrash` — see `callback()`.
         """
-        from hookz import hookapi
         from hookz.emission import emitted_txn_id
-        from hookz.xrpl.txn_builder import serialize_fields
         from hookz.xrpl.txn_parser import parse_object
 
         if emitted_tx is None and tx_hash is None:
@@ -800,20 +847,16 @@ class HookRuntime:
                     from xrpl.core.binarycodec.definitions import definitions
                     self.otxn_type = definitions.get_transaction_type_code(
                         tx_type)
-            if ctx & 1:
-                self.otxn_fields[hookapi.sfLedgerSequence] = (
-                    self.ledger_seq_val.to_bytes(4, "big"))
-                self.otxn_fields[hookapi.sfTransactionHash] = tx_hash
-                if emitted_tx is not None:
-                    self.otxn_blob = serialize_fields(
-                        {hookapi.sfEmittedTxn: emitted_tx + b"\xE1"})
-            elif emitted_tx is not None:
-                self.otxn_blob = emitted_tx
+            if emitted_tx is not None:
+                # Both modes: applied, the emission is the transaction being
+                # applied; not applied, it is `emitFailure`, which every
+                # field read and the slot answer from under fix20261005.
                 # The emission is the authority for every field it carries:
                 # a caller-set value that disagrees with the blob would be a
                 # delivery the ledger cannot make, so the overlay wins.
                 # Caller entries for fields the emission does not carry
                 # still serve.
+                self.otxn_blob = emitted_tx
                 self.otxn_fields.update(_emission_fields(emitted_tx))
             with self.callback(ctx):
                 return self.run(hook, coverage=coverage,

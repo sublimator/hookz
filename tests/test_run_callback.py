@@ -407,7 +407,11 @@ class TestFieldProjections:
 
 
 class TestNotAppliedMode:
-    def test_the_pseudo_transaction_shape(self, wasm):
+    """fix20261005 (on mainnet): a failure callback reads the original
+    emission, not the ttEMIT_FAILURE pseudo-transaction
+    (xahaud:src/xrpld/app/hook/detail/HookAPI.cpp:1591)."""
+
+    def test_the_hook_reads_the_original_not_the_pseudo(self, wasm):
         blob = payment_blob(source_tag=777)
         rt = HookRuntime()
         rt.ledger_seq_val = 100_001
@@ -415,30 +419,48 @@ class TestNotAppliedMode:
                                  ctx=CALLBACK_NOT_APPLIED)
         assert result.accepted
 
-        assert rt.state_db[K_SEQ] == (100_001).to_bytes(4, "big")
-        assert rt.state_db[K_HASH] == emitted_txn_id(blob)
+        # The pseudo carries these two; the emission does not, and the
+        # emission is what presence is checked on.
+        assert K_SEQ not in rt.state_db
+        assert K_HASH not in rt.state_db
+        # otxn_id is still the pseudo's sfTransactionHash: the emission's.
         assert rt.state_db[K_ID] == emitted_txn_id(blob)
+        assert rt.state_db[K_TYPE] == i64buf(0)
+        assert rt.state_db[K_TAG] == (777).to_bytes(4, "big")
 
-    def test_the_original_is_not_directly_readable(self, wasm):
-        """The dead-restore-path story: a cbak that opens by reading
-        sfDestination takes its early exit on every failure, and serving
-        the field would hide that."""
+    def test_the_restore_path_can_find_its_record(self, wasm):
+        """What a failure cbak needs to undo the emission is readable: a
+        cbak that opens by reading sfDestination to find whose record to
+        restore takes the restore."""
         rt = HookRuntime()
-        rt.otxn_fields[hookapi.sfDestination] = DEST
-        rt.run_callback(wasm, emitted_tx=payment_blob(source_tag=777),
+        rt.run_callback(wasm, emitted_tx=payment_blob(),
                         ctx=CALLBACK_NOT_APPLIED)
-        assert rt.state_db[K_DEST_RC] == i64buf(hookapi.DOESNT_EXIST)
-        assert K_TAG not in rt.state_db
+        assert rt.state_db[K_DEST_RC] == i64buf(20)
+        assert rt.state_db[K_DEST] == DEST
+        assert rt.state_db[K_ACCT] == ACCT
+        assert rt.state_db[K_AMOUNT] == AMOUNT
 
-    def test_the_slot_serves_the_ledger_entry_wrapper(self, wasm):
-        """On failure the slotted object is the emitted-txn ledger entry —
-        the original nested under sfEmittedTxn — so a repair path must
-        descend through it, exactly as on chain."""
-        blob = payment_blob()
+    def test_the_slot_serves_the_emission_itself(self, wasm):
+        """`*(hookCtx.emitFailure)` is the inner sfEmittedTxn object, so the
+        slot holds the original's own fields — no ledger-entry wrapper to
+        descend through — and navigates like the applied mode's."""
         rt = HookRuntime()
-        rt.run_callback(wasm, emitted_tx=blob, ctx=CALLBACK_NOT_APPLIED)
-        wrapper = serialize_fields({hookapi.sfEmittedTxn: blob + b"\xE1"})
-        assert rt.state_db[K_OTXN] == wrapper
+        rt.run_callback(wasm, emitted_tx=payment_blob(),
+                        ctx=CALLBACK_NOT_APPLIED)
+        assert rt.state_db[K_OTXN] == payment_blob()
+
+        rt = HookRuntime()
+        rt.run_callback(wasm, emitted_tx=rich_blob(), ctx=CALLBACK_NOT_APPLIED)
+        assert rt.state_db[K_VL_SLOT] == b"\x03abc"
+        assert rt.state_db[K_OBJ_TAG] == (42).to_bytes(4, "big")
+
+    def test_both_modes_serve_one_view_of_the_emission(self, wasm):
+        """Every probe answer but the callback's own argument agrees."""
+        blob = rich_blob()
+        applied, failed = HookRuntime(), HookRuntime()
+        applied.run_callback(wasm, emitted_tx=blob, ctx=CALLBACK_APPLIED)
+        failed.run_callback(wasm, emitted_tx=blob, ctx=CALLBACK_NOT_APPLIED)
+        assert applied.state_db == failed.state_db
 
     def test_metadata_is_still_served(self, wasm):
         """The pseudo-transaction's own application generates provisional
@@ -447,6 +469,46 @@ class TestNotAppliedMode:
         rt.run_callback(wasm, emitted_tx=payment_blob(),
                         ctx=CALLBACK_NOT_APPLIED)
         assert rt.state_db[K_RESULT] == b"\x00"
+
+
+class TestNotAppliedWithoutTheFix:
+    """Before fix20261005 the host dereferenced the ltEMITTED_TXN entry the
+    pseudo had already erased (xahaud:src/xrpld/app/hook/detail/applyHook.cpp:1062)
+    and the node went down — there is no hook-visible outcome to serve."""
+
+    def test_the_citations_say_what_is_claimed(self):
+        from hookz.wasm import xahaud_ref as ref
+
+        def line(path, n):
+            return ref.parse_citations(f"xahaud:{path}:{n}")[0].snippet()
+
+        apply_hook = "src/xrpld/app/hook/detail/applyHook.cpp"
+        assert "fix20261005" in line(apply_hook, 1051)
+        assert "emitFailure = emitFailureTxn;" in line(apply_hook, 1057)
+        assert "peek(keylet::emittedTxn(" in line(apply_hook, 1062)
+        assert "dereferenced null" in line(
+            "src/test/app/SetHook_test.cpp", 4799)
+
+    def test_a_failure_delivery_raises(self, wasm):
+        from hookz import NodeCrash
+
+        rt = HookRuntime()
+        rt.amendments.discard("fix20261005")
+        with pytest.raises(NodeCrash, match="fix20261005"):
+            rt.run_callback(wasm, emitted_tx=payment_blob(),
+                            ctx=CALLBACK_NOT_APPLIED)
+        # Nothing ran, and nothing is left in callback shape.
+        assert rt.state_db == {}
+        assert rt.otxn_blob is None and rt.otxn_fields == {}
+        assert rt.otxn_id_val is None and rt.emit_failure is False
+
+    def test_an_applied_delivery_is_unaffected(self, wasm):
+        rt = HookRuntime()
+        rt.amendments.discard("fix20261005")
+        result = rt.run_callback(wasm, emitted_tx=payment_blob(),
+                                 ctx=CALLBACK_APPLIED)
+        assert result.accepted
+        assert rt.state_db[K_DEST] == DEST
 
 
 class TestNoMetadata:
@@ -460,11 +522,13 @@ class TestNoMetadata:
 
 class TestArguments:
     def test_hashes_alone_are_enough(self, wasm):
+        """otxn_id needs only the hash. sfTransactionHash is the pseudo's
+        field, not the emission's, so it is not served in either mode."""
         tx_hash = bytes(range(32))
         rt = HookRuntime()
         rt.run_callback(wasm, tx_hash=tx_hash, ctx=CALLBACK_NOT_APPLIED)
         assert rt.state_db[K_ID] == tx_hash
-        assert rt.state_db[K_HASH] == tx_hash
+        assert K_HASH not in rt.state_db
 
     def test_neither_blob_nor_hash_is_an_error(self, wasm):
         with pytest.raises(TypeError, match="emitted_tx"):
@@ -532,3 +596,179 @@ class TestRoundTrip:
         # Phase 2 meets phase 3: the journal attributes the probe's writes
         # to the cbak execution.
         assert {w.export for w in cb_result.state_writes} == {"cbak"}
+
+
+# ---------------------------------------------------------------------------
+# Upstream: SetHook_test.cpp test_emit_failure_callback
+# ---------------------------------------------------------------------------
+
+#: The hook from xahaud:src/test/app/SetHook_test.cpp:4791, verbatim but for
+#: the raw-string wrapper. `hook` emits an Invoke that expires unapplied;
+#: `cbak` asserts the failure view is the original and records its id.
+UPSTREAM_EMIT_FAILURE_SOURCE = r"""
+#include <stdint.h>
+extern int32_t _g       (uint32_t id, uint32_t maxiter);
+extern int64_t accept   (uint32_t read_ptr, uint32_t read_len, int64_t error_code);
+extern int64_t rollback (uint32_t read_ptr, uint32_t read_len, int64_t error_code);
+extern int64_t emit     (uint32_t write_ptr, uint32_t write_len, uint32_t read_ptr, uint32_t read_len);
+extern int64_t hook_account (uint32_t write_ptr, uint32_t write_len);
+extern int64_t etxn_reserve (uint32_t);
+extern int64_t etxn_fee_base (uint32_t read_ptr, uint32_t read_len);
+extern int64_t etxn_details (uint32_t write_ptr, uint32_t write_len);
+extern int64_t ledger_seq (void);
+extern int64_t otxn_id (uint32_t, uint32_t, uint32_t);
+extern int64_t otxn_type (void);
+extern int64_t otxn_field (uint32_t write_ptr, uint32_t write_len, uint32_t field_id);
+extern int64_t state_set (uint32_t, uint32_t, uint32_t, uint32_t);
+#define SBUF(x) (uint32_t)(x), sizeof(x)
+#define ASSERT(x)\
+    if (!(x))\
+        rollback((uint32_t)#x, sizeof(#x), __LINE__);
+#define DOESNT_EXIST (-5)
+#define ttINVOKE 99
+#define sfAccount ((8U << 16U) + 1U)
+#define sfLedgerSequence ((2U << 16U) + 6U)
+
+uint8_t key[32] = { [31] = 1U };
+
+// an Invoke from the hook account, emitted with a callback
+uint8_t txn[229] =
+{
+    /* size, upto, field name               */
+    /*    3,    0, tt = Invoke              */   0x12U, 0x00U, 0x63U,
+    /*    5,    3, flags                    */   0x22U, 0x00U, 0x00U, 0x00U, 0x00U,
+    /*    5,    8, sequence                 */   0x24U, 0x00U, 0x00U, 0x00U, 0x00U,
+    /*    6,   13, firstledgersequence      */   0x20U, 0x1AU, 0x00U, 0x00U, 0x00U, 0x00U,
+    /*    6,   19, lastledgersequence       */   0x20U, 0x1BU, 0x00U, 0x00U, 0x00U, 0x00U,
+    /*    9,   25, fee                      */   0x68U, 0x40U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U, 0x00U,
+    /*   35,   34, signingpubkey            */   0x73U, 0x21U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /*   22,   69, account                  */   0x81U, 0x14U, 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
+    /*  138,   91, emit details             */
+    /*    0,  229,                          */
+};
+#define FLS_OUT (txn + 15U)
+#define LLS_OUT (txn + 21U)
+#define FEE_OUT (txn + 26U)
+#define ACCOUNT_OUT (txn + 71U)
+#define EMIT_OUT (txn + 91U)
+#define SET_UINT32(ptr, value)\
+    {\
+        uint32_t v = (value);\
+        (ptr)[0] = v >> 24U; (ptr)[1] = v >> 16U; (ptr)[2] = v >> 8U; (ptr)[3] = v;\
+    }
+#define SET_NATIVE_AMOUNT(ptr, amount)\
+    {\
+        uint64_t a = (amount);\
+        (ptr)[0] = 0x40U + ((a >> 56U) & 0x3FU);\
+        (ptr)[1] = a >> 48U; (ptr)[2] = a >> 40U; (ptr)[3] = a >> 32U;\
+        (ptr)[4] = a >> 24U; (ptr)[5] = a >> 16U; (ptr)[6] = a >> 8U; (ptr)[7] = a;\
+    }
+#define ACC_EQ(a, b)\
+    (*(uint64_t*)(a) == *(uint64_t*)(b) &&\
+     *(uint64_t*)((a) + 8U) == *(uint64_t*)((b) + 8U) &&\
+     *(uint32_t*)((a) + 16U) == *(uint32_t*)((b) + 16U))
+
+int64_t cbak(uint32_t r)
+{
+    _g(1,1);
+
+    // 1 = the emitted txn failed (ttEMIT_FAILURE)
+    ASSERT(r == 1);
+
+    // the otxn is the original emitted txn, not the pseudo
+    ASSERT(otxn_type() == ttINVOKE);
+
+    uint8_t me[20];
+    ASSERT(hook_account(SBUF(me)) == 20);
+    uint8_t acc[20];
+    ASSERT(otxn_field(SBUF(acc), sfAccount) == 20);
+    ASSERT(ACC_EQ(acc, me));
+
+    // carried by the pseudo but not by the emitted txn
+    ASSERT(otxn_field(0, 0, sfLedgerSequence) == DOESNT_EXIST);
+
+    // record the id of the emitted txn that failed
+    uint8_t id[32];
+    ASSERT(otxn_id(SBUF(id), 0) == 32);
+    ASSERT(state_set(SBUF(id), SBUF(key)) == 32);
+
+    return accept(0,0,0);
+}
+
+int64_t hook(uint32_t r)
+{
+    _g(1,1);
+
+    ASSERT(etxn_reserve(1) == 1);
+
+    // FirstLedgerSequence is the current ledger, so by the time
+    // the emission directory is processed for the next ledger it
+    // has already passed: the txn is never applied and expires
+    // once LastLedgerSequence is behind the ledger
+    uint32_t seq = (uint32_t)ledger_seq();
+    SET_UINT32(FLS_OUT, seq);
+    SET_UINT32(LLS_OUT, seq + 1);
+    ASSERT(hook_account(ACCOUNT_OUT, 20) == 20);
+    ASSERT(etxn_details(EMIT_OUT, 138U) == 138);
+    int64_t fee = etxn_fee_base(SBUF(txn));
+    ASSERT(fee > 0);
+    SET_NATIVE_AMOUNT(FEE_OUT, fee);
+
+    uint8_t emithash[32];
+    ASSERT(emit(SBUF(emithash), SBUF(txn)) == 32);
+
+    return accept(0,0,0);
+}
+"""
+
+ALICE = bytes(range(0xA0, 0xB4))
+
+
+@pytest.fixture(scope="module")
+def upstream_wasm(tmp_path_factory):
+    from hookz.compiler import compile_hook
+    from hookz.config import load_config
+
+    config = load_config()
+    if not (config.wasi_sdk / "bin" / "clang").exists():
+        pytest.skip("wasi-sdk not found")
+    source = tmp_path_factory.mktemp("emit_failure") / "emit_failure.c"
+    source.write_text(UPSTREAM_EMIT_FAILURE_SOURCE)
+    return compile_hook(source, None, config)
+
+
+class TestUpstreamEmitFailureCallback:
+    """SetHook_test.cpp test_emit_failure_callback, run on hookz: emit,
+    let the emission fail, deliver the failure, and find the callback ran
+    to accept() with the original emitted transaction in view."""
+
+    def _emit(self, wasm) -> tuple[HookRuntime, bytes]:
+        rt = HookRuntime()
+        rt.hook_account = ALICE
+        emitted = rt.run(wasm)
+        assert emitted.accepted, emitted.return_msg_str
+        assert rt.emission_rejections == []
+        (blob,) = emitted.emitted_txns
+        return rt, blob
+
+    def test_the_callback_sees_the_original_and_records_its_id(
+            self, upstream_wasm):
+        rt, blob = self._emit(upstream_wasm)
+        result = rt.run_callback(upstream_wasm, emitted_tx=blob,
+                                 ctx=CALLBACK_NOT_APPLIED)
+        # HookReturnCode 0, HookResult 3 (accept): every ASSERT held.
+        assert result.accepted, (result.return_msg_str, result.return_code)
+        assert result.return_code == 0
+        assert rt.state_db[bytes(31) + b"\x01"] == emitted_txn_id(blob)
+
+    def test_without_the_fix_the_failure_cannot_be_delivered(
+            self, upstream_wasm):
+        """Upstream runs this only under fix20261005 because the unfixed
+        callback takes the process down."""
+        from hookz import NodeCrash
+
+        rt, blob = self._emit(upstream_wasm)
+        rt.amendments.discard("fix20261005")
+        with pytest.raises(NodeCrash):
+            rt.run_callback(upstream_wasm, emitted_tx=blob,
+                            ctx=CALLBACK_NOT_APPLIED)

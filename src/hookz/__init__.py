@@ -7,7 +7,7 @@ import logging
 import os
 
 from hookz.runtime import (
-    HookRuntime, Hook, ParamMap, StateWrite, provisional_meta,
+    HookRuntime, Hook, NodeCrash, ParamMap, StateWrite, provisional_meta,
 )
 from hookz.coverage.rewriter import instrument_wasm
 from hookz.coverage.tracker import CoverageTracker
@@ -23,6 +23,7 @@ __all__ = [
     "CoverageTracker",
     "Hook",
     "HookRuntime",
+    "NodeCrash",
     "ParamMap",
     "StateWrite",
     "emitted_txn_id",
